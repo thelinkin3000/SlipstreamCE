@@ -108,7 +108,9 @@ SHARED_RENDERER_FILES = ("host_vk.c", "host_vk_data.c", "host_vk_draw.c", "host_
 # compiles them (port/ps5/PS5.md, phases 2 and 5), and the Linux updater's
 # HTTPS download, which the title's updater fetches with (phase 8:
 # port/ps5/host/host_update_ps5.c)
-POSIX_FILES = ("posix_files.c", "posix_net.c", "posix_upnp.c", "posix_dtls.c", "posix_update.c")
+POSIX_FILES = ("posix_files.c", "posix_net.c", "posix_upnp.c", "posix_dtls.c", "posix_update.c",
+               # (MCC's package previews and download staging)
+               "posix_mcc_preview.c", "posix_mcc_share.c")
 # (and posix_net.c's calls that take or give an address, which
 # host_net_ps5.c turns round between Winsock's layout and BSD's: phase 5)
 ADDRESS_WRAPS = ("posix_socket_bind", "posix_socket_connect", "posix_socket_accept", "posix_socket_sendto",

@@ -692,6 +692,8 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
         host_sources = [source for source in host_sources if source.name != "host_dk_compiler_stub.c"]
     host_sources += [
         LINUX_DIR / "src" / "posix_files.c",
+        # MCC's package previews and download staging (posix.h)
+        LINUX_DIR / "src" / "posix_mcc_preview.c", LINUX_DIR / "src" / "posix_mcc_share.c",
         TOML_DIR / "tomlc17.c",
         # a replay's records in the host's memory, as Android's and the PS5's
         ANDROID_PORT_DIR / "host" / "host_replay.c",

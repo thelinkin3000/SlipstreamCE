@@ -21,6 +21,7 @@ and presenting go there; a draw and a visibility test do nothing yet.
 #include "sdl_platform.h"
 #include "halo_ui_pointer.h"
 #include "port_config.h"
+#include "mcc_environment_shader.h"
 #include "posix.h"
 #include "dk_commands.h"
 #include "dk_shaders.h"
@@ -2051,6 +2052,18 @@ void WINAPI D3DDevice_SetTexture(DWORD stage, D3DBaseTexture *texture)
 		device.textures[stage] = texture;
 }
 
+/* a registered MCC header no stage may keep once its registration goes: the
+next draw would ask the texture cache for an image that is gone (as
+d3d8_gl.c's; port/linux/src/mcc_texture_bridge.c) */
+void xgpu_mcc_texture_unbind(DWORD const *resource)
+{
+	unsigned long stage;
+
+	for (stage = 0; stage < D3DTSS_MAXSTAGES; stage++)
+		if ((DWORD const *)device.textures[stage] == resource)
+			device.textures[stage] = NULL;
+}
+
 void WINAPI D3DDevice_SetPalette(DWORD stage, D3DPalette *palette)
 {
 	if (stage < D3DTSS_MAXSTAGES)
@@ -3178,6 +3191,8 @@ static void pixel_key_make(struct nv2a_pixel_shader_key *key, float texture_scal
 	key->combiner_state[D3DRS_PSFINALCOMBINERCONSTANT0] = 0;
 	key->combiner_state[D3DRS_PSFINALCOMBINERCONSTANT1] = 0;
 	key->texture_modes = D3D__RenderState[D3DRS_PSTEXTUREMODES];
+	/* (MCC's environment lightmap pass: mcc_environment_shader.h) */
+	key->mcc_bump_attenuation = (unsigned char)mcc_environment_shader_active();
 	if (texture_clip[2] != 0.0f)
 		key->texture_modes |= NV2A_PIXEL_KEY_CLIP | ((unsigned long)texture_clip_stage << NV2A_PIXEL_KEY_CLIP_STAGE_SHIFT) |
 			(texture_clip_3d ? NV2A_PIXEL_KEY_CLIP_3D : 0) | (texture_clip_black ? NV2A_PIXEL_KEY_CLIP_BLACK : 0);
