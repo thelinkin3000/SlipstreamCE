@@ -24,7 +24,6 @@
 		<child widget="main_menu/multiplayer_type_select/host/hub/hint_host"/>
 		<child widget="main_menu/multiplayer_type_select/host/hub/hint_edit"/>
 		<child widget="main_menu/multiplayer_type_select/host/hub/hint_delete"/>
-		<child widget="main_menu/multiplayer_type_select/host/hub/hint_settings"/>
 		<child widget="main_menu/multiplayer_type_select/host/hub/hint_back"/>
 	</widget>
 	<widget name="main_menu/multiplayer_type_select/host/hub/title" type="text" controller="1" left="0" top="20" width="640" height="32" text="HOST SERVER" font="ui\large_ui" color="#2896ff" align="center" text_flags="no_focus_test">
@@ -37,15 +36,13 @@
 	</widget>
 	<widget name="main_menu/multiplayer_type_select/host/hub/preview_panel" controller="1" left="340" top="96" width="260" height="300" bitmap="main_menu/multiplayer_type_select/host/panel">
 	</widget>
-	<widget name="main_menu/multiplayer_type_select/host/hub/hint_host" type="text" controller="1" left="-171" top="418" width="137" height="24" text="%a-button =HOST" font="ui\small_ui" color="#FFFFFFFF" text_y="4" text_flags="no_focus_test">
+	<widget name="main_menu/multiplayer_type_select/host/hub/hint_host" type="text" controller="1" left="316" top="418" width="65" height="24" text="%a-button =HOST" font="ui\small_ui" color="#FFFFFFFF" text_y="4" text_flags="no_focus_test">
 	</widget>
-	<widget name="main_menu/multiplayer_type_select/host/hub/hint_edit" type="text" controller="1" left="-28" top="418" width="137" height="24" text="%x-button =EDIT" font="ui\small_ui" color="#FFFFFFFF" text_y="4" text_flags="no_focus_test">
+	<widget name="main_menu/multiplayer_type_select/host/hub/hint_edit" type="text" controller="1" left="387" top="418" width="65" height="24" text="%x-button =EDIT" font="ui\small_ui" color="#FFFFFFFF" text_y="4" text_flags="no_focus_test">
 	</widget>
-	<widget name="main_menu/multiplayer_type_select/host/hub/hint_delete" type="text" controller="1" left="115" top="418" width="151" height="24" text="%y-button =DELETE" font="ui\small_ui" color="#FFFFFFFF" text_y="4" text_flags="no_focus_test">
+	<widget name="main_menu/multiplayer_type_select/host/hub/hint_delete" type="text" controller="1" left="458" top="418" width="79" height="24" text="%y-button =DELETE" font="ui\small_ui" color="#FFFFFFFF" text_y="4" text_flags="no_focus_test">
 	</widget>
-	<widget name="main_menu/multiplayer_type_select/host/hub/hint_settings" type="text" controller="1" left="272" top="418" width="193" height="24" text="%start-button =SETTINGS" font="ui\small_ui" color="#FFFFFFFF" text_y="4" text_flags="no_focus_test">
-	</widget>
-	<widget name="main_menu/multiplayer_type_select/host/hub/hint_back" type="text" controller="1" left="471" top="418" width="137" height="24" text="%b-button =BACK" font="ui\small_ui" color="#FFFFFFFF" text_y="4" text_flags="no_focus_test">
+	<widget name="main_menu/multiplayer_type_select/host/hub/hint_back" type="text" controller="1" left="543" top="418" width="65" height="24" text="%b-button =BACK" font="ui\small_ui" color="#FFFFFFFF" text_y="4" text_flags="no_focus_test">
 	</widget>
 	<widget name="main_menu/multiplayer_type_select/host/playlist_list" type="column_list" width="640" height="480" flags="pass_unhandled_to_focused_child up_down_tabs_children" description="main_menu/multiplayer_type_select/host/playlist_details">
 		<data input="port host playlists update"/>
@@ -165,11 +162,11 @@
 	</widget>
 	<widget name="main_menu/multiplayer_type_select/host/builder/status" type="text" controller="1" left="40" top="400" width="560" height="18" font="ui\small_ui" color="#FFFFFFFF" align="center" text_flags="no_focus_test">
 	</widget>
-	<widget name="main_menu/multiplayer_type_select/host/builder/hint_save" type="text" controller="1" left="108" top="418" width="200" height="24" text="%x-button =SAVE PLAYLIST" font="ui\small_ui" color="#FFFFFFFF" text_y="4" text_flags="no_focus_test">
+	<widget name="main_menu/multiplayer_type_select/host/builder/hint_save" type="text" controller="1" left="324" top="418" width="128" height="24" text="%x-button =SAVE PLAYLIST" font="ui\small_ui" color="#FFFFFFFF" text_y="4" text_flags="no_focus_test">
 	</widget>
-	<widget name="main_menu/multiplayer_type_select/host/builder/hint_select" type="text" controller="1" left="314" top="418" width="151" height="24" text="%a-button =SELECT" font="ui\small_ui" color="#FFFFFFFF" text_y="4" text_flags="no_focus_test">
+	<widget name="main_menu/multiplayer_type_select/host/builder/hint_select" type="text" controller="1" left="458" top="418" width="79" height="24" text="%a-button =SELECT" font="ui\small_ui" color="#FFFFFFFF" text_y="4" text_flags="no_focus_test">
 	</widget>
-	<widget name="main_menu/multiplayer_type_select/host/builder/hint_back" type="text" controller="1" left="471" top="418" width="137" height="24" text="%b-button =BACK" font="ui\small_ui" color="#FFFFFFFF" text_y="4" text_flags="no_focus_test">
+	<widget name="main_menu/multiplayer_type_select/host/builder/hint_back" type="text" controller="1" left="543" top="418" width="65" height="24" text="%b-button =BACK" font="ui\small_ui" color="#FFFFFFFF" text_y="4" text_flags="no_focus_test">
 	</widget>
 	<widget name="main_menu/multiplayer_type_select/host/builder/map_list" type="column_list" width="640" height="480" flags="pass_unhandled_to_focused_child up_down_tabs_children">
 		<data input="port host maps update"/>
@@ -339,9 +336,9 @@
 	</widget>
 	<widget name="main_menu/multiplayer_type_select/host/gametype/types_panel" controller="1" left="190" top="96" width="260" height="300" bitmap="main_menu/multiplayer_type_select/host/panel">
 	</widget>
-	<widget name="main_menu/multiplayer_type_select/host/gametype/hint_select" type="text" controller="1" left="314" top="418" width="151" height="24" text="%a-button =SELECT" font="ui\small_ui" color="#FFFFFFFF" text_y="4" text_flags="no_focus_test">
+	<widget name="main_menu/multiplayer_type_select/host/gametype/hint_select" type="text" controller="1" left="458" top="418" width="79" height="24" text="%a-button =SELECT" font="ui\small_ui" color="#FFFFFFFF" text_y="4" text_flags="no_focus_test">
 	</widget>
-	<widget name="main_menu/multiplayer_type_select/host/gametype/hint_back" type="text" controller="1" left="471" top="418" width="137" height="24" text="%b-button =BACK" font="ui\small_ui" color="#FFFFFFFF" text_y="4" text_flags="no_focus_test">
+	<widget name="main_menu/multiplayer_type_select/host/gametype/hint_back" type="text" controller="1" left="543" top="418" width="65" height="24" text="%b-button =BACK" font="ui\small_ui" color="#FFFFFFFF" text_y="4" text_flags="no_focus_test">
 	</widget>
 	<widget name="main_menu/multiplayer_type_select/host/gametype/gametype_list" type="column_list" width="640" height="480" flags="pass_unhandled_to_focused_child up_down_tabs_children">
 		<data input="port host gametypes update"/>
@@ -424,21 +421,21 @@
 	</widget>
 	<widget name="main_menu/multiplayer_type_select/host/settings/header_settings" controller="1" left="35" top="11" width="605" height="59" bitmap="main_menu/multiplayer_type_select/server_settings/header_server_settings">
 	</widget>
-	<widget name="main_menu/multiplayer_type_select/host/settings/help" type="text" controller="1" left="68" top="360" width="482" height="60" string_list="main_menu/multiplayer_type_select/host/settings/help_strings" font="ui\large_ui" color="#FFFFFFFF">
+	<widget name="main_menu/multiplayer_type_select/host/settings/help" type="text" controller="1" left="68" top="330" width="482" height="60" string_list="main_menu/multiplayer_type_select/host/settings/help_strings" font="ui\large_ui" color="#FFFFFFFF">
 	</widget>
 	<widget name="main_menu/multiplayer_type_select/host/settings/options_menu" type="column_list" width="640" height="480" flags="pass_unhandled_to_focused_child up_down_tabs_children" description="main_menu/multiplayer_type_select/host/settings/help">
 		<data input="port host settings update"/>
 		<data input="port settings help"/>
 		<child widget="main_menu/multiplayer_type_select/host/settings/op_server_name" x="54" y="73"/>
-		<child widget="main_menu/multiplayer_type_select/host/settings/op_password" x="54" y="101"/>
-		<child widget="main_menu/multiplayer_type_select/host/settings/op_public" x="54" y="129"/>
-		<child widget="main_menu/multiplayer_type_select/host/settings/op_max_players" x="54" y="157"/>
-		<child widget="main_menu/multiplayer_type_select/host/settings/op_min_players" x="54" y="185"/>
-		<child widget="main_menu/multiplayer_type_select/host/settings/op_lobby_seconds" x="54" y="213"/>
-		<child widget="main_menu/multiplayer_type_select/host/settings/op_map_share" x="54" y="241"/>
-		<child widget="main_menu/multiplayer_type_select/host/settings/op_map_share_upload" x="54" y="269"/>
-		<child widget="main_menu/multiplayer_type_select/host/settings/op_votekick" x="54" y="297"/>
-		<child widget="main_menu/multiplayer_type_select/host/settings/op_motd" x="54" y="325"/>
+		<child widget="main_menu/multiplayer_type_select/host/settings/op_password" x="54" y="97"/>
+		<child widget="main_menu/multiplayer_type_select/host/settings/op_public" x="54" y="121"/>
+		<child widget="main_menu/multiplayer_type_select/host/settings/op_max_players" x="54" y="145"/>
+		<child widget="main_menu/multiplayer_type_select/host/settings/op_min_players" x="54" y="169"/>
+		<child widget="main_menu/multiplayer_type_select/host/settings/op_lobby_seconds" x="54" y="193"/>
+		<child widget="main_menu/multiplayer_type_select/host/settings/op_map_share" x="54" y="217"/>
+		<child widget="main_menu/multiplayer_type_select/host/settings/op_map_share_upload" x="54" y="241"/>
+		<child widget="main_menu/multiplayer_type_select/host/settings/op_votekick" x="54" y="265"/>
+		<child widget="main_menu/multiplayer_type_select/host/settings/op_motd" x="54" y="289"/>
 		<child widget="main_menu/multiplayer_type_select/host/settings/button_bar" y="414"/>
 	</widget>
 	<widget name="main_menu/multiplayer_type_select/host/settings/button_bar" type="column_list" width="640" height="28" flags="pass_unhandled_to_focused_child left_right_tabs_items">

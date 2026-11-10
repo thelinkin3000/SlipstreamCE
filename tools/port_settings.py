@@ -2907,7 +2907,9 @@ def _host_hints(base: str, hints: list) -> list:
     ending at the right column's right edge (left-aligned each, so that the
     picture stays beside its words)"""
     lines, children = [], []
-    widths = [24 + 7 * len(text) for _, text in hints]
+    # (its words' width, the small font's some 7 units a letter, past the
+    # picture's token and its space, which the picture's 20 units take)
+    widths = [22 + 7 * len(text.split(" ", 1)[1]) for _, text in hints]
     x = HOST_RIGHT_X + HOST_COLUMN_WIDTH - sum(widths) - 14 * (len(hints) - 1)
     for (key, text), width in zip(hints, widths):
         lines += _host_text(f"{base}/hint_{key}", x, 418, width + 8, 24, text, "small", HOST_WHITE, text_y=4)
@@ -2947,9 +2949,10 @@ def _host() -> list:
 
     # the Host Hub: the playlists on the left, the one chosen on the right
     hub = f"{HOST}/hub"
+    # (START opens the settings too, unnamed: the Switch has no picture of it;
+    # their pill names them)
     hints, hint_children = _host_hints(hub, [("host", "%a-button =HOST"), ("edit", "%x-button =EDIT"),
-                                             ("delete", "%y-button =DELETE"),
-                                             ("settings", "%start-button =SETTINGS"), ("back", "%b-button =BACK")])
+                                             ("delete", "%y-button =DELETE"), ("back", "%b-button =BACK")])
     lines += _widget(f"{HOST}/host_screen", [("width", 640), ("height", 480),
                                              ("flags", "pass_unhandled_to_focused_child"),
                                              ("bitmap", "bitmaps/gradient")],
@@ -3096,7 +3099,8 @@ def _host() -> list:
     # Server Settings, as a settings screen: spinners writing config.toml
     # at OK, the values typed at once
     base = f"{HOST}/settings"
-    spec = {"screen": "settings_screen", "spacing": 28, "help_top": 360,
+    # (ten rows, closer together, as Create Game's: the help above the buttons)
+    spec = {"screen": "settings_screen", "spacing": 24, "help_top": 330,
             "header": ("header_settings", f"{MT}/server_settings/header_server_settings")}
     rows, extra = [], []
     for index, (label, setting, choices, _, function, key) in enumerate(HOST_SETTINGS):

@@ -14,10 +14,11 @@ Multiplayer's HOST SERVER begins it from the main menu with a playlist's
 rotation (menu_functions.c's "port host" functions). It shows the server's state, the game being played (its map,
 gametype, round of the rotation, time and team scores) and the players
 (their scores and pings). Up and down choose a player, A opens what can be
-done to them (kick, ban for a day or for good, mute or unmute), Y kicks
-them at once, X ends the game and plays the rotation's next, START opens
-the notices the host can show every player, and B (twice) stops hosting
-and goes back to the main menu.
+done to them (kick, ban for a day or for good, mute or unmute), X ends the
+game and plays the rotation's next, Y (or START) opens the notices the
+host can show every player, and B (twice) stops hosting and goes back to
+the main menu. It is a menu, in a game too: the Switch's buttons are the
+menus' (xinput_sdl.c, hud_hires.c).
 */
 
 #include "cseries.h"
@@ -306,7 +307,7 @@ void host_dashboard_update(
 			host_set_status("no player chosen");
 		}
 	}
-	if (pressed & (1UL << HALO_OVERLAY_PAD_START))
+	if (pressed & ((1UL << HALO_OVERLAY_PAD_Y) | (1UL << HALO_OVERLAY_PAD_START)))
 	{
 		host.menu = _host_menu_notice;
 		host.menu_row = 0;
@@ -317,26 +318,6 @@ void host_dashboard_update(
 			host_run("sv_map_next", "next round");
 		else
 			host_set_status("no game to end");
-	}
-	if (pressed & (1UL << HALO_OVERLAY_PAD_Y))
-	{
-		char name[16];
-		char line[64];
-		long score, ping;
-
-		if (host.chosen_slot != NONE &&
-			server_status_player_row(host.chosen_slot, name, sizeof(name), &score, &ping))
-		{
-			char done[64];
-
-			snprintf(line, sizeof(line), "kick %ld", host.chosen_slot);
-			snprintf(done, sizeof(done), "%s kicked", name);
-			host_run(line, done);
-		}
-		else
-		{
-			host_set_status("no player chosen");
-		}
 	}
 	if (pressed & (1UL << HALO_OVERLAY_PAD_B))
 	{
@@ -659,9 +640,10 @@ void host_dashboard_draw(
 {
 	static pixel32 const BAND = HOST_COLOR(0x38, 0x28, 0x96, 0xFF);
 	static pixel32 const CHOSEN_BAND = HOST_COLOR(0x70, 0x28, 0x96, 0xFF);
-	static wchar_t const *const hints[] = { L"%a-button Player", L"%y-button Kick", L"%x-button Next Round",
-		L"%start-button Notices", L"%b-button Stop Hosting" };
-	static char const *const hint_words[] = { "Player", "Kick", "Next Round", "Notices", "Stop Hosting" };
+	/* (no START: the Switch has no picture of it) */
+	static wchar_t const *const hints[] = { L"%a-button Player", L"%y-button Notices", L"%x-button Next Round",
+		L"%b-button Stop Hosting" };
+	static char const *const hint_words[] = { "Player", "Notices", "Next Round", "Stop Hosting" };
 	real_argb_color white = get_ui_argb_white();
 	struct server_entry const *current;
 	struct server_rotation const *rotation;

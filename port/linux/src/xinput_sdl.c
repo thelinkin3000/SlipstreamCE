@@ -47,6 +47,7 @@ extern unsigned char network_aim_assist_block_mouse(void);
 #include "halo_ui_pointer.h"
 #include "halo_overlay_menu.h"
 #include "halo_host_dashboard.h"
+#include "server_mode.h" /* port: halo_server_hosting, the host's screen a menu */
 #if defined(HALO_SWITCH) || defined(HALO_PS5)
 #include "guest_host.h"
 #endif
@@ -1570,7 +1571,9 @@ static BOOL menu_buttons_swapped(BOOL menus)
 		read_at = config_changes();
 		swap = config_boolean("controls.nintendo_menu_buttons") != 0;
 	}
-	return (menus || game_engine_showing_postgame() || network_replay_playing()) && swap;
+	/* (and hosting from the menus: the host's screen is a menu, in a game too,
+	port/linux/game/host_dashboard.c) */
+	return (menus || game_engine_showing_postgame() || network_replay_playing() || halo_server_hosting()) && swap;
 #else
 	(void)menus;
 	return FALSE;

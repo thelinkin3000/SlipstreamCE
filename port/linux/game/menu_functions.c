@@ -11364,12 +11364,17 @@ static void host_list_update(struct widget_instance *list, short *first, short *
 	}
 }
 
+/* text as the menus' (a line break the game's \r\n) */
 static void host_wide(char const *text, wchar_t *wide, short length)
 {
-	short index;
+	short index = 0;
 
-	for (index = 0; text[index] && index < length - 1; index++)
-		wide[index] = (wchar_t)(unsigned char)text[index];
+	for (; *text && index < length - 2; text++)
+	{
+		if (*text == '\n')
+			wide[index++] = L'\r';
+		wide[index++] = (wchar_t)(unsigned char)*text;
+	}
 	wide[index] = 0;
 }
 

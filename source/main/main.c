@@ -3810,6 +3810,12 @@ static boolean main_loop_iteration(
 						render_frame = main_globals.main_menu_scenario_loaded ||
 							(main_globals.halt_time_scale && game_time_get()>0);
 					render_frame &= !game_engine_running() || game_time_get()>=3;
+					/* port: hosting from the menus, the host's screen every frame:
+					back in the lobby after a game, with nobody in it, the
+					game's clock stands still with its engine set up, which
+					drew nothing (port/linux/game/host_dashboard.c) */
+					if (halo_server_hosting())
+						render_frame = TRUE;
 					/* port: a replay's skip ahead: the frame it holds drawn, and its
 					held frames with its lines, though they run no tick or many
 					(port/linux/game/network_replay_playback.c) */
