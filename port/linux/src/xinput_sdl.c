@@ -46,6 +46,7 @@ extern unsigned char network_aim_assist_block_mouse(void);
 #include "halo_keyboard.h"
 #include "halo_ui_pointer.h"
 #include "halo_overlay_menu.h"
+#include "halo_host_dashboard.h"
 #if defined(HALO_SWITCH) || defined(HALO_PS5)
 #include "guest_host.h"
 #endif
@@ -398,6 +399,8 @@ static void overlay_pad_take(int port, XINPUT_GAMEPAD *pad, SDL_Gamepad *gamepad
 	if (pad->wButtons & XINPUT_GAMEPAD_DPAD_DOWN) buttons |= 1UL << HALO_OVERLAY_PAD_DPAD_DOWN;
 	if (pad->bAnalogButtons[XINPUT_GAMEPAD_A] >= PRESSED) buttons |= 1UL << HALO_OVERLAY_PAD_A;
 	if (pad->bAnalogButtons[XINPUT_GAMEPAD_B] >= PRESSED) buttons |= 1UL << HALO_OVERLAY_PAD_B;
+	if (pad->bAnalogButtons[XINPUT_GAMEPAD_X] >= PRESSED) buttons |= 1UL << HALO_OVERLAY_PAD_X;
+	if (pad->bAnalogButtons[XINPUT_GAMEPAD_Y] >= PRESSED) buttons |= 1UL << HALO_OVERLAY_PAD_Y;
 	if (pad->bAnalogButtons[XINPUT_GAMEPAD_WHITE] >= PRESSED) buttons |= 1UL << HALO_OVERLAY_PAD_LEFT_SHOULDER;
 	if (pad->bAnalogButtons[XINPUT_GAMEPAD_BLACK] >= PRESSED) buttons |= 1UL << HALO_OVERLAY_PAD_RIGHT_SHOULDER;
 	if (gamepad)
@@ -409,7 +412,8 @@ static void overlay_pad_take(int port, XINPUT_GAMEPAD *pad, SDL_Gamepad *gamepad
 		if (SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_DPAD_DOWN))
 			buttons |= 1UL << HALO_OVERLAY_PAD_DPAD_DOWN;
 	}
-	if (overlay_menu_take_pad((short)port, buttons))
+	/* (the overlay first, which opens over the host's screen too) */
+	if (overlay_menu_take_pad((short)port, buttons) || host_dashboard_take_pad((short)port, buttons))
 	{
 		overlay_held_buttons[port] = pad->wButtons;
 		overlay_held_analog[port] = 0;

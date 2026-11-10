@@ -1087,6 +1087,14 @@ void main_switch_structure_bsp(
 	return;
 }
 
+/* port: whether the main menu's map is the one loaded (hosting from the menus
+begins there: port/linux/game/host_dashboard.c) */
+boolean main_menu_scenario_is_loaded(
+	void)
+{
+	return main_globals.main_menu_scenario_loaded;
+}
+
 void main_goto_main_menu(
 	void)
 {
@@ -3238,7 +3246,7 @@ void halt_and_catch_fire(
 #endif
 	/* port: a dedicated server has no screen to halt on: its error logged,
 	it ends with exit code 1 (port/linux/game/server_director.c) */
-	if (halo_server_mode())
+	if (halo_server_headless())
 		server_fatal(error_get());
 	if (!global_screenshot_count.halt_recursion_lock)
 	{
@@ -3364,7 +3372,7 @@ void main_loop_of_death(
 	void)
 {
 	/* port: as halt_and_catch_fire, on a dedicated server */
-	if (halo_server_mode())
+	if (halo_server_headless())
 		server_fatal(error_get());
 	while (TRUE)
 	{
@@ -3668,6 +3676,9 @@ static boolean main_loop_iteration(
 		event_manager_update();
 		telnet_console_process();
 		overlay_menu_update();
+		/* port: the host's screen, hosting from the menus
+		(port/linux/game/host_dashboard.c) */
+		host_dashboard_update();
 		link_page_update();
 		/* port: the Theater's replay page (port/linux/game/network_replay_page.c) */
 		network_replay_page_update();
@@ -3735,7 +3746,7 @@ static boolean main_loop_iteration(
 
 			/* port: a dedicated server's frames paced by its clock, with no
 			display to wait for (port/linux/src/server_mode.c) */
-			if (halo_server_mode())
+			if (halo_server_headless())
 			{
 				server_mode_pace_frame();
 				profile_scope(main_update_time_section, main_update_time_unthrottled();)
@@ -3829,14 +3840,14 @@ static boolean main_loop_iteration(
 				}
 			}
 			/* port: nothing drawn on a dedicated server, nor waited for */
-			else if (!halo_server_mode())
+			else if (!halo_server_headless())
 			{
 				profile_render_start();
 				main_pregame_render();
 				profile_render_end();
 			}
 
-			if (!halo_server_mode())
+			if (!halo_server_headless())
 				profile_scope(main_throttle_section, main_rasterizer_throttle();)
 
 			if (render_frame && !debug_no_drawing)

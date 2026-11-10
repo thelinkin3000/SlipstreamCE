@@ -152,6 +152,13 @@ run is one; its start, before the game's (shell_xbox.c); its frames' pace
 (main.c); the game's fatal error ended with (main.c); and the console's
 output, which it logs and captures for its commands' replies (terminal.c) */
 int halo_server_mode(void);
+/* ... whether this run is a dedicated server process, with no window, sound
+or player (halo_server_mode is also the player's app hosting from its
+menus: server_mode.h) */
+int halo_server_headless(void);
+/* ... whether the player's app hosts from its menus (network_client_manager.c:
+no player of its own joins) */
+int halo_server_hosting(void);
 void server_mode_start(void);
 void server_mode_pace_frame(void);
 void server_fatal(char const *text);
@@ -174,6 +181,8 @@ float halo_stick_pitch_rate(short gamepad_index, float pitch_rate);
 /* the overlay menu (port/linux/game/overlay_menu.c): while it is open the
 menus' pointer is its own, and it is drawn over the screen (interface.c) */
 #include "halo_overlay_menu.h"
+/* (the host's screen, hosting from the menus: host_dashboard.c) */
+#include "halo_host_dashboard.h"
 /* TRUE when B steps out of a custom-map folder or the Map screen's
 difficulties and the screen stays (port/linux/game/menu_functions.c) */
 unsigned char menu_port_back(void *widget);

@@ -405,6 +405,9 @@ void interface_draw_fullscreen_overlays(
 	terminal_draw();
 	main_framerate_render();
 	render_debug_profile();
+	/* port: the host's screen, hosting from the menus, in place of the game
+	(port/linux/game/host_dashboard.c) */
+	host_dashboard_draw();
 	/* port: the overlay menu, over everything (port/linux/game/overlay_menu.c) */
 	overlay_menu_draw();
 

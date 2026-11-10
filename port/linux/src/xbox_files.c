@@ -133,7 +133,7 @@ const char *platform_data_root(void)
 #if !defined(HALO_ANDROID) && !defined(HALO_WEB)
 			/* (a dedicated server asks nobody: it says what is missing and
 			stops, server_mode.c) */
-			if (!has_maps(root) && executable_directory[0] && !halo_server_mode() &&
+			if (!has_maps(root) && executable_directory[0] && !halo_server_headless() &&
 				platform_offer_game_data(executable_directory) &&
 				has_maps(executable_directory))
 			{

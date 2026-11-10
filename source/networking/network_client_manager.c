@@ -1534,6 +1534,12 @@ boolean network_game_client_add_player(
 		0x530,
 		client && (local_player_index>=0) && (local_player_index<MAXIMUM_NUMBER_OF_LOCAL_PLAYERS));
 
+	/* port: hosting from the menus, the server has no player of its own:
+	the host's controller works its screen (port/linux/game/host_dashboard.c),
+	and the pregame screen's joins (its controllers signed in) are none */
+	if (halo_server_hosting())
+		return TRUE;
+
 	/* port: not until the host's settings name the game's map, and a game
 	in progress whose map is being downloaded not until it is (map sharing:
 	port/linux/game/map_share.c); asked again each frame */

@@ -551,7 +551,9 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
     # the deko3d renderer's take their place, below
     opengl_only = {"d3d8_gl.c", "xbox_textures.c", "xgpu_post.c"}
     for source in sorted((LINUX_DIR / "src").glob("*.c")):
-        if source.name.startswith("posix_") or source.name in guest_host_only or source.name in opengl_only:
+        # (posix_server.c is the guest's: the clock and files of hosting from the
+        # menus, over the guest's own C library; the other posix_ files are the host's)
+        if (source.name.startswith("posix_") and source.name != "posix_server.c") or source.name in guest_host_only or source.name in opengl_only:
             continue
         objects.append(guest_object(source, platform_cflags))
     for source in hud_assets_build(n, "switch", gen_dir / "hud_hires_assets.c"):

@@ -27,7 +27,7 @@ bad gametype never reaches the wire, where the clients play by it.
 #include <stdio.h>
 #include <string.h>
 
-#if HALO_SERVER_BUILD
+#if HALO_HOST_BUILD
 
 /* the built-in gametypes, by name, and what the lobby and the server
 browser call them (11 characters) */

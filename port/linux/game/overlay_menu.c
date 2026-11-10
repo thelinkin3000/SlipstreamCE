@@ -53,6 +53,7 @@ the data root (below, "the files' entries").
 #include "lighting_menu.h"
 
 #include "../src/posix.h"
+#include "../src/server_mode.h" /* port: HALO_HOST_BUILD */
 #include "../../third_party/tomlc17/tomlc17.h"
 
 #include <math.h>
@@ -444,6 +445,11 @@ static struct overlay_source overlay_lighting = OVERLAY_FOLDER_OF("Force Lightin
 
 static struct overlay_entry overlay_root_entries[] =
 {
+#if HALO_HOST_BUILD
+	/* (hosting from the menus, with no player of its own, the host's screen
+	in place of the game: a first version, port/linux/game/host_dashboard.c) */
+	OVERLAY_COMMAND("Host Server", "host_start"),
+#endif
 	OVERLAY_FOLDER("Cheats", overlay_cheats),
 	OVERLAY_FOLDER("Bots", overlay_bots),
 	OVERLAY_FOLDER("Game Speed", overlay_speed),
@@ -661,14 +667,24 @@ static void overlay_set_status(
 	overlay.status_until = system_milliseconds() + OVERLAY_STATUS_MILLISECONDS;
 }
 
-/* a command: "config <setting> <value>" sets and saves a setting, anything
-else is the console's; TRUE if it was done */
+static void overlay_set_open(boolean open);
+
+/* a command: "config <setting> <value>" sets and saves a setting,
+"host_start" begins hosting (and closes the overlay), anything else is the
+console's; TRUE if it was done */
 static boolean overlay_run(
 	char const *command,
 	char *error,
 	size_t error_size)
 {
 	error[0] = 0;
+	if (!strcmp(command, "host_start"))
+	{
+		if (!host_dashboard_start(error, error_size))
+			return FALSE;
+		overlay_set_open(FALSE);
+		return TRUE;
+	}
 	if (!strncmp(command, "config ", 7) || !strncmp(command, "lighting_force_off ", 19))
 	{
 		char name[128];

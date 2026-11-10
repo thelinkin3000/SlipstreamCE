@@ -37,7 +37,7 @@ owner, or with server.log_addresses; the invite only for admins.
 #include <stdlib.h>
 #include <string.h>
 
-#if HALO_SERVER_BUILD
+#if HALO_HOST_BUILD
 
 /* server_director.c's */
 long long server_director_joined_time(long slot);
@@ -165,6 +165,24 @@ boolean server_status_scores_changed(
 		changed = TRUE;
 	}
 	return changed;
+}
+
+boolean server_status_player_row(
+	long slot,
+	char *name,
+	long size,
+	long *score,
+	long *ping)
+{
+	struct network_game *game = server_game();
+	struct player_datum *datum;
+
+	if (!server_status_player_name(slot, name, size))
+		return FALSE;
+	datum = server_status_datum(slot);
+	*score = server_status_score(slot);
+	*ping = datum ? distributed_player_ping(game->players[slot].player_list_index) : NONE;
+	return TRUE;
 }
 
 void server_status_player(

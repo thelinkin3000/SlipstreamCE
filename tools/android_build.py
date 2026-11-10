@@ -603,7 +603,9 @@ def generate_guest_image(n: Writer, sln: Any, config: Dict[str, Any], *, arch: G
     gl_textures_object = None
     gl_post_object = None
     for source in sorted((LINUX_DIR / "src").glob("*.c")):
-        if source.name.startswith("posix_") or source.name in guest_host_only:
+        # (posix_server.c is the guest's: the clock and files of hosting from the
+        # menus, over the guest's own C library; the other posix_ files are the host's)
+        if (source.name.startswith("posix_") and source.name != "posix_server.c") or source.name in guest_host_only:
             continue
         if source.name in DYNAMIC_LIGHTING_PLATFORM_SOURCES:
             dynamic_lighting_objects.append(guest_object(source, platform_cflags))

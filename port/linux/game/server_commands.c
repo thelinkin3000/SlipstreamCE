@@ -46,7 +46,7 @@ password's command is never logged nor answered with the password.
 void platform_log(char const *format, ...);
 void platform_translate_path(char const *xbox_path, char *host_path, unsigned long host_path_size);
 
-#if HALO_SERVER_BUILD
+#if HALO_HOST_BUILD
 
 enum
 {
@@ -87,11 +87,13 @@ int server_commands_role(
 /* a line of the command's reply: whole into the capture its line is run
 with (server_console_output), whatever its length (sv_status --json's);
 else the console's, whose lines hold 254 characters, a piece at a time */
+typedef char server_say_text[SERVER_COMMAND_OUTPUT_SIZE];
+static server_say_text *say_text_heap;
+#define text SERVER_HEAP(server_say_text, say_text_heap)
 static void say(
 	char const *format,
 	...)
 {
-	static char text[SERVER_COMMAND_OUTPUT_SIZE];
 	va_list arguments;
 
 	va_start(arguments, format);
@@ -115,6 +117,7 @@ static void say(
 		while (at < length);
 	}
 }
+#undef text
 
 /* ---------- words */
 
@@ -361,7 +364,9 @@ static long find_player(
 
 /* ---------- bans.txt */
 
-static char ban_lines[MAXIMUM_BAN_LINES][BAN_LINE_SIZE];
+typedef char server_ban_lines[MAXIMUM_BAN_LINES][BAN_LINE_SIZE];
+static server_ban_lines *ban_lines_heap;
+#define ban_lines SERVER_HEAP(server_ban_lines, ban_lines_heap)
 
 /* bans.txt's lines (empty ones left out); how many, and whether that is
 all of it */
@@ -416,12 +421,14 @@ static boolean ban_field(
 
 /* bans.txt written again from the lines, but for the one left out (put in
 place whole) */
+typedef char server_bans_text[MAXIMUM_BAN_LINES * BAN_LINE_SIZE];
+static server_bans_text *bans_text_heap;
+#define text SERVER_HEAP(server_bans_text, bans_text_heap)
 static boolean write_bans(
 	long count,
 	long left_out)
 {
 	/* (the lines and their ends: as big as the lines read can be) */
-	static char text[MAXIMUM_BAN_LINES * BAN_LINE_SIZE];
 	char path[1024];
 	unsigned long size = 0;
 	long index;
@@ -442,6 +449,7 @@ static boolean write_bans(
 	}
 	return posix_server_write_file(path, text, size) != 0;
 }
+#undef text
 
 void server_commands_bans_json(
 	struct server_json *json)
@@ -1128,9 +1136,11 @@ static boolean command_version(char const *line, long count, char **words)
 	return TRUE;
 }
 
+typedef struct server_log_line server_log_lines[200];
+static server_log_lines *log_lines_heap;
+#define lines SERVER_HEAP(server_log_lines, log_lines_heap)
 static boolean command_log(char const *line, long count, char **words)
 {
-	static struct server_log_line lines[200];
 	long wanted = 20;
 	unsigned long latest = server_log_latest();
 	unsigned long next, missed;
@@ -1148,6 +1158,7 @@ static boolean command_log(char const *line, long count, char **words)
 		say("%s: %s", lines[index].category, lines[index].text);
 	return TRUE;
 }
+#undef lines
 
 static boolean command_masters(char const *line, long count, char **words)
 {
@@ -1836,9 +1847,10 @@ static boolean command_rotation_add(char const *line, long count, char **words)
 	return set;
 }
 
+static struct server_rotation *rotation_del_heap;
+#define rotation SERVER_HEAP(struct server_rotation, rotation_del_heap)
 static boolean command_rotation_del(char const *line, long count, char **words)
 {
-	static struct server_rotation rotation;
 	static char text[SERVER_ROTATION_MAXIMUM_TEXT + 1];
 	long index;
 
@@ -1859,6 +1871,7 @@ static boolean command_rotation_del(char const *line, long count, char **words)
 	}
 	return TRUE;
 }
+#undef rotation
 
 static boolean command_rotation_begin(char const *line, long count, char **words)
 {

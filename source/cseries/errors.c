@@ -243,7 +243,7 @@ static void debug_file_port_write(
 		if (!file)
 		{
 			/* (after the first time, write_to_debug_file prints them) */
-			if (halo_server_mode() && !halo_server_debug_echo() && !debug_file_port_unwritable)
+			if (halo_server_headless() && !halo_server_debug_echo() && !debug_file_port_unwritable)
 				fwrite(text, 1, (size_t)size, stderr);
 			debug_file_port_unwritable = TRUE;
 			return;
@@ -366,7 +366,7 @@ static void write_to_debug_file(
 	/* port: a dedicated server's debug.txt also on the standard error
 	(server.log_debug_echo), and there alone when the file cannot be written
 	(a read-only data root) */
-	if (halo_server_mode() && (halo_server_debug_echo() || debug_file_port_unwritable))
+	if (halo_server_headless() && (halo_server_debug_echo() || debug_file_port_unwritable))
 		fprintf(stderr, "debug: %s%s", string, string[0] && string[csstrlen(string) - 1] == '\n' ? "" : "\n");
 	urgent = debug_file_port_urgent || !strncmp(string, "EXCEPTION", 9);
 	if (!urgent)
