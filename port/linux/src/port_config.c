@@ -1067,9 +1067,18 @@ static const struct config_setting config_settings[] =
 		"Run as a dedicated server (as halo --server does): host games with no\n"
 		"window, sound or player of its own, one after another from\n"
 		"server.rotation (docs/dedicated_server.md)." },
+#if defined(HALO_ANDROID) || defined(HALO_PS5)
+	/* (hosting from the menus: no name until the host gives one, which
+	Server Settings asks for before the first game: menu_functions.c) */
+	{ "server.name", _config_string, "\"\"", "HALO_SERVER_NAME", _environment_value, _platform_server | _platform_host,
+		"The server's name in the lobby and the server browser: 15 characters\n"
+		"of printable ASCII. Empty until it is set: Multiplayer > Host Server >\n"
+		"Server Settings, which hosting asks for first." },
+#else
 	{ "server.name", _config_string, "\"OpenCE Server\"", "HALO_SERVER_NAME", _environment_value, _platform_server | _platform_host,
 		"The game's name in the lobby and the server browser: 15 characters of\n"
 		"printable ASCII." },
+#endif
 	{ "server.max_players", _config_integer, "16", "HALO_SERVER_MAX_PLAYERS", _environment_value, _platform_server | _platform_host,
 		"The most players (2 to 127)." },
 	{ "server.min_players", _config_integer, "1", "HALO_SERVER_MIN_PLAYERS", _environment_value, _platform_server | _platform_host,
@@ -3048,6 +3057,20 @@ the GPU) is the phone's own driver now, and the downloaded archive a driver
 of the list like any other (Video Setup) */
 static void config_retire_values(void)
 {
+#if defined(HALO_ANDROID) || defined(HALO_PS5)
+	/* (server.name's old default, which the builds that host from the menus
+	wrote before they had a name of their own to ask for: no name set,
+	which Server Settings asks for before the first game) */
+	{
+		long name = config_setting_index("server.name");
+
+		if (name >= 0 && config_values[name].string && !strcmp(config_values[name].string, "OpenCE Server"))
+		{
+			platform_log("settings: server.name \"OpenCE Server\" was the old default; \"\" (Server Settings sets it)");
+			config_write("server.name", "");
+		}
+	}
+#endif
 #if defined(HALO_ANDROID) && !defined(HALO_SWITCH) && !defined(HALO_PS5)
 	long index = config_setting_index("display.vk_driver");
 

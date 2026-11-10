@@ -11479,7 +11479,7 @@ static boolean host_choose(void)
 	host_playlist_rotation(&host_menu.playlists[host_menu.hub_chosen - 1], rotation, sizeof(rotation));
 	if (!host_dashboard_start(rotation, why, sizeof(why)))
 	{
-		snprintf(host_menu.status, sizeof(host_menu.status), "Cannot host it: %s", why);
+		snprintf(host_menu.status, sizeof(host_menu.status), "Cannot host it: %s.", why);
 		ui_play_audio_feedback_sound(SOUND_ERROR);
 		return FALSE;
 	}
@@ -11901,9 +11901,13 @@ static boolean host_back(void)
 }
 
 /* Server Settings' values typed, written as they are done */
+/* (the name trimmed of the spaces at its ends: spaces alone are no name) */
 static void host_server_name_done(char const *text)
 {
-	config_write("server.name", text);
+	char copy[HOST_SERVER_NAME_LENGTH + 1];
+
+	snprintf(copy, sizeof(copy), "%s", text);
+	config_write("server.name", host_trim(copy));
 }
 
 static void host_password_done(char const *text)
@@ -11945,7 +11949,8 @@ static void host_settings_update(struct widget_instance *list)
 	size_t index;
 
 	row = named(list, "op_server_name", 0);
-	text_field_show(named(list, "server_name_value", 0), config_string("server.name"), text_field_editing(row));
+	text_field_show(named(list, "server_name_value", 0), config_string("server.name")[0] ?
+		config_string("server.name") : "NOT SET", text_field_editing(row));
 	for (index = 0; password[index] && index < sizeof(text) - 1; index++)
 		text[index] = '*';
 	text[index] = 0;

@@ -2857,7 +2857,7 @@ def host_pictures() -> list:
 # Server Settings' rows: a label, the setting, its choices (shown, written),
 # and its help; None for a value typed (A: its keyboard, the function)
 HOST_SETTINGS = [
-    ("SERVER NAME:", "server.name", None, "The server's name in the lists of games (15\\ncharacters). Enter changes it.",
+    ("SERVER NAME:", "server.name", None, "The server's name in the lists of games (15\\ncharacters), needed to host. Enter sets it.",
      "port host edit server name", "server_name"),
     ("PASSWORD:", "server.password", None, "Players must type it to join; NONE for an open\\nserver. Enter sets it.",
      "port host edit server password", "password"),

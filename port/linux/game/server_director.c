@@ -2218,6 +2218,19 @@ boolean server_director_host_begin(
 
 	if (reason_size > 0)
 		reason[0] = 0;
+	/* (no name yet: Server Settings asks for it first, the menus' default
+	being none: port_config.c) */
+	{
+		char const *name = config_string("server.name");
+
+		while (*name == ' ')
+			name++;
+		if (!*name)
+		{
+			snprintf(reason, (size_t)reason_size, "the server has no name yet: set it in Server Settings (START)");
+			return FALSE;
+		}
+	}
 	/* (a playlist none of whose rounds can be played: its maps missing) */
 	server_read_rotation(&host_check, text);
 	if (!server_rotation_playable(&host_check))

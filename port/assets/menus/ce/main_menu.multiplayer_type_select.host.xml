@@ -574,7 +574,7 @@
 	</strings>
 	<strings name="main_menu/multiplayer_type_select/host/settings/help_strings">
 		<string text=""/>
-		<string text="The server's name in the lists of games (15\ncharacters). Enter changes it."/>
+		<string text="The server's name in the lists of games (15\ncharacters), needed to host. Enter sets it."/>
 		<string text="Players must type it to join; NONE for an open\nserver. Enter sets it."/>
 		<string text="PUBLIC: listed in everyone's server browser.\nPRIVATE: joined on the LAN or by its invite."/>
 		<string text="The most players the server takes."/>
