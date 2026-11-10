@@ -85,13 +85,36 @@ boolean onscreen_keyboard_pick_at(struct onscreen_keyboard *keyboard, short x, s
 
 /* the keyboard drawn with its keys in keys (the drawing's units: a menu's
 640x480, a game's window), in the font, its last key named done_label
-("DONE", "SEND") */
+("DONE", "SEND"); translucent, the game showing through its panel and keys */
 void onscreen_keyboard_draw(struct onscreen_keyboard *keyboard, rectangle2d const *keys, long font_index,
-	short line_height, char const *done_label);
+	short line_height, char const *done_label, boolean translucent);
 
 /* the text typed, in its box: its end where it is too long for it, a
 password's as stars, the caret blinking after it */
 void onscreen_keyboard_draw_field(rectangle2d const *box, long font_index, short line_height, char const *text,
-	boolean masked);
+	boolean masked, boolean translucent);
+
+/* what the keyboard's screen shows: its caption, the text typed (a
+password's as stars), its last key's name, whether the game shows through
+it, and the buttons under it (each a hint's text, its picture's token first,
+and its words alone, which its width is measured by) */
+struct onscreen_keyboard_screen
+{
+	char const *caption;
+	char const *text;
+	boolean masked;
+	char const *done_label;
+	boolean translucent;
+	wchar_t const *const *hints;
+	char const *const *hint_words;
+	short hint_count;
+};
+
+/* the keyboard's whole screen, the menus' text fields' and the text chat's
+alike, laid out in area as in the menus' 640x480 (area is that, scaled):
+the caption, the text's box, the keys and the buttons; in the menus' fonts
+(ui\large_ui, ui\small_ui), else fallback_font */
+void onscreen_keyboard_draw_screen(struct onscreen_keyboard *keyboard, rectangle2d const *area,
+	struct onscreen_keyboard_screen const *screen, long fallback_font);
 
 #endif

@@ -15,6 +15,7 @@ and the symbols' page lit while on.
 #include "rasterizer/rasterizer.h"
 #include "text/draw_string.h"
 #include "text/font_group.h"
+#include "tag_files/tag_groups.h"
 #include "halo_onscreen_keyboard.h"
 
 #include <math.h>
@@ -199,12 +200,14 @@ void onscreen_keyboard_draw(
 	rectangle2d const *keys,
 	long font_index,
 	short line_height,
-	char const *done_label)
+	char const *done_label,
+	boolean translucent)
 {
 	static pixel32 const BLUE = OSK_COLOR(0xFF, 0x28, 0x96, 0xFF);
-	static pixel32 const PANEL = OSK_COLOR(0xE8, 0x06, 0x14, 0x2A);
-	static pixel32 const KEY = OSK_COLOR(0xD8, 0x0A, 0x26, 0x49);
-	static pixel32 const WIDE_KEY = OSK_COLOR(0xD8, 0x10, 0x30, 0x58);
+	/* (translucent: the game seen through the panel, the keys a little less) */
+	pixel32 const PANEL = translucent ? OSK_COLOR(0x50, 0x06, 0x14, 0x2A) : OSK_COLOR(0xE8, 0x06, 0x14, 0x2A);
+	pixel32 const KEY = translucent ? OSK_COLOR(0x98, 0x0A, 0x26, 0x49) : OSK_COLOR(0xD8, 0x0A, 0x26, 0x49);
+	pixel32 const WIDE_KEY = translucent ? OSK_COLOR(0xA8, 0x10, 0x30, 0x58) : OSK_COLOR(0xD8, 0x10, 0x30, 0x58);
 	static pixel32 const KEY_OUTLINE = OSK_COLOR(0x70, 0x28, 0x96, 0xFF);
 	static pixel32 const PICKED = OSK_COLOR(0xF0, 0x1E, 0x64, 0xB4);
 	static pixel32 const PICKED_OUTLINE = OSK_COLOR(0xFF, 0xA8, 0xD8, 0xFF);
@@ -283,10 +286,11 @@ void onscreen_keyboard_draw_field(
 	long font_index,
 	short line_height,
 	char const *text,
-	boolean masked)
+	boolean masked,
+	boolean translucent)
 {
 	static pixel32 const BLUE = OSK_COLOR(0xFF, 0x28, 0x96, 0xFF);
-	static pixel32 const FIELD = OSK_COLOR(0xF0, 0x04, 0x0E, 0x1E);
+	pixel32 const FIELD = translucent ? OSK_COLOR(0xA0, 0x04, 0x0E, 0x1E) : OSK_COLOR(0xF0, 0x04, 0x0E, 0x1E);
 	real_argb_color white = get_ui_argb_white();
 	char shown[160];
 	wchar_t wide[160];
@@ -320,4 +324,116 @@ void onscreen_keyboard_draw_field(
 			break;
 	}
 	rasterizer_draw_string(&bounds, &bounds, NULL, 0, shown + first);
+}
+
+/* a font of the map's, else the fallback; its lines' height */
+static long onscreen_font(
+	char const *name,
+	long fallback,
+	short *line_height)
+{
+	long font_index = tag_loaded(FONT_GROUP_TAG, name);
+	struct font_header *font;
+
+	if (font_index == NONE)
+		font_index = fallback;
+	*line_height = 0;
+	if (font_index == NONE)
+		return NONE;
+	font = font_definition_get(font_index);
+	*line_height = (short)(font->ascending_height + font->descending_height + font->leading_height);
+	return font_index;
+}
+
+/* a place of the menus' 640x480 in area */
+static short onscreen_x(rectangle2d const *area, short x)
+{
+	return (short)(area->x0 + (long)x * (area->x1 - area->x0) / 640);
+}
+
+static short onscreen_y(rectangle2d const *area, short y)
+{
+	return (short)(area->y0 + (long)y * (area->y1 - area->y0) / 480);
+}
+
+void onscreen_keyboard_draw_screen(
+	struct onscreen_keyboard *keyboard,
+	rectangle2d const *area,
+	struct onscreen_keyboard_screen const *screen,
+	long fallback_font)
+{
+	static real_argb_color const blue = { 1.0f, 0x28 / 255.0f, 0x96 / 255.0f, 1.0f };
+	real_argb_color white = get_ui_argb_white();
+	short large_height, small_height;
+	long large_font = onscreen_font("ui\\large_ui", fallback_font, &large_height);
+	long small_font = onscreen_font("ui\\small_ui", large_font, &small_height);
+	rectangle2d bounds;
+
+	if (large_font == NONE || large_height <= 0 || area->x1 <= area->x0 || area->y1 <= area->y0)
+		return;
+	if (small_font == NONE || small_height <= 0)
+	{
+		small_font = large_font;
+		small_height = large_height;
+	}
+	/* the caption, above the text's box */
+	if (screen->caption)
+	{
+		bounds.x0 = area->x0;
+		bounds.x1 = area->x1;
+		bounds.y0 = onscreen_y(area, 58);
+		bounds.y1 = (short)(bounds.y0 + large_height);
+		draw_string_set_draw_mode(large_font, NONE, 2 /* centred */, 0, &blue);
+		rasterizer_draw_string(&bounds, &bounds, NULL, 0, screen->caption);
+	}
+	bounds.x0 = onscreen_x(area, 100);
+	bounds.x1 = onscreen_x(area, 540);
+	bounds.y0 = onscreen_y(area, 92);
+	bounds.y1 = onscreen_y(area, 128);
+	onscreen_keyboard_draw_field(&bounds, large_font, large_height, screen->text ? screen->text : "", screen->masked,
+		screen->translucent);
+	bounds.x0 = onscreen_x(area, 80);
+	bounds.x1 = onscreen_x(area, 560);
+	bounds.y0 = onscreen_y(area, 152);
+	bounds.y1 = onscreen_y(area, 382);
+	onscreen_keyboard_draw(keyboard, &bounds, large_font, large_height, screen->done_label, screen->translucent);
+	/* the buttons, centred under it, each its picture beside its words */
+	if (screen->hint_count > 0)
+	{
+		short widths[8];
+		short count = (short)MIN(screen->hint_count, (short)NUMBEROF(widths));
+		short total = 0;
+		short index;
+		short x;
+
+		for (index = 0; index < count; index++)
+		{
+			wchar_t wide[32];
+			rectangle2d measure_area, measured, cursor;
+			short length;
+
+			for (length = 0; screen->hint_words[index][length] && length < (short)NUMBEROF(wide) - 1; length++)
+				wide[length] = (wchar_t)(unsigned char)screen->hint_words[index][length];
+			wide[length] = 0;
+			measure_area.x0 = 0;
+			measure_area.y0 = 0;
+			measure_area.x1 = 0x3FFF;
+			measure_area.y1 = 0x3FFF;
+			draw_string_set_draw_mode(small_font, NONE, 0, 0, &white);
+			draw_unicode_string_compute_bounds(&measure_area, wide, &measured, &cursor);
+			widths[index] = (short)(small_height + 6 + MAX(measured.x1, cursor.x0));
+			total = (short)(total + widths[index] + (index ? 18 : 0));
+		}
+		x = (short)((area->x0 + area->x1 - total) / 2);
+		for (index = 0; index < count; index++)
+		{
+			bounds.x0 = x;
+			bounds.x1 = (short)(x + widths[index] + 12);
+			bounds.y0 = onscreen_y(area, 404);
+			bounds.y1 = (short)(bounds.y0 + small_height);
+			draw_string_set_draw_mode(small_font, NONE, 0, 0, &white);
+			draw_string_and_hack_in_icons(&bounds, NULL, NULL, 0, screen->hints[index], FALSE);
+			x = (short)(x + widths[index] + 18);
+		}
+	}
 }

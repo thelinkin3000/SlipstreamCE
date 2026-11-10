@@ -165,11 +165,6 @@ enum
 	CHAT_MAXIMUM_MUTES = MAXIMUM_TRACKED_PLAYERS,
 	/* (chat_name_match) a name more than one player's begins with */
 	CHAT_NAME_AMBIGUOUS = -2,
-	/* the on-screen keyboard's width, in hundredths of the window's: at the bottom right, clear
-	of the lines above the motion sensor; on Android at the bottom in the
-	middle, between the touch controls (the lines are at the top left) */
-	CHAT_KEYBOARD_WIDTH_PERCENT = 40,
-	CHAT_KEYBOARD_WIDTH_PERCENT_ANDROID = 36,
 };
 
 /* the lines' size, of the HUD font's: laid out at its size, then drawn scaled
@@ -2438,32 +2433,41 @@ static void chat_line_name(
 	name[length] = 0;
 }
 
-/* the on-screen keyboard (onscreen_keyboard.c), at the window's bottom
-right (with the touch controls in the middle, between them:
-chat_touch_layout), the key picked lit; the viewport it is drawn in kept,
-for taps */
+/* the on-screen keyboard's screen (onscreen_keyboard.c), as the menus' text
+fields have it, over the game, which shows through it: the channel the
+line goes to, the line in its box, the keys and the buttons, laid out as
+in the menus' 640x480, scaled to the window's height and centred in it; the
+viewport it is drawn in kept, for taps */
 static void chat_keyboard_draw(
 	long font_index,
 	rectangle2d const *window,
 	short line_height)
 {
-	short percent = chat_touch_layout() ? CHAT_KEYBOARD_WIDTH_PERCENT_ANDROID : CHAT_KEYBOARD_WIDTH_PERCENT;
+	static wchar_t const *const hints[] = { L"%a-button Type", L"%x-button Delete", L"%y-button Shift",
+		L"%dpad-up Channel", L"%b-button Cancel" };
+	static char const *const hint_words[] = { "Type", "Delete", "Shift", "Channel", "Cancel" };
 	short window_width = (short)(window->x1 - window->x0);
 	short window_height = (short)(window->y1 - window->y0);
-	short key_width = (short)(window_width * percent / 100 / ONSCREEN_KEYBOARD_COLUMNS);
-	short key_height = (short)MAX(key_width * 4 / 5, line_height + 8);
-	rectangle2d keys;
+	struct onscreen_keyboard_screen screen;
+	rectangle2d area;
 
-	if (window_width <= 0 || window_height <= 0 || key_width <= 4)
+	(void)line_height;
+	if (window_width <= 0 || window_height <= 0)
 		return;
-	if (chat_touch_layout())
-		keys.x0 = (short)((window->x0 + window->x1 - key_width * ONSCREEN_KEYBOARD_COLUMNS) / 2);
-	else
-		keys.x0 = (short)(window->x1 - window_width / 25 - key_width * ONSCREEN_KEYBOARD_COLUMNS);
-	keys.x1 = (short)(keys.x0 + key_width * ONSCREEN_KEYBOARD_COLUMNS);
-	keys.y1 = (short)(window->y1 - line_height);
-	keys.y0 = (short)(keys.y1 - key_height * ONSCREEN_KEYBOARD_ROWS);
-	onscreen_keyboard_draw(&chat_keyboard.keys, &keys, font_index, line_height, "SEND");
+	area.y0 = window->y0;
+	area.y1 = window->y1;
+	area.x0 = (short)((window->x0 + window->x1) / 2 - (long)window_height * 640 / 480 / 2);
+	area.x1 = (short)(area.x0 + (long)window_height * 640 / 480);
+	screen.caption = chat_input.channel == _chat_channel_team ? "SAY TO YOUR TEAM" :
+		chat_input.channel == _chat_channel_vehicle ? "SAY TO YOUR VEHICLE" : "SAY TO EVERYONE";
+	screen.text = chat_input.text;
+	screen.masked = FALSE;
+	screen.done_label = "SEND";
+	screen.translucent = TRUE;
+	screen.hints = hints;
+	screen.hint_words = hint_words;
+	screen.hint_count = (short)NUMBEROF(hints);
+	onscreen_keyboard_draw_screen(&chat_keyboard.keys, &area, &screen, font_index);
 	/* (the keys are drawn from the viewport's top left, which fills the
 	screen as a tap's place is of it: the window inside it can be smaller,
 	as on Android) */
@@ -2589,11 +2593,16 @@ void network_chat_draw(
 		layout.rows = 1;
 		layout.starts[0] = start;
 		layout.lengths[0] = (short)(length + 1 - start);
-		chat_draw_layout(font_index, &layout, left, right, touch ? edge : (short)(edge - line_height), line_height,
-			prompt, &color, text, &text_color, 1.0f);
+		/* (the line typed on the on-screen keyboard is in its box, not
+		among the lines: chat_keyboard_draw) */
+		if (!chat_keyboard.open)
+		{
+			chat_draw_layout(font_index, &layout, left, right, touch ? edge : (short)(edge - line_height),
+				line_height, prompt, &color, text, &text_color, 1.0f);
+			edge = (short)(edge + (touch ? line_height : -line_height));
+			rows--;
+		}
 		text_filter_resume();
-		edge = (short)(edge + (touch ? line_height : -line_height));
-		rows--;
 		if (chat_keyboard.open)
 		{
 			/* (the on-screen keyboard at its own size) */

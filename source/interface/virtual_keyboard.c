@@ -612,28 +612,15 @@ the controller's buttons under them */
 static void virtual_keyboard_free_render(
 	void)
 {
-	static real_argb_color const blue = { 1.0f, 0x28 / 255.0f, 0x96 / 255.0f, 1.0f };
 	static wchar_t const *const hints[] = { L"%a-button Type", L"%x-button Delete", L"%y-button Shift",
 		L"%b-button Cancel" };
 	static char const *const hint_words[] = { "Type", "Delete", "Shift", "Cancel" };
-	real_argb_color white = get_ui_argb_white();
-	long large_font = tag_loaded(FONT_GROUP_TAG, "ui\\large_ui");
-	long small_font = tag_loaded(FONT_GROUP_TAG, "ui\\small_ui");
-	short large_height, small_height;
+	struct onscreen_keyboard_screen screen;
+	char caption[MAXIMUM_VIRTUAL_KEYBOARD_FREE_CAPTION_LENGTH];
 	rectangle2d bounds;
+	short index;
 	short y;
 
-	if (large_font == NONE)
-		large_font = virtual_keyboard_globals.keyboard->font_tag.index;
-	if (small_font == NONE)
-		small_font = large_font;
-	{
-		struct font_header *font = font_definition_get(large_font);
-
-		large_height = (short)(font->ascending_height + font->descending_height + font->leading_height);
-		font = font_definition_get(small_font);
-		small_height = (short)(font->ascending_height + font->descending_height + font->leading_height);
-	}
 	/* (the menus under it, dimmed: their gradient's blue down to its dark) */
 	for (y = 0; y < 480; y = (short)(y + 8))
 	{
@@ -646,62 +633,25 @@ static void virtual_keyboard_free_render(
 		draw_quad(&bounds, (pixel32)(((unsigned long)0xE0 << 24) | ((unsigned long)(0x0A - 0x07 * t / 255) << 16) |
 			((unsigned long)(0x26 - 0x1E * t / 255) << 8) | (unsigned long)(0x49 - 0x35 * t / 255)));
 	}
+	for (index = 0; virtual_keyboard_free_text.caption[index] && index < (short)sizeof(caption) - 1; index++)
+		caption[index] = (char)virtual_keyboard_free_text.caption[index];
+	caption[index] = 0;
+	screen.caption = caption;
+	screen.text = virtual_keyboard_free_text.text;
+	screen.masked = virtual_keyboard_free_text.masked;
+	screen.done_label = "DONE";
+	screen.translucent = FALSE;
+	screen.hints = hints;
+	screen.hint_words = hint_words;
+	screen.hint_count = (short)NUMBEROF(hints);
 	bounds.x0 = 0;
+	bounds.y0 = 0;
 	bounds.x1 = 640;
-	bounds.y0 = 58;
-	bounds.y1 = (short)(58 + large_height);
-	draw_string_set_draw_mode(large_font, NONE, 2, 0, &blue);
-	rasterizer_draw_unicode_string(&bounds, &bounds, NULL, 0, virtual_keyboard_free_text.caption);
-	bounds.x0 = 100;
-	bounds.x1 = 540;
-	bounds.y0 = 92;
-	bounds.y1 = 128;
+	bounds.y1 = 480;
 	text_filter_suspend();
-	onscreen_keyboard_draw_field(&bounds, large_font, large_height, virtual_keyboard_free_text.text,
-		virtual_keyboard_free_text.masked);
+	onscreen_keyboard_draw_screen(&virtual_keyboard_free_text.keys, &bounds, &screen,
+		virtual_keyboard_globals.keyboard->font_tag.index);
 	text_filter_resume();
-	bounds.x0 = 80;
-	bounds.x1 = 560;
-	bounds.y0 = 152;
-	bounds.y1 = 382;
-	onscreen_keyboard_draw(&virtual_keyboard_free_text.keys, &bounds, large_font, large_height, "DONE");
-	/* (the buttons, centred under it, each its picture beside its word) */
-	{
-		short widths[NUMBEROF(hints)];
-		short total = 0;
-		short index;
-		short x;
-
-		for (index = 0; index < (short)NUMBEROF(hints); index++)
-		{
-			wchar_t wide[32];
-			rectangle2d area, measured, cursor;
-			short length;
-
-			for (length = 0; hint_words[index][length] && length < (short)NUMBEROF(wide) - 1; length++)
-				wide[length] = (wchar_t)(unsigned char)hint_words[index][length];
-			wide[length] = 0;
-			area.x0 = 0;
-			area.y0 = 0;
-			area.x1 = 0x3FFF;
-			area.y1 = 480;
-			draw_string_set_draw_mode(small_font, NONE, 0, 0, &white);
-			draw_unicode_string_compute_bounds(&area, wide, &measured, &cursor);
-			widths[index] = (short)(small_height + 6 + MAX(measured.x1, cursor.x0));
-			total = (short)(total + widths[index] + (index ? 18 : 0));
-		}
-		x = (short)((640 - total) / 2);
-		for (index = 0; index < (short)NUMBEROF(hints); index++)
-		{
-			bounds.x0 = x;
-			bounds.x1 = (short)(x + widths[index] + 12);
-			bounds.y0 = 404;
-			bounds.y1 = (short)(404 + small_height);
-			draw_string_set_draw_mode(small_font, NONE, 0, 0, &white);
-			draw_string_and_hack_in_icons(&bounds, NULL, NULL, 0, hints[index], FALSE);
-			x = (short)(x + widths[index] + 18);
-		}
-	}
 }
 
 boolean virtual_keyboard_active(
