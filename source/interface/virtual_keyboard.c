@@ -111,6 +111,10 @@ enum
 	VIRTUAL_KEYBOARD_TAB_REPEAT_MILLISECONDS = 250,
 	FIRST_VIRTUAL_KEYBOARD_FORTUNE_STRING_INDEX = 11,
 	NUMBER_OF_VIRTUAL_KEYBOARD_FORTUNES = 10,
+	/* port: a free text's (virtual_keyboard_launch_text): 63 characters, and
+	its caption's */
+	MAXIMUM_VIRTUAL_KEYBOARD_FREE_BUFFER_SIZE = 0x80,
+	MAXIMUM_VIRTUAL_KEYBOARD_FREE_CAPTION_LENGTH = 64,
 };
 
 enum virtual_key_code
@@ -348,6 +352,22 @@ static rectangle2d keyboard_rect[NUMBER_OF_VIRTUAL_KEYS] =
 
 static struct virtual_keyboard_globals virtual_keyboard_globals= {0};
 
+/* port: the keyboard typing a free text (virtual_keyboard_launch_text): a
+menu's text field, not a profile's name. Its Done keeps whatever is typed
+(no profile's rules: a name of its own, not empty), its caption is its own,
+its text may be longer (MAXIMUM_VIRTUAL_KEYBOARD_FREE_BUFFER_SIZE) in a
+wider box, and a password's shows as stars. Kept beside the globals, whose
+size is the Xbox's */
+static struct
+{
+	boolean active;
+	boolean masked;
+	wchar_t caption[MAXIMUM_VIRTUAL_KEYBOARD_FREE_CAPTION_LENGTH];
+} virtual_keyboard_free_text;
+
+/* port: the text as it is drawn (a password's stars) */
+static wchar_t virtual_keyboard_shown_text[MAXIMUM_VIRTUAL_KEYBOARD_FREE_BUFFER_SIZE / sizeof(wchar_t)];
+
 /* port: the computer's keyboard types into the keyboard while it is up
 (port/linux/src/xinput_sdl.c), set as it opens and closes: it is processed
 only while it is up, so its processing cannot end the typing */
@@ -357,6 +377,8 @@ static void virtual_keyboard_set_active(boolean active)
 
 	virtual_keyboard_globals.active = active;
 	platform_text_typing(active);
+	if (!active)
+		virtual_keyboard_free_text.active = FALSE;
 }
 
 /* ---------- public code */
@@ -476,6 +498,30 @@ boolean virtual_keyboard_launch(
 	}
 
 	return result;
+}
+
+/* (virtual_keyboard.h) */
+boolean virtual_keyboard_launch_text(
+	wchar_t *text_buffer,
+	word buffer_size,
+	char const *caption,
+	boolean masked)
+{
+	short index;
+
+	if (!virtual_keyboard_launch(text_buffer, (word)MIN(buffer_size, MAXIMUM_VIRTUAL_KEYBOARD_BUFFER_SIZE),
+		FIRST_VIRTUAL_KEYBOARD_CAPTION_STRING_INDEX))
+	{
+		return FALSE;
+	}
+	virtual_keyboard_free_text.active = TRUE;
+	virtual_keyboard_free_text.masked = masked;
+	for (index = 0; caption && caption[index] && index < MAXIMUM_VIRTUAL_KEYBOARD_FREE_CAPTION_LENGTH - 1; index++)
+		virtual_keyboard_free_text.caption[index] = (wchar_t)(unsigned char)caption[index];
+	virtual_keyboard_free_text.caption[index] = 0;
+	/* (its whole length: past a name's) */
+	virtual_keyboard_globals.buffer_size = (word)MIN(buffer_size & ~1, MAXIMUM_VIRTUAL_KEYBOARD_FREE_BUFFER_SIZE);
+	return TRUE;
 }
 
 boolean virtual_keyboard_active(
@@ -685,6 +731,10 @@ static void virtual_keyboard_render_internal(
 			virtual_keyboard_globals.keyboard->special_key_labels_string_list_tag.index,
 			virtual_keyboard_globals.caption_index);
 
+		/* port: a free text's own caption */
+		if (virtual_keyboard_free_text.active && virtual_keyboard_free_text.caption[0])
+			caption = virtual_keyboard_free_text.caption;
+
 		bounds.y0 = 78;
 		bounds.x0 = 114;
 		bounds.y1 = 110;
@@ -696,6 +746,24 @@ static void virtual_keyboard_render_internal(
 	(port/linux/game/text_filter.c) */
 	text_filter_suspend();
 	draw_string_set_draw_mode(virtual_keyboard_globals.keyboard->font_tag.index, NONE, 2, 0, &text_color);
+	/* port: a password's text as stars (a free text's, masked) */
+	if (virtual_keyboard_free_text.active && virtual_keyboard_free_text.masked)
+	{
+		short index;
+
+		for (index = 0; virtual_keyboard_globals.text_buffer[index] &&
+			index < (short)NUMBEROF(virtual_keyboard_shown_text) - 1; index++)
+		{
+			virtual_keyboard_shown_text[index] = L'*';
+		}
+		virtual_keyboard_shown_text[index] = 0;
+	}
+	else
+	{
+		ustrncpy(virtual_keyboard_shown_text, virtual_keyboard_globals.text_buffer,
+			NUMBEROF(virtual_keyboard_shown_text) - 1);
+		virtual_keyboard_shown_text[NUMBEROF(virtual_keyboard_shown_text) - 1] = 0;
+	}
 	{
 		rectangle2d bounds;
 
@@ -703,6 +771,12 @@ static void virtual_keyboard_render_internal(
 		bounds.x0 = 220;
 		bounds.y1 = 143;
 		bounds.x1 = 420;
+		/* port: a free text's box twice as wide, about the same middle */
+		if (virtual_keyboard_free_text.active)
+		{
+			bounds.x0 = 120;
+			bounds.x1 = 520;
+		}
 		if (virtual_keyboard_globals.first_key_replaces_buffer == TRUE)
 		{
 			struct bitmap_data *bitmap = bitmap_group_get_bitmap_from_sequence(virtual_keyboard_globals.caret_bitmap_index, 0, 0);
@@ -712,13 +786,13 @@ static void virtual_keyboard_render_internal(
 				rectangle2d text_bounds;
 				rectangle2d cursor_bounds;
 
-				draw_unicode_string_compute_bounds(&bounds, virtual_keyboard_globals.text_buffer, &text_bounds, &cursor_bounds);
+				draw_unicode_string_compute_bounds(&bounds, virtual_keyboard_shown_text, &text_bounds, &cursor_bounds);
 				text_bounds.x0 -= 2;
 				text_bounds.x1 += 2;
 				draw_bitmap_in_rect(bitmap, &text_bounds, &bounds, NULL, 0x7f7f7f7f, NULL, FALSE);
 			}
 		}
-		rasterizer_draw_unicode_string(&bounds, &bounds, NULL, 0, virtual_keyboard_globals.text_buffer);
+		rasterizer_draw_unicode_string(&bounds, &bounds, NULL, 0, virtual_keyboard_shown_text);
 	}
 	text_filter_resume(); /* port */
 
@@ -726,7 +800,9 @@ static void virtual_keyboard_render_internal(
 		virtual_keyboard_globals.caret_bitmap_index != NONE &&
 		(system_milliseconds() / 1000) & 1)
 	{
-		wchar_t *character = virtual_keyboard_globals.text_buffer;
+		/* port: the text as shown (a password's stars) */
+		wchar_t *character = virtual_keyboard_shown_text;
+		long cursor_index = virtual_keyboard_globals.cursor - virtual_keyboard_globals.text_buffer;
 		short height = keyboard_font_header->descending_height + keyboard_font_header->ascending_height;
 		short cursor_offset = 0;
 		short width = 0;
@@ -742,7 +818,7 @@ static void virtual_keyboard_render_internal(
 
 				if (!font_character)
 					break;
-				if (character < virtual_keyboard_globals.cursor)
+				if (character - virtual_keyboard_shown_text < cursor_index)
 					cursor_offset += font_character->character_width;
 				width += font_character->character_width;
 				character++;
@@ -989,6 +1065,16 @@ static boolean virtual_keyboard_select(
 	switch (keycode)
 	{
 	case _vkey_done:
+		/* port: a free text's Done keeps what is typed, as it is (its menu
+		checks it: virtual_keyboard_launch_text) */
+		if (virtual_keyboard_free_text.active)
+		{
+			virtual_keyboard_globals.last_exit_saved_text = TRUE;
+			ui_play_audio_feedback_sound(_ui_audio_feedback_back);
+			virtual_keyboard_set_active(FALSE);
+			event_manager_flush();
+			break;
+		}
 		/* port: a name kept to one the host's ban command can name: its
 		spaces before and after dropped, and one without a character it can
 		type (player_name_clean) empty, which is refused below */

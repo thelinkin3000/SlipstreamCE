@@ -78,6 +78,7 @@ their handlers open opens.
 #include "interface/event_manager.h"
 #include "interface/player_ui.h"
 #include "interface/ui_widget.h"
+#include "interface/virtual_keyboard.h" /* port: the text fields' keyboard */
 #include "bitmaps/bitmap_group.h"
 #include "bitmaps/bitmaps.h"
 #include "rasterizer/xbox/rasterizer_xbox_hardware_bitmaps.h"
@@ -4800,6 +4801,78 @@ static struct
 of: its screen has gone) */
 static unsigned long text_field_shown_time;
 
+/* ---- the field typed on the game's own keyboard (virtual_keyboard.c), on
+the consoles and Android: the controller's d-pad and A, or a tap on a key,
+type into it (a computer's keyboard too), Done keeps the text, B leaves the
+field as it was. A field longer than the keyboard takes (a link) is typed
+as before */
+#if defined(HALO_ANDROID) || defined(HALO_PS5)
+#define TEXT_FIELD_KEYBOARD 1
+#endif
+enum { TEXT_FIELD_KEYBOARD_LENGTH = 63 };
+
+static struct
+{
+	boolean open;
+	wchar_t text[TEXT_FIELD_KEYBOARD_LENGTH + 1];
+} text_field_keyboard;
+
+/* the keyboard's caption for the field: what its row sets */
+static char const *text_field_keyboard_caption(struct widget_instance const *row)
+{
+	static struct { char const *row; char const *caption; } const captions[] =
+	{
+		{ "op_server_name", "ENTER THE SERVER'S NAME" },
+		{ "op_password", "ENTER THE PASSWORD" },
+		{ "op_motd", "ENTER THE MESSAGE OF THE DAY" },
+		{ "op_name", "ENTER THE PLAYLIST'S NAME" },
+	};
+	size_t index;
+
+	for (index = 0; row && row->name && index < NUMBEROF(captions); index++)
+	{
+		if (!strcmp(row->name, captions[index].row))
+			return captions[index].caption;
+	}
+	return "ENTER THE TEXT";
+}
+
+static void text_field_end(boolean keep);
+
+/* the keyboard closed: the field ended with what Done kept (as A on its row
+ends it), or as it was (B); TRUE while it is still open */
+static boolean text_field_keyboard_poll(void)
+{
+	short index;
+
+	if (!text_field_keyboard.open)
+		return FALSE;
+	if (virtual_keyboard_active())
+	{
+		text_field_shown_time = system_milliseconds();
+		return TRUE;
+	}
+	text_field_keyboard.open = FALSE;
+	if (!text_field.row)
+		return FALSE;
+	if (!virtual_keyboard_last_exit_saved_text())
+	{
+		text_field_end(FALSE);
+		return FALSE;
+	}
+	/* (as the field takes it: printable ASCII, up to its length) */
+	for (index = 0; text_field_keyboard.text[index] && index < text_field.maximum &&
+		index < (short)sizeof(text_field.text) - 1; index++)
+	{
+		wchar_t character = text_field_keyboard.text[index];
+
+		text_field.text[index] = character >= L' ' && character <= L'~' ? (char)character : '?';
+	}
+	text_field.text[index] = 0;
+	text_field_end(TRUE);
+	return FALSE;
+}
+
 static boolean text_field_editing(struct widget_instance *row)
 {
 	return text_field.row && (!row || text_field.row == row);
@@ -4819,6 +4892,25 @@ static void text_field_open(struct widget_instance *row, char const *text, short
 	text_field_shown_time = system_milliseconds();
 	while (input_get_key(&key))
 		;
+#ifdef TEXT_FIELD_KEYBOARD
+	/* (the game's own keyboard, which the controller and the touchscreen
+	type on, where the field fits it) */
+	if (text_field.maximum <= TEXT_FIELD_KEYBOARD_LENGTH)
+	{
+		short index;
+
+		for (index = 0; text[index] && index < TEXT_FIELD_KEYBOARD_LENGTH; index++)
+			text_field_keyboard.text[index] = (wchar_t)(unsigned char)text[index];
+		text_field_keyboard.text[index] = 0;
+		if (virtual_keyboard_launch_text(text_field_keyboard.text,
+			(word)((text_field.maximum + 1) * sizeof(wchar_t)), text_field_keyboard_caption(row), masked))
+		{
+			text_field_keyboard.open = TRUE;
+			return;
+		}
+		platform_log("menus: the keyboard did not open; the field is typed as before");
+	}
+#endif
 	platform_text_field(TRUE, masked);
 }
 
@@ -4838,6 +4930,14 @@ static void text_field_begin_masked(struct widget_instance *row, char const *tex
 static void text_field_end(boolean keep)
 {
 	void (*done)(char const *text) = text_field.done;
+
+	/* (its keyboard closed with it, if it is up) */
+	if (text_field_keyboard.open)
+	{
+		text_field_keyboard.open = FALSE;
+		if (virtual_keyboard_active())
+			virtual_keyboard_close();
+	}
 
 	platform_text_field(FALSE, FALSE);
 	text_field.row = NULL;
@@ -11033,7 +11133,8 @@ enum
 	(15), its password, its message of the day */
 	HOST_SERVER_NAME_LENGTH = 15,
 	HOST_PASSWORD_LENGTH = 32,
-	HOST_MOTD_LENGTH = 100,
+	/* (as long as the game's keyboard types: text_field_keyboard) */
+	HOST_MOTD_LENGTH = 63,
 };
 
 struct host_playlist
@@ -12603,6 +12704,9 @@ void pc_menu_game_data_function_invoke(
 
 	if (!name)
 		return;
+	/* (a field typed on the keyboard: what it kept, once it has closed,
+	before the menus, which stood still under it, let go of the field) */
+	text_field_keyboard_poll();
 	/* (a text field whose screen has gone: let go of) */
 	if (text_field.row && system_milliseconds() - text_field_shown_time > 500)
 		text_field_end(FALSE);
