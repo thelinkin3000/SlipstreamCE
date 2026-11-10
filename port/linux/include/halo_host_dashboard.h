@@ -13,10 +13,12 @@ server's controls.
 
 #include <stddef.h>
 
-/* hosting begun (the overlay menu's "Host Server"): FALSE with why in error
-if it cannot be now (a network game being played, a map other than the
-main menu's) */
-int host_dashboard_start(char *error, size_t error_size);
+/* hosting begun (Multiplayer's HOST SERVER, a playlist's A) with the
+rotation (map:gametype entries separated by commas; NULL for
+server.rotation's): FALSE with why in error if it cannot be now (a network
+game being played, a map other than the main menu's, no round of it that
+can be played) */
+int host_dashboard_start(char const *rotation, char *error, size_t error_size);
 
 /* a controller's buttons at this read (halo_overlay_menu.h's bits): nonzero
 while the app hosts, when the game gets none of the controller */

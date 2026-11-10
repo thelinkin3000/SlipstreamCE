@@ -10,13 +10,14 @@ player, the game draws no view of its world (main.c's main_game_render:
 its window is a non-player's), and this is drawn over everything else, the
 lobby's screens and the menus too, which get none of the controllers.
 
-A first version, for trying hosting on a device: the overlay menu's
-"Host Server" begins it from the main menu, with the rotation server.rotation
-says. It shows the server's state, the game being played (its map,
+Multiplayer's HOST SERVER begins it from the main menu with a playlist's
+rotation (menu_functions.c's "port host" functions). It shows the server's state, the game being played (its map,
 gametype, round of the rotation, time and team scores) and the players
-(their scores and pings). Up and down choose a player, Y kicks the chosen
-one, X ends the game and plays the rotation's next, and B (twice) stops
-hosting and goes back to the main menu.
+(their scores and pings). Up and down choose a player, A opens what can be
+done to them (kick, ban for a day or for good, mute or unmute), Y kicks
+them at once, X ends the game and plays the rotation's next, START opens
+the notices the host can show every player, and B (twice) stops hosting
+and goes back to the main menu.
 */
 
 #include "cseries.h"
@@ -68,6 +69,38 @@ enum
 	_host_text_left = 0,
 	_host_text_right = 1,
 	_host_text_centre = 2,
+	/* a menu over the screen: none, a player's, or the notices */
+	_host_menu_none = 0,
+	_host_menu_player,
+	_host_menu_notice,
+	HOST_MENU_MAXIMUM_ROWS = 8,
+};
+
+/* a player's menu's rows: their label, and the command run on the player's
+slot (%ld) */
+static struct
+{
+	char const *label;
+	char const *command;
+	char const *done;
+} const host_player_actions[] =
+{
+	{ "KICK", "kick %ld", "kicked" },
+	{ "BAN FOR A DAY", "ban %ld 1d", "banned for a day" },
+	{ "BAN", "ban %ld", "banned" },
+	{ "MUTE", "mute %ld", "muted" },
+	{ "UNMUTE", "unmute %ld", "unmuted" },
+	{ "CANCEL", NULL, NULL },
+};
+
+/* the notices (say) */
+static char const *const host_notices[] =
+{
+	"Welcome to the server!",
+	"The next round starts soon.",
+	"The server restarts after this round.",
+	"Play fair, and have fun.",
+	"The server is closing soon.",
 };
 
 static struct
@@ -84,7 +117,46 @@ static struct
 	char status[96];
 	unsigned long status_until;
 	boolean logged_font;
+	/* the menu open over the screen, its row chosen, and its player's slot */
+	short menu;
+	short menu_row;
+	long menu_slot;
 } host;
+
+static void host_run(char const *line, char const *done);
+
+/* the open menu's rows */
+static short host_menu_rows(
+	void)
+{
+	return host.menu == _host_menu_player ? (short)NUMBEROF(host_player_actions) :
+		host.menu == _host_menu_notice ? (short)(NUMBEROF(host_notices) + 1) : 0;
+}
+
+/* the menu's row chosen: its command run, and the menu closed */
+static void host_menu_choose(
+	void)
+{
+	char line[192];
+	char done[96];
+	char name[16];
+	long score, ping;
+
+	if (host.menu == _host_menu_player && host.menu_row < (short)NUMBEROF(host_player_actions) &&
+		host_player_actions[host.menu_row].command &&
+		server_status_player_row(host.menu_slot, name, sizeof(name), &score, &ping))
+	{
+		snprintf(line, sizeof(line), host_player_actions[host.menu_row].command, host.menu_slot);
+		snprintf(done, sizeof(done), "%s %s", name, host_player_actions[host.menu_row].done);
+		host_run(line, done);
+	}
+	else if (host.menu == _host_menu_notice && host.menu_row < (short)NUMBEROF(host_notices))
+	{
+		snprintf(line, sizeof(line), "say \"%s\"", host_notices[host.menu_row]);
+		host_run(line, "notice shown");
+	}
+	host.menu = _host_menu_none;
+}
 
 static void host_set_status(
 	char const *text)
@@ -108,6 +180,7 @@ static void host_run(
 }
 
 int host_dashboard_start(
+	char const *rotation,
 	char *error_text,
 	size_t error_size)
 {
@@ -127,11 +200,8 @@ int host_dashboard_start(
 		snprintf(error_text, error_size, "only from the main menu");
 		return FALSE;
 	}
-	if (!server_director_host_begin())
-	{
-		snprintf(error_text, error_size, "could not host");
+	if (!server_director_host_begin(rotation, error_text, (long)error_size))
 		return FALSE;
-	}
 	memset(&host, 0, sizeof(host));
 	host.chosen_slot = NONE;
 	return TRUE;
@@ -203,10 +273,43 @@ void host_dashboard_update(
 		pressed |= buttons & DIRECTIONS;
 		host.repeat_at = now + HOST_REPEAT_MILLISECONDS;
 	}
+	/* (a menu open: its rows alone, B closing it) */
+	if (host.menu != _host_menu_none)
+	{
+		short rows = host_menu_rows();
+
+		if (pressed & (1UL << HALO_OVERLAY_PAD_UP))
+			host.menu_row = (short)((host.menu_row + rows - 1) % rows);
+		if (pressed & (1UL << HALO_OVERLAY_PAD_DOWN))
+			host.menu_row = (short)((host.menu_row + 1) % rows);
+		if (pressed & (1UL << HALO_OVERLAY_PAD_A))
+			host_menu_choose();
+		else if (pressed & ((1UL << HALO_OVERLAY_PAD_B) | (1UL << HALO_OVERLAY_PAD_START)))
+			host.menu = _host_menu_none;
+		return;
+	}
 	if (pressed & (1UL << HALO_OVERLAY_PAD_UP))
 		host_move(-1);
 	if (pressed & (1UL << HALO_OVERLAY_PAD_DOWN))
 		host_move(1);
+	if (pressed & (1UL << HALO_OVERLAY_PAD_A))
+	{
+		if (host.chosen_slot != NONE)
+		{
+			host.menu = _host_menu_player;
+			host.menu_row = 0;
+			host.menu_slot = host.chosen_slot;
+		}
+		else
+		{
+			host_set_status("no player chosen");
+		}
+	}
+	if (pressed & (1UL << HALO_OVERLAY_PAD_START))
+	{
+		host.menu = _host_menu_notice;
+		host.menu_row = 0;
+	}
 	if (pressed & (1UL << HALO_OVERLAY_PAD_X))
 	{
 		if (server_director_state() == _server_state_playing)
@@ -589,14 +692,79 @@ void host_dashboard_draw(
 		{
 			draw_string_set_draw_mode(small_font_index, NONE, _host_text_centre, 0, &white);
 			draw_string_and_hack_in_icons(&bounds, NULL, NULL, 0,
-				L"%y-button Kick Player   %x-button Next Round   %b-button Stop Hosting", FALSE);
+				L"%a-button Player   %y-button Kick   %x-button Next Round   %start-button Notices   %b-button Stop Hosting",
+				FALSE);
+		}
+	}
+
+	/* the menu open, over the middle of the screen */
+	if (host.menu != _host_menu_none)
+	{
+		short rows = host_menu_rows();
+		short box_width = (short)MIN(width - 4 * HOST_MARGIN, 360);
+		short row_height = (short)(small_line_height + 2 * HOST_PADDING);
+		short box_height = (short)(line_height + 3 * HOST_PADDING + rows * (row_height + HOST_ROW_GAP) + HOST_PADDING);
+		short x0 = (short)((width - box_width) / 2);
+		short y0 = (short)((height - box_height) / 2);
+		short row;
+		char title[64];
+
+		rectangle.x0 = (short)(x0 - 2);
+		rectangle.y0 = (short)(y0 - 2);
+		rectangle.x1 = (short)(x0 + box_width + 2);
+		rectangle.y1 = (short)(y0 + box_height + 2);
+		draw_quad(&rectangle, OUTLINE);
+		rectangle.x0 = x0;
+		rectangle.y0 = y0;
+		rectangle.x1 = (short)(x0 + box_width);
+		rectangle.y1 = (short)(y0 + box_height);
+		draw_quad(&rectangle, PANEL);
+		if (host.menu == _host_menu_player)
+		{
+			char name[16];
+			long score, ping;
+
+			if (!server_status_player_row(host.menu_slot, name, sizeof(name), &score, &ping))
+				snprintf(name, sizeof(name), "PLAYER");
+			snprintf(title, sizeof(title), "%s%s", name, server_status_player_muted(host.menu_slot) ? " (MUTED)" : "");
+		}
+		else
+		{
+			snprintf(title, sizeof(title), "SHOW EVERY PLAYER");
+		}
+		host_text(font_index, (short)(x0 + HOST_PADDING * 2), (short)(y0 + HOST_PADDING),
+			(short)(x0 + box_width - HOST_PADDING * 2), line_height, _host_text_left, &blue, title);
+		y = (short)(y0 + line_height + 2 * HOST_PADDING);
+		for (row = 0; row < rows; row++)
+		{
+			char const *label = host.menu == _host_menu_player ? host_player_actions[row].label :
+				row < (short)NUMBEROF(host_notices) ? host_notices[row] : "Cancel";
+			boolean chosen = row == host.menu_row;
+
+			rectangle.x0 = (short)(x0 + HOST_PADDING);
+			rectangle.x1 = (short)(x0 + box_width - HOST_PADDING);
+			rectangle.y0 = y;
+			rectangle.y1 = (short)(y + row_height);
+			draw_quad(&rectangle, chosen ? OUTLINE : BAND);
+			if (chosen)
+			{
+				rectangle.x0 += 2;
+				rectangle.x1 -= 2;
+				rectangle.y0 += 2;
+				rectangle.y1 -= 2;
+				draw_quad(&rectangle, CHOSEN_BAND);
+			}
+			host_text(small_font_index, (short)(x0 + HOST_PADDING * 3), (short)(y + HOST_PADDING),
+				(short)(x0 + box_width - HOST_PADDING * 3), small_line_height, _host_text_left, chosen ? &white : &blue,
+				label);
+			y = (short)(y + row_height + HOST_ROW_GAP);
 		}
 	}
 }
 
 #else
 
-int host_dashboard_start(char *error_text, size_t error_size)
+int host_dashboard_start(char const *rotation, char *error_text, size_t error_size)
 {
 	snprintf(error_text, error_size, "not in this build");
 	return FALSE;

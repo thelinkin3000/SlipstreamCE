@@ -85,7 +85,9 @@ enum
 #endif
 	/* (a dedicated server's, of the Linux and Windows builds: written into
 	config.toml only in server mode) */
-	_platform_server = 64,
+	_platform_server = 64,	/* (of a dedicated server's, those hosting from the menus has too, on
+	Android, the Switch and the PS5: port/linux/game/host_dashboard.c) */
+	_platform_host = 128,
 };
 
 /* the Vulkan renderer's debugging rows: Android's, and the PS5's */
@@ -1065,21 +1067,21 @@ static const struct config_setting config_settings[] =
 		"Run as a dedicated server (as halo --server does): host games with no\n"
 		"window, sound or player of its own, one after another from\n"
 		"server.rotation (docs/dedicated_server.md)." },
-	{ "server.name", _config_string, "\"OpenCE Server\"", "HALO_SERVER_NAME", _environment_value, _platform_server,
+	{ "server.name", _config_string, "\"OpenCE Server\"", "HALO_SERVER_NAME", _environment_value, _platform_server | _platform_host,
 		"The game's name in the lobby and the server browser: 15 characters of\n"
 		"printable ASCII." },
-	{ "server.max_players", _config_integer, "16", "HALO_SERVER_MAX_PLAYERS", _environment_value, _platform_server,
+	{ "server.max_players", _config_integer, "16", "HALO_SERVER_MAX_PLAYERS", _environment_value, _platform_server | _platform_host,
 		"The most players (2 to 127)." },
-	{ "server.min_players", _config_integer, "1", "HALO_SERVER_MIN_PLAYERS", _environment_value, _platform_server,
+	{ "server.min_players", _config_integer, "1", "HALO_SERVER_MIN_PLAYERS", _environment_value, _platform_server | _platform_host,
 		"Players in the lobby before it counts down to a game (1 to 16)." },
-	{ "server.password", _config_string, "\"\"", "HALO_SERVER_PASSWORD", _environment_value, _platform_server,
+	{ "server.password", _config_string, "\"\"", "HALO_SERVER_PASSWORD", _environment_value, _platform_server | _platform_host,
 		"The password the server browser asks for (the invite link still joins);\n"
 		"empty for none. Never logged." },
-	{ "server.public", _config_boolean, "true", "HALO_SERVER_PUBLIC", _environment_value, _platform_server,
+	{ "server.public", _config_boolean, "true", "HALO_SERVER_PUBLIC", _environment_value, _platform_server | _platform_host,
 		"List the server in everyone's server browser (on the master servers,\n"
 		"with network.online); false: joined by its invite link and on the LAN." },
 	{ "server.rotation", _config_string, "\"bloodgulch:ctf, sidewinder:team_slayer, prisoner:slayer\"",
-		"HALO_SERVER_ROTATION", _environment_value, _platform_server,
+		"HALO_SERVER_ROTATION", _environment_value, _platform_server | _platform_host,
 		"The games played one after another: map[:gametype[+rule=value...]],\n"
 		"separated by commas, 64 at most. A map is a multiplayer map's name\n"
 		"(bloodgulch), custom_maps\\<name> or a level's path; a gametype a\n"
@@ -1090,23 +1092,23 @@ static const struct config_setting config_settings[] =
 		"With no playable rotation entry, play bloodgulch:slayer rather than\n"
 		"stop (exit code 3)." },
 	{ "server.lobby_seconds", _config_integer, "15", "HALO_SERVER_LOBBY_SECONDS", _environment_value,
-		_platform_server,
+		_platform_server | _platform_host,
 		"Seconds the lobby counts down once min_players are in (0 to 300; 0\n"
 		"starts at once)." },
 	{ "server.postgame_seconds", _config_integer, "12", "HALO_SERVER_POSTGAME_SECONDS", _environment_value,
-		_platform_server,
+		_platform_server | _platform_host,
 		"Seconds the scores show after a game (0 to 300)." },
 	{ "server.empty_seconds", _config_integer, "30", "HALO_SERVER_EMPTY_SECONDS", _environment_value,
-		_platform_server,
+		_platform_server | _platform_host,
 		"Seconds a game nobody is in goes on before it ends (0: never). A game\n"
 		"whose last player leaves ends at once, as the game ends it." },
-	{ "server.idle_minutes", _config_integer, "0", "HALO_SERVER_IDLE_MINUTES", _environment_value, _platform_server,
+	{ "server.idle_minutes", _config_integer, "0", "HALO_SERVER_IDLE_MINUTES", _environment_value, _platform_server | _platform_host,
 		"Minutes a game goes on with no score before it ends (0: never)." },
-	{ "server.team_start", _config_string, "\"one\"", "HALO_SERVER_TEAM_START", _environment_value, _platform_server,
+	{ "server.team_start", _config_string, "\"one\"", "HALO_SERVER_TEAM_START", _environment_value, _platform_server | _platform_host,
 		"A team game: \"one\" starts with one team's players (the next joiners\n"
 		"balance), \"both\" waits for a player on each team, \"skip\" skips team\n"
 		"games while one player waits." },
-	{ "server.motd", _config_string, "\"\"", "HALO_SERVER_MOTD", _environment_value, _platform_server,
+	{ "server.motd", _config_string, "\"\"", "HALO_SERVER_MOTD", _environment_value, _platform_server | _platform_host,
 		"A notice each machine is shown as it joins (127 characters); empty for\n"
 		"none." },
 	{ "server.frame_rate", _config_integer, "60", "HALO_SERVER_FRAME_RATE", _environment_value, _platform_server,
@@ -1217,22 +1219,22 @@ static const struct config_setting config_settings[] =
 	{ "server.region", _config_string, "\"\"", "HALO_SERVER_REGION", _environment_value, _platform_server,
 		"A region shown in the server browser (eu, na-east...): 16 characters;\n"
 		"empty for none." },
-	{ "server.chat_filter", _config_string, "\"off\"", "HALO_SERVER_CHAT_FILTER", _environment_value, _platform_server,
+	{ "server.chat_filter", _config_string, "\"off\"", "HALO_SERVER_CHAT_FILTER", _environment_value, _platform_server | _platform_host,
 		"The words the server keeps out of its chat and its players' names\n"
 		"(streamer mode's list, by chat_filter_slurs, _swearing and _insults):\n"
 		"\"off\"; \"censor\", a line's words shown as stars; \"block\", a line\n"
 		"with them refused (its sender is told why) and a player whose name has\n"
 		"them refused at the door. Links are network.text_chat's." },
 	{ "server.chat_filter_slurs", _config_string, "\"mild\"", "HALO_SERVER_CHAT_FILTER_SLURS", _environment_value,
-		_platform_server,
+		_platform_server | _platform_host,
 		"With server.chat_filter, the slurs (race, sexuality, gender, disability)\n"
 		"kept out: \"off\", \"severe\" (the worst), \"strong\" or \"mild\" (all)." },
 	{ "server.chat_filter_swearing", _config_string, "\"off\"", "HALO_SERVER_CHAT_FILTER_SWEARING",
-		_environment_value, _platform_server,
+		_environment_value, _platform_server | _platform_host,
 		"With server.chat_filter, the swearing and sexual words kept out: \"off\",\n"
 		"\"severe\", \"strong\" or \"mild\" (all)." },
 	{ "server.chat_filter_insults", _config_string, "\"off\"", "HALO_SERVER_CHAT_FILTER_INSULTS",
-		_environment_value, _platform_server,
+		_environment_value, _platform_server | _platform_host,
 		"With server.chat_filter, the insults that are not slurs kept out: \"off\",\n"
 		"\"severe\", \"strong\" or \"mild\" (all)." },
 	{ "server.master_publish_address", _config_boolean, "false", "HALO_SERVER_MASTER_PUBLISH_ADDRESS",
@@ -1262,21 +1264,21 @@ static const struct config_setting config_settings[] =
 		_platform_server,
 		"Refuse a second machine of a linked Discord account already in the game." },
 	{ "server.max_machines_per_address", _config_integer, "0", "HALO_SERVER_MAX_MACHINES_PER_ADDRESS",
-		_environment_value, _platform_server,
+		_environment_value, _platform_server | _platform_host,
 		"The most machines that play from one address (an internet play peer's\n"
 		"real one); one more is refused (0: no limit). Households, LAN cafes\n"
 		"and mobile carriers share one address among many players." },
 	{ "server.afk_kick_minutes", _config_integer, "5", "HALO_SERVER_AFK_KICK_MINUTES", _environment_value,
-		_platform_server,
+		_platform_server | _platform_host,
 		"Minutes a player may stand idle in a game (no move, look or button)\n"
 		"before the server kicks them, told a minute before (0: never). The\n"
 		"lobby, the postgame, cutscenes and waiting to respawn do not count." },
 	{ "server.afk_kick_when_full", _config_boolean, "false", "HALO_SERVER_AFK_KICK_WHEN_FULL", _environment_value,
-		_platform_server,
+		_platform_server | _platform_host,
 		"Kick idle players only when the server is full, after\n"
 		"server.afk_kick_full_minutes (server.afk_kick_minutes is not used)." },
 	{ "server.afk_kick_full_minutes", _config_integer, "3", "HALO_SERVER_AFK_KICK_FULL_MINUTES", _environment_value,
-		_platform_server,
+		_platform_server | _platform_host,
 		"With server.afk_kick_when_full, the minutes a player may stand idle while\n"
 		"the server is full (told a minute before)." },
 	{ "server.coop_bsp_switch", _config_string, "\"majority\"", "HALO_SERVER_COOP_BSP_SWITCH", _environment_value,
@@ -1290,15 +1292,15 @@ static const struct config_setting config_settings[] =
 		_environment_value, _platform_server,
 		"Seconds after a co-op loading zone switched the level's part before\n"
 		"another may (0 to 300)." },
-	{ "server.map_vote", _config_boolean, "false", "HALO_SERVER_MAP_VOTE", _environment_value, _platform_server,
+	{ "server.map_vote", _config_boolean, "false", "HALO_SERVER_MAP_VOTE", _environment_value, _platform_server | _platform_host,
 		"As the lobby opens after a game, the players vote for the next among\n"
 		"server.map_vote_choices entries of the rotation picked at random (not\n"
 		"the one just played); the rotation goes on after the winner." },
 	{ "server.map_vote_choices", _config_integer, "4", "HALO_SERVER_MAP_VOTE_CHOICES", _environment_value,
-		_platform_server,
+		_platform_server | _platform_host,
 		"The entries a map vote offers (2 to 8)." },
 	{ "server.map_vote_seconds", _config_integer, "20", "HALO_SERVER_MAP_VOTE_SECONDS", _environment_value,
-		_platform_server,
+		_platform_server | _platform_host,
 		"How long a map vote runs (5 to 120 seconds); it ends sooner once every\n"
 		"player has voted." },
 	{ "streamer.enabled", _config_boolean, "false", "HALO_STREAMER_MODE", _environment_value, _platform_all,
@@ -1793,13 +1795,13 @@ static const struct config_setting config_settings[] =
 #define NUMBER_OF_CONFIG_SETTINGS (sizeof(config_settings) / sizeof(config_settings[0]))
 
 #ifdef HALO_ANDROID
-#define CONFIG_BUILD_PLATFORM _platform_android
+#define CONFIG_BUILD_PLATFORM (_platform_android | _platform_host)
 #elif defined(HALO_WEB)
 #define CONFIG_BUILD_PLATFORM (_platform_desktop | _platform_web)
 #elif defined(_WIN32)
 #define CONFIG_BUILD_PLATFORM (_platform_desktop | _platform_windows)
 #elif defined(HALO_PS5)
-#define CONFIG_BUILD_PLATFORM (_platform_desktop | _platform_guest | _platform_ps5)
+#define CONFIG_BUILD_PLATFORM (_platform_desktop | _platform_guest | _platform_ps5 | _platform_host)
 #elif defined(HALO_GUEST)
 #define CONFIG_BUILD_PLATFORM (_platform_desktop | _platform_guest)
 #else

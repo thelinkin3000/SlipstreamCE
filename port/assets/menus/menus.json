@@ -11,6 +11,7 @@
   "ce/main_menu.multiplayer_type_select.connected.xml",
   "ce/main_menu.multiplayer_type_select.coop.xml",
   "ce/main_menu.multiplayer_type_select.direct_ip.xml",
+  "ce/main_menu.multiplayer_type_select.host.xml",
   "ce/main_menu.multiplayer_type_select.join_game.filters.xml",
   "ce/main_menu.multiplayer_type_select.join_game.port.xml",
   "ce/main_menu.multiplayer_type_select.join_game.xml",

@@ -119,10 +119,12 @@ void server_director_reload(void);
 withdrawn; then the process ends with the code */
 void server_director_quit(int exit_code, char const *why);
 /* hosting from the menus (host_dashboard.c): begun, the director hosting
-the rotation from the next frame (FALSE if it already hosts, or this run
-is a dedicated server's); stopped, its game ended and every machine told,
-then back to the main menu */
-boolean server_director_host_begin(void);
+the rotation (a playlist's, map:gametype entries separated by commas; NULL
+or empty for server.rotation's) from the next frame; FALSE with why if
+none of its rounds can be played, it already hosts, or this run is a
+dedicated server's. Stopped, its game ended and every machine told, then
+back to the main menu */
+boolean server_director_host_begin(char const *rotation, char *reason, long reason_size);
 void server_director_host_stop(void);
 /* the settings the game takes from server.* applied now (the name, the
 most players, the listing) */
@@ -193,6 +195,10 @@ char const *server_status_state_name(short state);
 boolean server_status_scores_changed(void);
 /* the network game's player at slot (its name in ASCII into name): TRUE */
 boolean server_status_player_name(long slot, char *name, long size);
+/* whether the host muted the slot's player (mute) */
+boolean server_status_player_muted(long slot);
+/* a stock map's title (bloodgulch: "Blood Gulch"), else its name */
+char const *server_map_title(char const *name);
 /* the slot's player for the host's screen (host_dashboard.c): its name, its
 score and its ping (milliseconds, NONE outside a game); FALSE if none */
 boolean server_status_player_row(long slot, char *name, long size, long *score, long *ping);

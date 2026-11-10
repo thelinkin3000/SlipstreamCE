@@ -1427,7 +1427,7 @@ def LOADOUT_HELPS(slot: str) -> list:
 
 STRING_OVERRIDES.update({
     f"{MT}/multiplayer_options": ["JOIN GAME", "CREATE GAME", "INTERNET", "LAN", "DIRECT LINK", "EDIT GAMETYPES",
-                                  "SERVER BROWSER", "CO-OP CAMPAIGN"],
+                                  "SERVER BROWSER", "CO-OP CAMPAIGN", "HOST SERVER"],
     f"{MT}/multiplayer_option_descriptions": [
         "Browse the games on the\\nInternet.",
         "Join a multiplayer game on\\nyour LAN.",
@@ -1435,6 +1435,7 @@ STRING_OVERRIDES.update({
         "Host a game on the Internet:\\nplayers join by its invite\\nlink or Discord.",
         "Host a game on your LAN\\nonly.",
         "Play the campaign with a\\nfriend in split screen:\\nplayer 2 on a gamepad.",
+        "Host a dedicated server:\\nplaylists of rounds, played\\nwith no player of your own.",
         "Set all the attributes for your \\nmultiplayer gametypes and\\nkeep them for future use.",
     ],
     # (and the port's OPENCE: OpenCE's gametypes, port/linux/game/game_modes.c)
@@ -1635,9 +1636,10 @@ WIDGET_PATCHES = {
         f'<on event="start" run="mp type set mode" open="{MT}/join_game/join_game_screen"/>',
         '<on event="left_mouse" run="mouse emit accept event"/>',
     ]},
-    # (Co-op, after Create Game's: _coop)
+    # (Co-op, after Create Game's: _coop; then Host Server, _host)
     f"{MT}/multiplayer_type_select_list": {"insert_before": {
-        f"{MT}/multiplayer_type_gametypes_item": [f'<child widget="{MT}/multiplayer_type_coop_item" y="309"/>'],
+        f"{MT}/multiplayer_type_gametypes_item": [f'<child widget="{MT}/multiplayer_type_coop_item" y="309"/>',
+                                                   f'<child widget="{MT}/multiplayer_type_host_item" y="342"/>'],
     }},
     # (the Map screen's and New Game's lists: SINGLEPLAYER or MULTIPLAYER
     # maps, the first row's chooser's (_map_kind); B on the Map screen goes
@@ -2748,6 +2750,262 @@ def _coop() -> list:
     return lines
 
 
+# ---------- hosting from the menus (port/linux/game/host_dashboard.c,
+# server_director.c): Multiplayer's HOST SERVER, the app a dedicated server
+# with no player of its own. Its screens (menu_functions.c's "port host"
+# functions): the Host Hub, its playlists (each a rotation of rounds, a map
+# and a gametype, kept in d:\playlists.txt) on the left and the one chosen's
+# rounds on the right, A launching it (a "+ NEW PLAYLIST" row first opening
+# the builder), X editing it, Y deleting it (at a second press), START the
+# server's settings; the Playlist Builder, its maps on the left and the
+# playlist's rounds on the right, left and right going from one to the
+# other, a map's A choosing its gametype (Select Gametype) and adding the
+# round; and Server Settings, config.toml's server.* that hosting reads
+
+HOST = f"{MT}/host"
+HOST_ROWS = 10
+HOST_MAP_ROWS = 9
+HOST_ENTRY_ROWS = 8
+HOST_GAMETYPE_ROWS = 11
+# Server Settings' rows: a label, the setting, its choices (shown, written),
+# and its help; None for a value typed (A: its keyboard, the function)
+HOST_SETTINGS = [
+    ("SERVER NAME:", "server.name", None, "The server's name in the lists of games (15\\ncharacters). Enter changes it.",
+     "port host edit server name", "server_name"),
+    ("PASSWORD:", "server.password", None, "Players must type it to join; NONE for an open\\nserver. Enter sets it.",
+     "port host edit server password", "password"),
+    ("LISTING:", "server.public", [("PUBLIC", "true"), ("PRIVATE", "false")],
+     "PUBLIC: listed in everyone's server browser.\\nPRIVATE: joined on the LAN or by its invite.", None, None),
+    ("MAXIMUM PLAYERS:", "server.max_players", [(str(count), str(count)) for count in (2, 4, 8, 12, 16, 24, 32, 48, 64)],
+     "The most players the server takes.", None, None),
+    ("PLAYERS TO START:", "server.min_players", [(str(count), str(count)) for count in (1, 2, 4, 6, 8)],
+     "Players in the lobby before it counts down to the\\nnext round.", None, None),
+    ("LOBBY COUNTDOWN:", "server.lobby_seconds", [(f"{seconds} S", str(seconds)) for seconds in (5, 10, 15, 30, 60)],
+     "Seconds the lobby counts down once enough players\\nare in.", None, None),
+    ("MAP SHARING:", "network.map_share", [("ON", "true"), ("OFF", "false")],
+     "Players who join without a Custom Edition map\\ndownload it from the server.", None, None),
+    ("UPLOAD LIMIT:", "network.map_share_upload",
+     [(f"{kb} KB/S" if kb < 1024 else f"{kb // 1024} MB/S", str(kb)) for kb in MAP_SHARE_UPLOADS],
+     "The most the server sends of maps, so that the\\ngame keeps the rest of the upload.", None, None),
+    ("VOTE KICKING:", "network.votekick", [("ON", "true"), ("OFF", "false")],
+     "Players can vote to kick a player from the server.", None, None),
+    ("MESSAGE OF THE DAY:", "server.motd", None, "A notice each player is shown on joining; NONE\\nfor none. Enter sets it.",
+     "port host edit motd", "motd"),
+]
+# B on a screen with a text field: the typing cancelled, else back
+HOST_BACK = ['<on event="b" run="port host back" back="true"/>', '<on event="back" run="port host back" back="true"/>']
+
+
+def _host_row(name: str, width: int, bitmap: str, handlers: list, text_widget: str, arrows: bool) -> list:
+    """a row of one of the Host screens' lists (rows_update's list_item_N:
+    its text list_item_text, its arrows on the row chosen)"""
+    children = [f'<child widget="{text_widget}" x="{25 if arrows else 0}"/>']
+    if arrows:
+        children.append('<child widget="main_menu/new_select/list_item_arrows"/>')
+    return _widget(name, [("width", width), ("height", 28 if arrows else 32), ("bitmap", bitmap),
+                          ("font", "ui\\large_ui"), ("color", "#FF2896FF"), ("align", "center" if arrows else None),
+                          ("text_y", 3)],
+                   handlers + ['<on event="left_mouse" run="mouse emit accept event"/>', *children])
+
+
+def _host() -> list:
+    lines = _widget(f"{MT}/multiplayer_type_host_item",
+                    [("type", "text"), ("left", 51), ("width", 232), ("height", 32), ("bitmap", "bitmaps/list_item_bkd"),
+                     ("string_list", f"{MT}/multiplayer_options"), ("string_index", 8), ("font", "ui\\large_ui"),
+                     ("color", "#FF2896FF"), ("text_x", 13), ("text_y", 5)],
+                    [f'<on event="a" open="{HOST}/host_screen"/>', f'<on event="start" open="{HOST}/host_screen"/>',
+                     '<on event="left_mouse" run="mouse emit accept event"/>'])
+    # the Host Hub, laid out as Co-op's profiles are: the list on the left,
+    # the playlist chosen in the frame on the right
+    lines += _widget(f"{HOST}/host_screen", [("width", 640), ("height", 480),
+                                             ("flags", "pass_unhandled_to_focused_child"),
+                                             ("bitmap", "bitmaps/gradient")],
+                     ['<on event="b" back="true"/>', '<on event="back" back="true"/>',
+                      '<child widget="main_menu/new_select/sel_list_desc_bkd"/>',
+                      f'<child widget="{HOST}/playlist_list"/>',
+                      f'<child widget="{HOST}/header_host"/>'])
+    lines += _header(f"{HOST}/header_host", f"{MT}/header_multiplayer")
+    rows = [f'<child widget="{HOST}/hub/list_item_{index}" x="20" y="{73 + 30 * index}"/>' for index in range(HOST_ROWS)]
+    lines += _widget(f"{HOST}/playlist_list",
+                     [("type", "column_list"), ("width", 640), ("height", 480),
+                      ("flags", "pass_unhandled_to_focused_child up_down_tabs_children"),
+                      ("description", f"{HOST}/playlist_details")],
+                     ['<data input="port host playlists update"/>',
+                      '<on event="created" run="port host init"/>',
+                      f'<on event="x" run="port host edit" open="{HOST}/builder_screen"/>',
+                      '<on event="y" run="port host delete"/>',
+                      f'<on event="start" open="{HOST}/settings/settings_screen"/>',
+                      *rows, f'<child widget="{HOST}/hub_button_bar" y="414"/>'])
+    for index in range(HOST_ROWS):
+        lines += _host_row(f"{HOST}/hub/list_item_{index}", 390,
+                           "bitmaps/sel_list_item_bkd_top" if index == 0 else "bitmaps/sel_list_item_bkd",
+                           [f'<on event="a" run="port host choose" open="{HOST}/builder_screen"/>'],
+                           "main_menu/new_select/list_item_text", True)
+    # (in the frame, sel_list_desc_bkd's: the playlist's name and its rounds)
+    lines += _widget(f"{HOST}/playlist_details", [("width", 640), ("height", 480)],
+                     [f'<child widget="{HOST}/playlist_details_name"/>', f'<child widget="{HOST}/playlist_details_text"/>'])
+    lines += _widget(f"{HOST}/playlist_details_name",
+                     [("type", "text"), ("controller", 1), ("left", 412), ("top", 84), ("width", 200), ("height", 44),
+                      ("font", "ui\\large_ui"), ("color", "#FFFFFFFF")], [])
+    lines += _widget(f"{HOST}/playlist_details_text",
+                     [("type", "text"), ("controller", 1), ("left", 412), ("top", 130), ("width", 200),
+                      ("height", 272), ("font", "ui\\small_ui"), ("color", "#FF2896FF")], [])
+    lines += _widget(f"{HOST}/hub_button_bar",
+                     [("type", "column_list"), ("width", 640), ("height", 28),
+                      ("flags", "pass_unhandled_to_focused_child left_right_tabs_items")],
+                     [f'<child widget="{HOST}/button_settings" y="1"/>',
+                      f'<child widget="{HOST}/button_edit" x="130" y="1"/>',
+                      f'<child widget="{HOST}/button_delete" x="260" y="1"/>',
+                      '<child widget="common_button_back" x="510" y="1"/>'])
+    lines += _text_button(f"{HOST}/button_settings", "SETTINGS",
+                          [f'<on event="a" open="{HOST}/settings/settings_screen"/>',
+                           f'<on event="start" open="{HOST}/settings/settings_screen"/>'])
+    lines += _text_button(f"{HOST}/button_edit", "EDIT",
+                          [f'<on event="a" run="port host edit" open="{HOST}/builder_screen"/>',
+                           f'<on event="start" run="port host edit" open="{HOST}/builder_screen"/>'])
+    lines += _text_button(f"{HOST}/button_delete", "DELETE",
+                          ['<on event="a" run="port host delete"/>', '<on event="start" run="port host delete"/>'])
+
+    # the Playlist Builder: two lists side by side, left and right going
+    # from one to the other (the screen's), up and down through each
+    builder = f"{HOST}/builder"
+    lines += _widget(f"{HOST}/builder_screen", [("width", 640), ("height", 480),
+                                                ("flags", "pass_unhandled_to_focused_child left_right_tabs_children"),
+                                                ("bitmap", "bitmaps/gradient")],
+                     [*HOST_BACK,
+                      f'<child widget="{builder}/title"/>',
+                      f'<child widget="{builder}/maps_label"/>',
+                      f'<child widget="{builder}/entries_label"/>',
+                      f'<child widget="{builder}/map_list"/>',
+                      f'<child widget="{builder}/entry_list"/>',
+                      f'<child widget="{builder}/help" x="40" y="390"/>'])
+    lines += _widget(f"{builder}/title", [("type", "text"), ("controller", 1), ("left", 40), ("top", 22), ("width", 560),
+                                          ("height", 36), ("text", "CREATE PLAYLIST"), ("font", "ui\\large_ui"),
+                                          ("color", "#FF2896FF"), ("text_flags", "no_focus_test")], [])
+    for key, text, x in (("maps_label", "SELECT MAP", 40), ("entries_label", "CURRENT PLAYLIST", 340)):
+        lines += _widget(f"{builder}/{key}", [("type", "text"), ("controller", 1), ("left", x), ("top", 66),
+                                              ("width", 260), ("height", 24), ("text", text), ("font", "ui\\small_ui"),
+                                              ("color", "#FFFFFFFF"), ("text_x", 13), ("text_flags", "no_focus_test")], [])
+    lines += _widget(f"{builder}/help", [("type", "text"), ("controller", 1), ("width", 560), ("height", 20),
+                                         ("font", "ui\\small_ui"), ("color", "#FF2896FF"),
+                                         ("text_flags", "no_focus_test")], [])
+    # (the rows' text, for the rows of Multiplayer's width)
+    lines += _widget(f"{builder}/maps/list_item_text",
+                     [("type", "text"), ("controller", 1), ("width", 220), ("height", 22), ("font", "ui\\large_ui"),
+                      ("color", "#FF2896FF"), ("text_x", 13), ("text_y", 4)], [])
+    lines += _widget(f"{builder}/entries/list_item_text",
+                     [("type", "text"), ("controller", 1), ("width", 220), ("height", 22), ("font", "ui\\small_ui"),
+                      ("color", "#FF2896FF"), ("text_x", 13), ("text_y", 7)], [])
+    rows = [f'<child widget="{builder}/maps/list_item_{index}" x="40" y="{96 + 33 * index}"/>'
+            for index in range(HOST_MAP_ROWS)]
+    lines += _widget(f"{builder}/map_list",
+                     [("type", "column_list"), ("width", 640), ("height", 480),
+                      ("flags", "pass_unhandled_to_focused_child up_down_tabs_children")],
+                     ['<data input="port host maps update"/>', '<on event="created" run="port host maps init"/>', *rows])
+    for index in range(HOST_MAP_ROWS):
+        lines += _host_row(f"{builder}/maps/list_item_{index}", 232, "bitmaps/list_item_bkd",
+                           [f'<on event="a" run="port host map choose" open="{HOST}/gametype_screen"/>',
+                            f'<on event="start" run="port host map choose" open="{HOST}/gametype_screen"/>'],
+                           f"{builder}/maps/list_item_text", False)
+    # (its name's row first, then the rounds, then SAVE and CANCEL)
+    rows = [f'<child widget="{builder}/op_name" x="340" y="96"/>']
+    rows += [f'<child widget="{builder}/entries/list_item_{index}" x="340" y="{129 + 33 * index}"/>'
+             for index in range(HOST_ENTRY_ROWS)]
+    lines += _widget(f"{builder}/entry_list",
+                     [("type", "column_list"), ("width", 640), ("height", 480),
+                      ("flags", "pass_unhandled_to_focused_child up_down_tabs_children")],
+                     ['<data input="port host entries update"/>',
+                      '<on event="y" run="port host entry remove"/>',
+                      '<on event="white" run="port host entry up"/>', '<on event="black" run="port host entry down"/>',
+                      *rows, f'<child widget="{builder}/button_bar" y="414"/>'])
+    lines += _widget(f"{builder}/op_name", [("type", "text"), ("width", 232), ("height", 32),
+                                            ("bitmap", "bitmaps/list_item_bkd"), ("color", "#FF2896FF")],
+                     ['<on event="a" run="port host name edit"/>', '<on event="start" run="port host name edit"/>',
+                      '<on event="left_mouse" run="mouse emit accept event"/>',
+                      f'<child widget="{builder}/name_value"/>'])
+    lines += _widget(f"{builder}/name_value", [("type", "text"), ("controller", 1), ("width", 220), ("height", 22),
+                                               ("font", "ui\\large_ui"), ("color", "#FF2896FF"), ("text_x", 13),
+                                               ("text_y", 4), ("text_flags", "no_focus_test")], [])
+    for index in range(HOST_ENTRY_ROWS):
+        lines += _host_row(f"{builder}/entries/list_item_{index}", 232, "bitmaps/list_item_bkd", [],
+                           f"{builder}/entries/list_item_text", False)
+    lines += _widget(f"{builder}/button_bar",
+                     [("type", "column_list"), ("width", 640), ("height", 28),
+                      ("flags", "pass_unhandled_to_focused_child left_right_tabs_items")],
+                     [f'<child widget="{builder}/button_save" x="380" y="1"/>',
+                      '<child widget="common_button_cancel" x="510" y="1"/>'])
+    lines += _text_button(f"{builder}/button_save", "SAVE",
+                          ['<on event="a" run="port host save" back="true"/>',
+                           '<on event="start" run="port host save" back="true"/>'])
+
+    # Select Gametype: the gametypes a round can play, A adding the round
+    gametype = f"{HOST}/gametype"
+    lines += _widget(f"{HOST}/gametype_screen", [("width", 640), ("height", 480),
+                                                 ("flags", "pass_unhandled_to_focused_child"),
+                                                 ("bitmap", "bitmaps/gradient")],
+                     ['<on event="b" back="true"/>', '<on event="back" back="true"/>',
+                      f'<child widget="{gametype}/gametype_list"/>',
+                      f'<child widget="{gametype}/header_gametype"/>'])
+    lines += _header(f"{gametype}/header_gametype", "main_menu/gametype_select/header_select_gametype")
+    rows = [f'<child widget="{gametype}/list_item_{index}" x="125" y="{73 + 30 * index}"/>'
+            for index in range(HOST_GAMETYPE_ROWS)]
+    lines += _widget(f"{gametype}/gametype_list",
+                     [("type", "column_list"), ("width", 640), ("height", 480),
+                      ("flags", "pass_unhandled_to_focused_child up_down_tabs_children")],
+                     ['<data input="port host gametypes update"/>', *rows,
+                      f'<child widget="{gametype}/button_bar" y="414"/>'])
+    for index in range(HOST_GAMETYPE_ROWS):
+        lines += _host_row(f"{gametype}/list_item_{index}", 390,
+                           "bitmaps/sel_list_item_bkd_top" if index == 0 else "bitmaps/sel_list_item_bkd",
+                           ['<on event="a" run="port host gametype choose" back="true"/>',
+                            '<on event="start" run="port host gametype choose" back="true"/>'],
+                           "main_menu/new_select/list_item_text", True)
+    lines += _widget(f"{gametype}/button_bar", [("type", "column_list"), ("width", 640), ("height", 28),
+                                                ("flags", "pass_unhandled_to_focused_child left_right_tabs_items")],
+                     ['<child widget="common_button_back" x="510" y="1"/>'])
+
+    # Server Settings, as a settings screen: spinners writing config.toml
+    # at OK, the values typed at once
+    base = f"{HOST}/settings"
+    spec = {"screen": "settings_screen", "spacing": 28, "help_top": 360,
+            "header": ("header_settings", f"{MT}/server_settings/header_server_settings")}
+    rows, extra = [], []
+    for index, (label, setting, choices, _, function, key) in enumerate(HOST_SETTINGS):
+        if choices is None:
+            extra += _value_row(base, key, index, function)
+            rows.append((f"{base}/op_{key}", None))
+            continue
+        key = setting.split(".", 1)[1]
+        extra += _widget(f"{base}/op_{key}", [("width", 512), ("height", 28),
+                                              ("flags", "pass_unhandled_to_focused_child"),
+                                              ("bitmap", "bitmaps/option_bkds"), ("color", "#FF2896FF")],
+                         [f'<child widget="{base}/{key}_label"/>', f'<child widget="{base}/{key}_spinner" x="320" y="1"/>'])
+        extra += _widget(f"{base}/{key}_label", [("type", "text"), ("controller", 1), ("width", 300), ("height", 22),
+                                                 ("string_list", f"{base}/labels"), ("string_index", index),
+                                                 ("font", "ui\\large_ui"), ("color", "#FF2896FF"), ("text_x", 13),
+                                                 ("text_y", 4)], [])
+        extra += _widget(f"{base}/{key}_spinner",
+                         [("type", "spinner"), ("left", 3), ("top", 2), ("width", 147), ("height", 20),
+                          ("flags", "pass_unhandled_to_focused_child left_right_tabs_items"),
+                          ("strings", "|".join(shown for shown, _ in choices)), ("setting", setting),
+                          ("values", "|".join(value for _, value in choices)), ("font", "ui\\large_ui"),
+                          ("color", "#FF2896FF"), ("align", "center"), ("text_y", 1),
+                          ("header_bitmap", "bitmaps/arrow_sm_left"), ("footer_bitmap", "bitmaps/arrow_sm_right"),
+                          ("header_bounds", "7 -6 19 0"), ("footer_bounds", "7 150 19 156")],
+                         ['<on event="created" run="port setting load"/>'])
+        rows.append((f"{base}/op_{key}", None))
+    extra += _button(f"{base}/button_defaults", 3, ['<on event="a" run="port settings defaults"/>',
+                                                    '<on event="start" run="port settings defaults"/>'])
+    extra += _button(f"{base}/button_ok", 1, ['<on event="a" run="port settings save" back="true"/>',
+                                              '<on event="start" run="port settings save" back="true"/>'])
+    extra += _strings(f"{base}/labels", [label for label, *_ in HOST_SETTINGS])
+    extra += _strings(f"{base}/help_strings", [""] + [help_text for _, _, _, help_text, *_ in HOST_SETTINGS])
+    screen = _screen(base, spec, rows, ["port host settings update", "port settings help"], [], extra)
+    lines += [line.replace('<on event="b" back="true"/>', HOST_BACK[0])
+              .replace('<on event="back" back="true"/>', HOST_BACK[1]) for line in screen]
+    return lines
+
+
 def _item_options_extras() -> list:
     """Item Options' rows of the port's: the map's weapons (YES or NO), and
     the loadout, CATEGORY (the weapon set) or CUSTOM (each player's primary
@@ -3039,6 +3297,7 @@ def multiplayer_files() -> dict:
         ["</menus>", ""],
         f"{MT}/lobby".replace("/", ".") + ".xml": head + _lobby() + ["</menus>", ""],
         f"{MT}/coop".replace("/", ".") + ".xml": head + _coop() + ["</menus>", ""],
+        HOST.replace("/", ".") + ".xml": head + _host() + ["</menus>", ""],
         "main_menu/new_select".replace("/", ".") + ".port.xml": head + _map_kind() + ["</menus>", ""],
         PROFILE.replace("/", ".") + ".port.xml": head + _hint_widgets(PROFILE, PROFILE_HINTS) + ["</menus>", ""],
         # (and the main menu's news)

@@ -167,6 +167,18 @@ boolean server_status_scores_changed(
 	return changed;
 }
 
+boolean server_status_player_muted(
+	long slot)
+{
+	struct network_game *game = server_game();
+	wchar_t wide[12];
+
+	if (!game || slot < 0 || slot >= MAXIMUM_SLOTS || !network_player_is_valid(&game->players[slot]))
+		return FALSE;
+	csmemcpy(wide, game->players[slot].name, sizeof(wide));
+	return network_chat_host_name_muted(wide);
+}
+
 boolean server_status_player_row(
 	long slot,
 	char *name,
@@ -482,6 +494,19 @@ static struct
 	{ "wizard", "Wizard" },
 };
 
+char const *server_map_title(
+	char const *name)
+{
+	long index;
+
+	for (index = 0; index < (long)NUMBEROF(server_map_titles); index++)
+	{
+		if (!strcmp(name, server_map_titles[index].name))
+			return server_map_titles[index].title;
+	}
+	return name;
+}
+
 static void server_status_map(
 	void *context,
 	char const *name,
@@ -716,6 +741,11 @@ void server_event_map_share(
 }
 
 #else
+
+char const *server_map_title(char const *name)
+{
+	return name;
+}
 
 void server_event_player_killed(long killing_player_index, long killing_object_index, long dead_player_index,
 	boolean friendly_fire)

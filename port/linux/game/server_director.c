@@ -545,14 +545,12 @@ static void server_apply_game_settings(
 
 /* the listing: internet play (network.online), public or by invite, and
 its password */
-/* whether the server is listed: server.public, a dedicated server's.
-Hosting from the menus is by invite (and the LAN's search) alone for now:
-those builds read no server.* setting from config.toml (port_config.c's
-_platform_server), and the host's screen has no LISTING choice yet */
+/* whether the server is listed: server.public (hosting from the menus,
+Server Settings' LISTING) */
 static boolean server_public(
 	void)
 {
-	return halo_server_headless() && config_boolean("server.public");
+	return config_boolean("server.public");
 }
 
 static void server_apply_listing(
@@ -2189,6 +2187,10 @@ static void server_publish_state(
 	server_json_free(&json);
 }
 
+/* the rotation hosting from the menus plays (a playlist's), empty for
+server.rotation's */
+static char server_host_rotation[SERVER_ROTATION_MAXIMUM_TEXT + 1];
+
 /* hosting from the menus over: the game left (its machines were told:
 server_director_quit), back to the main menu (network_game_abort, as a
 player leaving), and the director as it was before it began */
@@ -2200,19 +2202,42 @@ static void server_host_finished(
 		network_game_abort();
 	memset(&server, 0, sizeof(server));
 	server_withdrawn = FALSE;
+	server_host_rotation[0] = 0;
 	halo_server_host_end();
 }
 
+static struct server_rotation *host_check_heap;
+#define host_check SERVER_HEAP(struct server_rotation, host_check_heap)
+
 boolean server_director_host_begin(
-	void)
+	char const *rotation,
+	char *reason,
+	long reason_size)
 {
-	if (!halo_server_host_begin())
+	char const *text = rotation && rotation[0] ? rotation : config_string("server.rotation");
+
+	if (reason_size > 0)
+		reason[0] = 0;
+	/* (a playlist none of whose rounds can be played: its maps missing) */
+	server_read_rotation(&host_check, text);
+	if (!server_rotation_playable(&host_check))
+	{
+		snprintf(reason, (size_t)reason_size, "%s", host_check.count && host_check.entries[0].rejected[0] ?
+			host_check.entries[0].rejected : "no round of it can be played");
 		return FALSE;
+	}
+	if (!halo_server_host_begin())
+	{
+		snprintf(reason, (size_t)reason_size, "already hosting");
+		return FALSE;
+	}
 	memset(&server, 0, sizeof(server));
 	server_withdrawn = FALSE;
-	server_log(_server_log_info, "server", "hosting from the menus");
+	snprintf(server_host_rotation, sizeof(server_host_rotation), "%s", text);
+	server_log(_server_log_info, "server", "hosting from the menus: %s", text);
 	return TRUE;
 }
+#undef host_check
 
 void server_director_host_stop(
 	void)
@@ -2243,7 +2268,8 @@ void server_update(
 			debug_no_drawing = TRUE;
 		for (index = 0; index < MAXIMUM_SLOTS; index++)
 			server.seen_machines[index] = NONE;
-		server_read_rotation(&server.rotation, config_string("server.rotation"));
+		server_read_rotation(&server.rotation, server_host_rotation[0] ? server_host_rotation :
+			config_string("server.rotation"));
 		server.index = server.rotation.count - 1;
 		server.current_index = NONE;
 		server.last_countdown_seconds = NONE;
@@ -2484,8 +2510,10 @@ void server_director_player_removed(long machine_index, char const *reason)
 {
 }
 
-boolean server_director_host_begin(void)
+boolean server_director_host_begin(char const *rotation, char *reason, long reason_size)
 {
+	if (reason_size > 0)
+		snprintf(reason, (size_t)reason_size, "not in this build");
 	return FALSE;
 }
 

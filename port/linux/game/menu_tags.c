@@ -417,6 +417,12 @@ static char const *const port_function_names[] =
 	"port browser sort increasing",
 	/* (a dedicated server's map vote: menu_functions.c) */
 	"port map vote open", "port map vote choose",
+	/* (Multiplayer's Host Server, its playlists, their builder and its
+	settings: menu_functions.c) */
+	"port host init", "port host choose", "port host edit", "port host delete", "port host maps init",
+	"port host map choose", "port host gametype choose", "port host entry remove", "port host entry up",
+	"port host entry down", "port host name edit", "port host save", "port host back",
+	"port host edit server name", "port host edit server password", "port host edit motd",
 };
 
 /* the PC version's game data functions that the Xbox's have not, from
@@ -459,6 +465,10 @@ static char const *const port_game_data_input_names[] =
 	"port map vote update",
 	/* (HDR Calibration's patterns, drawn by the renderer) */
 	"port hdr calibration",
+	/* (Multiplayer's Host Server: its playlists, the builder's maps and
+	rounds, the gametypes, the settings' values typed) */
+	"port host playlists update", "port host maps update", "port host entries update",
+	"port host gametypes update", "port host settings update",
 };
 
 static struct
