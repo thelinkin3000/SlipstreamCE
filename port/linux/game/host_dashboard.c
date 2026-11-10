@@ -694,18 +694,25 @@ void host_dashboard_draw(
 	rotation = server_director_rotation();
 	margin = (short)MAX(HOST_MARGIN, width / 16);
 
-	/* the whole screen, the game's under it unseen: the menus' gradient,
-	in bands from their blue down to their dark */
-	for (y = 0; y < height; y = (short)(y + 8))
+	/* the whole screen: the menus' gradient, in bands from their blue down
+	to their dark. In the lobby, ui.map's ring turns behind it as it does
+	behind the menus (the gradient as translucent as theirs); in a game,
+	whose map has no ring, the game's view under it is unseen */
 	{
-		long t = (long)y * 255 / height;
+		boolean ring = main_menu_scenario_is_loaded();
 
-		rectangle.x0 = 0;
-		rectangle.x1 = width;
-		rectangle.y0 = y;
-		rectangle.y1 = (short)MIN(height, y + 8);
-		draw_quad(&rectangle, HOST_COLOR(0xFF, 0x0A - (0x0A - 0x03) * t / 255, 0x26 - (0x26 - 0x08) * t / 255,
-			0x49 - (0x49 - 0x14) * t / 255));
+		for (y = 0; y < height; y = (short)(y + 8))
+		{
+			long t = (long)y * 255 / height;
+			long alpha = ring ? 0x40 + (0xC8 - 0x40) * t / 255 : 0xFF;
+
+			rectangle.x0 = 0;
+			rectangle.x1 = width;
+			rectangle.y0 = y;
+			rectangle.y1 = (short)MIN(height, y + 8);
+			draw_quad(&rectangle, HOST_COLOR(alpha, 0x0A - (0x0A - 0x03) * t / 255,
+				0x26 - (0x26 - 0x08) * t / 255, 0x49 - (0x49 - 0x14) * t / 255));
+		}
 	}
 
 	/* the title, its server's name and state under it */

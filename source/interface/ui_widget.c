@@ -7633,6 +7633,10 @@ void render_ui_widgets(
 		local_player_index == NONE ? 0 : local_player_index;
 	if (bink_playback_ui_rendering_inhibited())
 		return;
+	/* port: hosting from the menus, the host's screen is drawn in their place
+	(port/linux/game/host_dashboard.c), the lobby's screen under it unseen */
+	if (halo_server_hosting())
+		return;
 	if (!virtual_keyboard_active())
 	{
 		local_player_index = PIN(
