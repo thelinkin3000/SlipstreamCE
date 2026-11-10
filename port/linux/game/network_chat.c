@@ -1789,10 +1789,11 @@ static void chat_keyboard_press(
 }
 
 /* the on-screen keyboard's controller (pressed: the buttons pressed this
-frame, held: those held) and taps: B closes it, Start sends the line, D-pad
-Up and Down turn it to everyone, the team or the vehicle, the stick (and
-D-pad Left and Right) moves the key picked, A presses it, X deletes, Y
-gives capitals; a tap presses the key under it */
+frame, held: those held) and taps: B closes it, Start sends the line, R
+turns it to everyone, the team or the vehicle, the stick and the d-pad move
+the key picked, A presses it, X deletes, Y gives capitals; a tap presses
+the key under it. On the Switch its buttons are a menu's while it is up
+(xinput_sdl.c's menu_buttons_swapped): A, the right one, types */
 static void chat_keyboard_update(
 	unsigned long pressed,
 	unsigned long held)
@@ -1814,15 +1815,14 @@ static void chat_keyboard_update(
 		chat_input_end();
 		return;
 	}
-	if (TEST_FLAG(pressed, HALO_CHAT_PAD_UP))
-		chat_input.channel = (short)((chat_input.channel + NUMBER_OF_CHAT_CHANNELS - 1) % NUMBER_OF_CHAT_CHANNELS);
-	if (TEST_FLAG(pressed, HALO_CHAT_PAD_DOWN))
+	/* (R turns it to everyone, the team or the vehicle in turn) */
+	if (TEST_FLAG(pressed, HALO_CHAT_PAD_RIGHT_SHOULDER))
 		chat_input.channel = (short)((chat_input.channel + 1) % NUMBER_OF_CHAT_CHANNELS);
-	/* (a direction pressed moves the key at once, held, again after a while
-	and then quickly) */
-	if (TEST_FLAG(held, HALO_CHAT_PAD_STICK_UP))
+	/* (a direction pressed, the stick's or the d-pad's, moves the key at once,
+	held, again after a while and then quickly) */
+	if (TEST_FLAG(held, HALO_CHAT_PAD_STICK_UP) || TEST_FLAG(held, HALO_CHAT_PAD_UP))
 		rows_down = -1;
-	else if (TEST_FLAG(held, HALO_CHAT_PAD_STICK_DOWN))
+	else if (TEST_FLAG(held, HALO_CHAT_PAD_STICK_DOWN) || TEST_FLAG(held, HALO_CHAT_PAD_DOWN))
 		rows_down = 1;
 	if (TEST_FLAG(held, HALO_CHAT_PAD_STICK_LEFT) || TEST_FLAG(held, HALO_CHAT_PAD_LEFT))
 		columns_right = -1;
@@ -2443,9 +2443,18 @@ static void chat_keyboard_draw(
 	rectangle2d const *window,
 	short line_height)
 {
+	/* (the right shoulder named, not pictured: the menus' text pictures it
+	as the Xbox's black button) */
+#if defined(HALO_SWITCH)
+#define CHAT_CHANNEL_HINT "R Channel"
+#elif defined(HALO_PS5)
+#define CHAT_CHANNEL_HINT "R1 Channel"
+#else
+#define CHAT_CHANNEL_HINT "RB Channel"
+#endif
 	static wchar_t const *const hints[] = { L"%a-button Type", L"%x-button Delete", L"%y-button Shift",
-		L"%dpad-up Channel", L"%b-button Cancel" };
-	static char const *const hint_words[] = { "Type", "Delete", "Shift", "Channel", "Cancel" };
+		L"" CHAT_CHANNEL_HINT, L"%b-button Cancel" };
+	static char const *const hint_words[] = { "Type", "Delete", "Shift", CHAT_CHANNEL_HINT, "Cancel" };
 	short window_width = (short)(window->x1 - window->x0);
 	short window_height = (short)(window->y1 - window->y0);
 	struct onscreen_keyboard_screen screen;

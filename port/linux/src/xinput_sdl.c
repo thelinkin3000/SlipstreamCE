@@ -285,6 +285,7 @@ static void chat_pad_record(short port, const XINPUT_GAMEPAD *pad)
 	if (pad->bAnalogButtons[XINPUT_GAMEPAD_B] >= PRESSED) buttons |= 1UL << HALO_CHAT_PAD_B;
 	if (pad->bAnalogButtons[XINPUT_GAMEPAD_X] >= PRESSED) buttons |= 1UL << HALO_CHAT_PAD_X;
 	if (pad->bAnalogButtons[XINPUT_GAMEPAD_Y] >= PRESSED) buttons |= 1UL << HALO_CHAT_PAD_Y;
+	if (pad->bAnalogButtons[XINPUT_GAMEPAD_BLACK] >= PRESSED) buttons |= 1UL << HALO_CHAT_PAD_RIGHT_SHOULDER;
 	if (pad->sThumbLY > PUSHED) buttons |= 1UL << HALO_CHAT_PAD_STICK_UP;
 	if (pad->sThumbLY < -PUSHED) buttons |= 1UL << HALO_CHAT_PAD_STICK_DOWN;
 	if (pad->sThumbLX < -PUSHED) buttons |= 1UL << HALO_CHAT_PAD_STICK_LEFT;
@@ -1573,7 +1574,12 @@ static BOOL menu_buttons_swapped(BOOL menus)
 	}
 	/* (and hosting from the menus: the host's screen is a menu, in a game too,
 	port/linux/game/host_dashboard.c) */
-	return (menus || game_engine_showing_postgame() || network_replay_playing() || halo_server_hosting()) && swap;
+	/* (and the text chat's on-screen keyboard, a menu's keys over the game:
+	A types, B cancels, network_chat.c) */
+	extern unsigned char network_chat_keyboard_open(void);
+
+	return (menus || game_engine_showing_postgame() || network_replay_playing() || halo_server_hosting() ||
+		network_chat_keyboard_open()) && swap;
 #else
 	(void)menus;
 	return FALSE;
