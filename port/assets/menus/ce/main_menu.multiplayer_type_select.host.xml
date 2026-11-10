@@ -21,10 +21,17 @@
 		<child widget="main_menu/multiplayer_type_select/host/hub/preview_tab"/>
 		<child widget="main_menu/multiplayer_type_select/host/hub/preview_panel"/>
 		<child widget="main_menu/multiplayer_type_select/host/playlist_list"/>
-		<child widget="main_menu/multiplayer_type_select/host/hub/hint_host"/>
-		<child widget="main_menu/multiplayer_type_select/host/hub/hint_edit"/>
-		<child widget="main_menu/multiplayer_type_select/host/hub/hint_delete"/>
-		<child widget="main_menu/multiplayer_type_select/host/hub/hint_back"/>
+		<child widget="main_menu/multiplayer_type_select/host/hub/hint_host_console" platform="switch ps5"/>
+		<child widget="main_menu/multiplayer_type_select/host/hub/hint_edit_console" platform="switch ps5"/>
+		<child widget="main_menu/multiplayer_type_select/host/hub/hint_delete_console" platform="switch ps5"/>
+		<child widget="main_menu/multiplayer_type_select/host/hub/hint_settings_console_switch" platform="switch"/>
+		<child widget="main_menu/multiplayer_type_select/host/hub/hint_settings_console_ps5" platform="ps5"/>
+		<child widget="main_menu/multiplayer_type_select/host/hub/hint_settings_console" platform="switch ps5"/>
+		<child widget="main_menu/multiplayer_type_select/host/hub/hint_back_console" platform="switch ps5"/>
+		<child widget="main_menu/multiplayer_type_select/host/hub/hint_host" platform="desktop android web"/>
+		<child widget="main_menu/multiplayer_type_select/host/hub/hint_edit" platform="desktop android web"/>
+		<child widget="main_menu/multiplayer_type_select/host/hub/hint_delete" platform="desktop android web"/>
+		<child widget="main_menu/multiplayer_type_select/host/hub/hint_back" platform="desktop android web"/>
 	</widget>
 	<widget name="main_menu/multiplayer_type_select/host/hub/title" type="text" controller="1" left="0" top="20" width="640" height="32" text="HOST SERVER" font="ui\large_ui" color="#2896ff" align="center" text_flags="no_focus_test">
 	</widget>
@@ -35,6 +42,20 @@
 	<widget name="main_menu/multiplayer_type_select/host/hub/preview_tab" type="text" controller="1" left="340" top="76" width="260" height="28" bitmap="main_menu/multiplayer_type_select/host/tab" text="PLAYLIST PREVIEW" font="ui\large_ui" color="#FFFFFFFF" align="center" text_y="4" text_flags="no_focus_test">
 	</widget>
 	<widget name="main_menu/multiplayer_type_select/host/hub/preview_panel" controller="1" left="340" top="108" width="260" height="292" bitmap="main_menu/multiplayer_type_select/host/panel">
+	</widget>
+	<widget name="main_menu/multiplayer_type_select/host/hub/hint_host_console" type="text" controller="1" left="217" top="418" width="65" height="24" text="%a-button =HOST" font="ui\small_ui" color="#FFFFFFFF" text_y="4" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/multiplayer_type_select/host/hub/hint_edit_console" type="text" controller="1" left="288" top="418" width="65" height="24" text="%x-button =EDIT" font="ui\small_ui" color="#FFFFFFFF" text_y="4" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/multiplayer_type_select/host/hub/hint_delete_console" type="text" controller="1" left="359" top="418" width="79" height="24" text="%y-button =DELETE" font="ui\small_ui" color="#FFFFFFFF" text_y="4" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/multiplayer_type_select/host/hub/hint_settings_console" type="text" controller="1" left="464" top="418" width="85" height="24" text="=SETTINGS" font="ui\small_ui" color="#FFFFFFFF" text_y="4" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/multiplayer_type_select/host/hub/hint_settings_console_switch" controller="1" left="446" top="422" width="14" height="14" bitmap="hints/switch_plus">
+	</widget>
+	<widget name="main_menu/multiplayer_type_select/host/hub/hint_settings_console_ps5" controller="1" left="446" top="422" width="14" height="14" bitmap="hints/ps5_options">
+	</widget>
+	<widget name="main_menu/multiplayer_type_select/host/hub/hint_back_console" type="text" controller="1" left="543" top="418" width="65" height="24" text="%b-button =BACK" font="ui\small_ui" color="#FFFFFFFF" text_y="4" text_flags="no_focus_test">
 	</widget>
 	<widget name="main_menu/multiplayer_type_select/host/hub/hint_host" type="text" controller="1" left="316" top="418" width="65" height="24" text="%a-button =HOST" font="ui\small_ui" color="#FFFFFFFF" text_y="4" text_flags="no_focus_test">
 	</widget>
@@ -60,9 +81,9 @@
 		<child widget="main_menu/multiplayer_type_select/host/hub/list_item_7" x="50" y="312"/>
 		<child widget="main_menu/multiplayer_type_select/host/hub/list_item_8" x="50" y="340"/>
 		<child widget="main_menu/multiplayer_type_select/host/hub/list_item_9" x="50" y="368"/>
-		<child widget="main_menu/multiplayer_type_select/host/hub/button_edit" x="350" y="366"/>
-		<child widget="main_menu/multiplayer_type_select/host/hub/button_delete" x="432" y="366"/>
-		<child widget="main_menu/multiplayer_type_select/host/hub/button_settings" x="514" y="366"/>
+		<child widget="main_menu/multiplayer_type_select/host/hub/button_edit" x="350" y="366" platform="desktop android web"/>
+		<child widget="main_menu/multiplayer_type_select/host/hub/button_delete" x="432" y="366" platform="desktop android web"/>
+		<child widget="main_menu/multiplayer_type_select/host/hub/button_settings" x="514" y="366" platform="desktop android web"/>
 	</widget>
 	<widget name="main_menu/multiplayer_type_select/host/hub/list_item_0" width="240" height="26" bitmap="main_menu/multiplayer_type_select/host/row">
 		<on event="a" run="port host choose" open="main_menu/multiplayer_type_select/host/builder_screen"/>

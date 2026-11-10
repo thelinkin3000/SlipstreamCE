@@ -1230,7 +1230,11 @@ def browser_hint_pictures() -> list:
     Kenney's, as large as a hint's: (name, frames), as layout_overlay_pictures"""
     sources = {"hints/switch_l": "switch/kenney/switch_button_l", "hints/switch_r": "switch/kenney/switch_button_r",
                "hints/ps5_l1": "ps5/kenney/playstation_trigger_l1", "hints/ps5_r1": "ps5/kenney/playstation_trigger_r1",
-               "hints/switch_dpad": "switch/kenney/switch_dpad_all", "hints/ps5_dpad": "ps5/kenney/playstation_dpad_all"}
+               "hints/switch_dpad": "switch/kenney/switch_dpad_all", "hints/ps5_dpad": "ps5/kenney/playstation_dpad_all",
+               # (START: the Switch's +, the PS5's OPTIONS, which the menus'
+               # text has no picture of: Host Server's hints, _host_hints)
+               "hints/switch_plus": "switch/kenney/switch_button_plus",
+               "hints/ps5_options": "ps5/kenney/playstation5_button_options"}
     pictures = []
     for name, source in sources.items():
         text = (Path(__file__).resolve().parents[1] / "port/assets/buttons/platforms" / f"{source}.svg").read_text()
@@ -2904,18 +2908,31 @@ def _host_frame(base: str, key: str, x: int, title: str, panel: str, panel_top: 
     return lines
 
 
-def _host_hints(base: str, hints: list) -> list:
+# (START's picture on each console: browser_hint_pictures)
+HOST_START_PICTURES = {"switch": "hints/switch_plus", "ps5": "hints/ps5_options"}
+
+
+def _host_hints(base: str, hints: list, platform=None, suffix: str = "") -> list:
     """the footer's buttons, each its picture and what it does, the last
     ending at the right column's right edge (left-aligned each, so that the
-    picture stays beside its words)"""
+    picture stays beside its words); a hint whose text starts with
+    "%start-button" has the console's own picture of START (the menus' text
+    has none) before its words. For the platforms given (suffix naming
+    their widgets), or all"""
     lines, children = [], []
-    # (its words' width, the small font's some 7 units a letter, past the
-    # picture's token and its space, which the picture's 20 units take)
     widths = [22 + 7 * len(text.split(" ", 1)[1]) for _, text in hints]
     x = HOST_RIGHT_X + HOST_COLUMN_WIDTH - sum(widths) - 14 * (len(hints) - 1)
     for (key, text), width in zip(hints, widths):
-        lines += _host_text(f"{base}/hint_{key}", x, 418, width + 8, 24, text, "small", HOST_WHITE, text_y=4)
-        children.append(f'<child widget="{base}/hint_{key}"/>')
+        name = f"{base}/hint_{key}{suffix}"
+        if text.startswith("%start-button "):
+            lines += _host_text(name, x + 20, 418, width, 24, text.split(" ", 1)[1], "small", HOST_WHITE, text_y=4)
+            for console, bitmap in HOST_START_PICTURES.items():
+                lines += _widget(f"{name}_{console}", [("controller", 1), ("left", x + 2), ("top", 422), ("width", 14),
+                                                       ("height", 14), ("bitmap", bitmap)], [])
+                children.append(f'<child widget="{name}_{console}" platform="{console}"/>')
+        else:
+            lines += _host_text(name, x, 418, width + 8, 24, text, "small", HOST_WHITE, text_y=4)
+        children.append(f'<child{attributes([("widget", name), ("platform", platform)])}/>')
         x += width + 14
     return lines, children
 
@@ -2951,10 +2968,17 @@ def _host() -> list:
 
     # the Host Hub: the playlists on the left, the one chosen on the right
     hub = f"{HOST}/hub"
-    # (START opens the settings too, unnamed: the Switch has no picture of it;
-    # their pill names them)
+    # (the consoles': their controller alone, START's picture their own and
+    # no pills, so that the rows are all there is to choose; the others' the
+    # pills, START unnamed)
     hints, hint_children = _host_hints(hub, [("host", "%a-button =HOST"), ("edit", "%x-button =EDIT"),
-                                             ("delete", "%y-button =DELETE"), ("back", "%b-button =BACK")])
+                                             ("delete", "%y-button =DELETE"), ("settings", "%start-button =SETTINGS"),
+                                             ("back", "%b-button =BACK")], "switch ps5", "_console")
+    other_hints, other_children = _host_hints(hub, [("host", "%a-button =HOST"), ("edit", "%x-button =EDIT"),
+                                                    ("delete", "%y-button =DELETE"), ("back", "%b-button =BACK")],
+                                              "desktop android web")
+    hints += other_hints
+    hint_children += other_children
     lines += _widget(f"{HOST}/host_screen", [("width", 640), ("height", 480),
                                              ("flags", "pass_unhandled_to_focused_child"),
                                              ("bitmap", "bitmaps/gradient")],
@@ -2974,8 +2998,8 @@ def _host() -> list:
              ("button_delete", "DELETE", "port host delete", None),
              ("button_settings", "SETTINGS", None, f"{HOST}/settings/settings_screen")]
     pill_x = HOST_RIGHT_X + (HOST_COLUMN_WIDTH - 3 * HOST_PILL_WIDTHS[1] - 2 * 6) // 2
-    rows += [f'<child widget="{hub}/{key}" x="{pill_x + index * (HOST_PILL_WIDTHS[1] + 6)}" y="{HOST_PANEL_BOTTOM - 34}"/>'
-             for index, (key, *_) in enumerate(pills)]
+    rows += [f'<child widget="{hub}/{key}" x="{pill_x + index * (HOST_PILL_WIDTHS[1] + 6)}" y="{HOST_PANEL_BOTTOM - 34}" '
+             'platform="desktop android web"/>' for index, (key, *_) in enumerate(pills)]
     lines += _widget(f"{HOST}/playlist_list",
                      [("type", "column_list"), ("width", 640), ("height", 480),
                       ("flags", "pass_unhandled_to_focused_child up_down_tabs_children"),
