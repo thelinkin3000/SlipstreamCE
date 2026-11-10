@@ -769,6 +769,8 @@ def main() -> None:
         shutil.copy2(MENUS / "controllers" / f"{controller}.svg", MENUS / "port_svg/controllers" / f"{controller}.svg")
     lines += [art.port_picture(name, frames) for name, frames in port_settings.layout_overlay_pictures()]
     lines += [art.port_picture(name, frames) for name, frames in port_settings.browser_hint_pictures()]
+    # (Host Server's screens' tabs, panels, rows and pills: port_settings._host)
+    lines += [art.port_picture(name, frames) for name, frames in port_settings.host_pictures()]
     # (nothing: what a game map draws for a frame of ui.map's it has not,
     # menu_tags.c)
     lines.append(art.port_picture("blank", [

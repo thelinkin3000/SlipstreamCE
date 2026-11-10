@@ -2765,8 +2765,89 @@ def _coop() -> list:
 HOST = f"{MT}/host"
 HOST_ROWS = 10
 HOST_MAP_ROWS = 9
-HOST_ENTRY_ROWS = 8
-HOST_GAMETYPE_ROWS = 11
+HOST_ENTRY_ROWS = 6
+HOST_GAMETYPE_ROWS = 10
+# their look, the Host Server mockup's (the PC menus' blue outlines, dark
+# panels and tabs): its pictures (host_pictures) and their places
+HOST_BLUE, HOST_DARK, HOST_DEEP = "#2896ff", "#0a2649", "#050d1c"
+HOST_TEXT, HOST_WHITE = "#FF8CA8E8", "#FFFFFFFF"
+HOST_COLUMN_WIDTH, HOST_LEFT_X, HOST_RIGHT_X = 260, 40, 340
+HOST_TAB_Y, HOST_PANEL_Y, HOST_PANEL_BOTTOM = 62, 96, 396
+HOST_ROW_WIDTH, HOST_ROW_HEIGHT, HOST_ENTRY_HEIGHT = 240, 26, 36
+HOST_PILL_WIDTHS = (116, 76)
+
+
+def _host_svg(width: int, height: int, body: list) -> str:
+    return "\n".join([f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
+                      f'viewBox="0 0 {width} {height}">', *body, "</svg>", ""])
+
+
+def _host_box(width: int, height: int, radius: float, fill_opacity: float = 0.82, glow: bool = True) -> list:
+    """a rounded box, its blue outline over a dark gradient, a faint lighter
+    rim inside it as the PC menus' boxes have"""
+    return [f'  <defs><linearGradient id="body" x1="0" y1="0" x2="0" y2="1">',
+            f'    <stop offset="0" stop-color="{HOST_DARK}"/>', f'    <stop offset="1" stop-color="{HOST_DEEP}"/>',
+            "  </linearGradient></defs>",
+            f'  <rect x="1" y="1" width="{width - 2}" height="{height - 2}" rx="{radius}" fill="url(#body)" '
+            f'fill-opacity="{fill_opacity}"/>',
+            *([f'  <rect x="3" y="3" width="{width - 6}" height="{height - 6}" rx="{max(radius - 2, 1)}" fill="none" '
+               f'stroke="#9fd0ff" stroke-opacity="0.18" stroke-width="1"/>'] if glow else []),
+            f'  <rect x="1" y="1" width="{width - 2}" height="{height - 2}" rx="{radius}" fill="none" '
+            f'stroke="{HOST_BLUE}" stroke-width="2"/>']
+
+
+def _host_arrow(x: float, y: float, size: float, direction: str, color: str = HOST_BLUE) -> str:
+    """a small solid triangle pointing left, right, up or down, its middle at x, y"""
+    points = {"right": [(x - size / 2, y - size), (x + size / 2, y), (x - size / 2, y + size)],
+              "left": [(x + size / 2, y - size), (x - size / 2, y), (x + size / 2, y + size)],
+              "up": [(x - size, y + size / 2), (x, y - size / 2), (x + size, y + size / 2)],
+              "down": [(x - size, y - size / 2), (x, y + size / 2), (x + size, y - size / 2)]}[direction]
+    return f'  <polygon points="{" ".join(f"{px:.2f},{py:.2f}" for px, py in points)}" fill="{color}"/>'
+
+
+def _host_band(width: int, height: int, frame: int) -> str:
+    """a row's background: nothing (0), the row chosen's band with its arrow
+    (1), a round picked up to be moved, with its up and down arrows (2)"""
+    if frame == 0:
+        return _host_svg(width, height, [])
+    body = [f'  <rect x="1" y="1" width="{width - 2}" height="{height - 2}" rx="4" '
+            f'fill="{HOST_BLUE}" fill-opacity="{0.22 if frame == 1 else 0.42}"/>',
+            f'  <rect x="1" y="1" width="{width - 2}" height="{height - 2}" rx="4" fill="none" stroke="{HOST_BLUE}" '
+            f'stroke-opacity="0.6" stroke-width="1"/>',
+            _host_arrow(8, height / 2, 5, "right", "#5fb4ff")]
+    if frame == 2:
+        body += [_host_arrow(width - 12, height / 2 - 6, 4, "up", "#ffffff"),
+                 _host_arrow(width - 12, height / 2 + 6, 4, "down", "#ffffff")]
+    return _host_svg(width, height, body)
+
+
+def host_pictures() -> list:
+    """the Host Server screens' pictures (ce_menus.py draws them): the tabs,
+    the chooser, the panels, the rows' bands and the pill buttons"""
+    tab = _host_svg(HOST_COLUMN_WIDTH, 28, _host_box(HOST_COLUMN_WIDTH, 28, 10, 0.9))
+    chooser = _host_svg(HOST_COLUMN_WIDTH, 28, _host_box(HOST_COLUMN_WIDTH, 28, 6, 0.9) +
+                        [_host_arrow(14, 14, 5, "left"), _host_arrow(HOST_COLUMN_WIDTH - 14, 14, 5, "right")])
+    pictures = [(f"{HOST}/tab", [(tab, HOST_COLUMN_WIDTH, 28)]),
+                (f"{HOST}/chooser", [(chooser, HOST_COLUMN_WIDTH, 28)])]
+    for key, top in (("panel", HOST_PANEL_Y), ("panel_short", HOST_PANEL_Y + 34)):
+        height = HOST_PANEL_BOTTOM - top
+        pictures.append((f"{HOST}/{key}", [(_host_svg(HOST_COLUMN_WIDTH, height,
+                                                       _host_box(HOST_COLUMN_WIDTH, height, 12, 0.72)),
+                                             HOST_COLUMN_WIDTH, height)]))
+    pictures.append((f"{HOST}/row", [(_host_band(HOST_ROW_WIDTH, HOST_ROW_HEIGHT, frame), HOST_ROW_WIDTH,
+                                      HOST_ROW_HEIGHT) for frame in range(2)]))
+    pictures.append((f"{HOST}/entry_row", [(_host_band(HOST_ROW_WIDTH, HOST_ENTRY_HEIGHT, frame), HOST_ROW_WIDTH,
+                                            HOST_ENTRY_HEIGHT) for frame in range(3)]))
+    for width in HOST_PILL_WIDTHS:
+        frames = []
+        for focused in (False, True):
+            body = _host_box(width, 24, 11, 0.9, glow=False)
+            if focused:
+                body.append(f'  <rect x="2" y="2" width="{width - 4}" height="20" rx="10" fill="{HOST_BLUE}" '
+                            'fill-opacity="0.45"/>')
+            frames.append((_host_svg(width, 24, body), width, 24))
+        pictures.append((f"{HOST}/pill_{width}", frames))
+    return pictures
 # Server Settings' rows: a label, the setting, its choices (shown, written),
 # and its help; None for a value typed (A: its keyboard, the function)
 HOST_SETTINGS = [
@@ -2796,16 +2877,58 @@ HOST_SETTINGS = [
 HOST_BACK = ['<on event="b" run="port host back" back="true"/>', '<on event="back" run="port host back" back="true"/>']
 
 
-def _host_row(name: str, width: int, bitmap: str, handlers: list, text_widget: str, arrows: bool) -> list:
-    """a row of one of the Host screens' lists (rows_update's list_item_N:
-    its text list_item_text, its arrows on the row chosen)"""
-    children = [f'<child widget="{text_widget}" x="{25 if arrows else 0}"/>']
-    if arrows:
-        children.append('<child widget="main_menu/new_select/list_item_arrows"/>')
-    return _widget(name, [("width", width), ("height", 28 if arrows else 32), ("bitmap", bitmap),
-                          ("font", "ui\\large_ui"), ("color", "#FF2896FF"), ("align", "center" if arrows else None),
-                          ("text_y", 3)],
-                   handlers + ['<on event="left_mouse" run="mouse emit accept event"/>', *children])
+def _host_text(name: str, x: int, y: int, width: int, height: int, text, font: str = "large",
+               color: str = HOST_TEXT, align=None, text_y: int = 0, text_x: int = 0) -> list:
+    """a text of the Host screens (its own words, or None: the game's)"""
+    return _widget(name, [("type", "text"), ("controller", 1), ("left", x), ("top", y), ("width", width),
+                          ("height", height), ("text", text), ("font", f"ui\\{font}_ui"), ("color", color),
+                          ("align", align), ("text_x", text_x or None), ("text_y", text_y or None),
+                          ("text_flags", "no_focus_test")], [])
+
+
+def _host_picture(name: str, x: int, y: int, width: int, height: int, bitmap: str) -> list:
+    return _widget(name, [("controller", 1), ("left", x), ("top", y), ("width", width), ("height", height),
+                          ("bitmap", bitmap)], [])
+
+
+def _host_frame(base: str, key: str, x: int, title: str, panel: str, panel_top: int) -> list:
+    """a column's tab, with its title, and its panel"""
+    lines = _widget(f"{base}/{key}_tab", [("type", "text"), ("controller", 1), ("left", x), ("top", HOST_TAB_Y),
+                                          ("width", HOST_COLUMN_WIDTH), ("height", 28), ("bitmap", f"{HOST}/tab"),
+                                          ("text", title), ("font", "ui\\large_ui"), ("color", HOST_WHITE),
+                                          ("align", "center"), ("text_y", 4), ("text_flags", "no_focus_test")], [])
+    lines += _host_picture(f"{base}/{key}_panel", x, panel_top, HOST_COLUMN_WIDTH, HOST_PANEL_BOTTOM - panel_top,
+                           f"{HOST}/{panel}")
+    return lines
+
+
+def _host_hints(base: str, hints: list) -> list:
+    """the footer's buttons, each its picture and what it does, the last
+    ending at the right column's right edge (left-aligned each, so that the
+    picture stays beside its words)"""
+    lines, children = [], []
+    widths = [24 + 7 * len(text) for _, text in hints]
+    x = HOST_RIGHT_X + HOST_COLUMN_WIDTH - sum(widths) - 14 * (len(hints) - 1)
+    for (key, text), width in zip(hints, widths):
+        lines += _host_text(f"{base}/hint_{key}", x, 418, width + 8, 24, text, "small", HOST_WHITE, text_y=4)
+        children.append(f'<child widget="{base}/hint_{key}"/>')
+        x += width + 14
+    return lines, children
+
+
+def _host_row(name: str, height: int, bitmap: str, handlers: list, texts: list) -> list:
+    """a row of one of the Host screens' lists (host_list_update's list_item_N:
+    its band's frame by its state, its words list_item_text, and a round's
+    gametype under them, list_item_detail)"""
+    return _widget(name, [("width", HOST_ROW_WIDTH), ("height", height), ("bitmap", bitmap)],
+                   handlers + ['<on event="left_mouse" run="mouse emit accept event"/>'] +
+                   [f'<child widget="{text}"/>' for text in texts])
+
+
+def _host_pill(name: str, width: int, text: str, handlers: list) -> list:
+    return _widget(name, [("type", "text"), ("width", width), ("height", 24), ("bitmap", f"{HOST}/pill_{width}"),
+                          ("text", text), ("font", "ui\\small_ui"), ("color", HOST_WHITE), ("align", "center"),
+                          ("text_y", 4)], handlers + ['<on event="left_mouse" run="mouse emit accept event"/>'])
 
 
 def _host() -> list:
@@ -2815,17 +2938,39 @@ def _host() -> list:
                      ("color", "#FF2896FF"), ("text_x", 13), ("text_y", 5)],
                     [f'<on event="a" open="{HOST}/host_screen"/>', f'<on event="start" open="{HOST}/host_screen"/>',
                      '<on event="left_mouse" run="mouse emit accept event"/>'])
-    # the Host Hub, laid out as Co-op's profiles are: the list on the left,
-    # the playlist chosen in the frame on the right
+    # (the rows' words: a row's, a round's map and its gametype under it)
+    lines += _host_text(f"{HOST}/rows/list_item_text", 0, 0, HOST_ROW_WIDTH, HOST_ROW_HEIGHT, None, text_x=22,
+                        text_y=4)
+    lines += _host_text(f"{HOST}/entries/list_item_text", 0, 0, HOST_ROW_WIDTH, 18, None, text_x=22, text_y=2)
+    lines += _host_text(f"{HOST}/entries/list_item_detail", 0, 17, HOST_ROW_WIDTH, 18, None, color=HOST_WHITE,
+                        text_x=40)
+
+    # the Host Hub: the playlists on the left, the one chosen on the right
+    hub = f"{HOST}/hub"
+    hints, hint_children = _host_hints(hub, [("host", "%a-button =HOST"), ("edit", "%x-button =EDIT"),
+                                             ("delete", "%y-button =DELETE"),
+                                             ("settings", "%start-button =SETTINGS"), ("back", "%b-button =BACK")])
     lines += _widget(f"{HOST}/host_screen", [("width", 640), ("height", 480),
                                              ("flags", "pass_unhandled_to_focused_child"),
                                              ("bitmap", "bitmaps/gradient")],
                      ['<on event="b" back="true"/>', '<on event="back" back="true"/>',
-                      '<child widget="main_menu/new_select/sel_list_desc_bkd"/>',
-                      f'<child widget="{HOST}/playlist_list"/>',
-                      f'<child widget="{HOST}/header_host"/>'])
-    lines += _header(f"{HOST}/header_host", f"{MT}/header_multiplayer")
-    rows = [f'<child widget="{HOST}/hub/list_item_{index}" x="20" y="{73 + 30 * index}"/>' for index in range(HOST_ROWS)]
+                      f'<child widget="{hub}/title"/>', f'<child widget="{hub}/playlists_tab"/>',
+                      f'<child widget="{hub}/playlists_panel"/>', f'<child widget="{hub}/preview_tab"/>',
+                      f'<child widget="{hub}/preview_panel"/>', f'<child widget="{HOST}/playlist_list"/>',
+                      *hint_children])
+    lines += _host_text(f"{hub}/title", 0, 20, 640, 32, "HOST SERVER", color=HOST_BLUE, align="center")
+    lines += _host_frame(hub, "playlists", HOST_LEFT_X, "PLAYLISTS", "panel", HOST_PANEL_Y)
+    lines += _host_frame(hub, "preview", HOST_RIGHT_X, "PLAYLIST PREVIEW", "panel", HOST_PANEL_Y)
+    lines += hints
+    rows = [f'<child widget="{hub}/list_item_{index}" x="{HOST_LEFT_X + 10}" y="{HOST_PANEL_Y + 8 + 28 * index}"/>'
+            for index in range(HOST_ROWS)]
+    # (the pills, under the preview: the list's, after its rows)
+    pills = [("button_edit", "EDIT", "port host edit", f"{HOST}/builder_screen"),
+             ("button_delete", "DELETE", "port host delete", None),
+             ("button_settings", "SETTINGS", None, f"{HOST}/settings/settings_screen")]
+    pill_x = HOST_RIGHT_X + (HOST_COLUMN_WIDTH - 3 * HOST_PILL_WIDTHS[1] - 2 * 6) // 2
+    rows += [f'<child widget="{hub}/{key}" x="{pill_x + index * (HOST_PILL_WIDTHS[1] + 6)}" y="{HOST_PANEL_BOTTOM - 34}"/>'
+             for index, (key, *_) in enumerate(pills)]
     lines += _widget(f"{HOST}/playlist_list",
                      [("type", "column_list"), ("width", 640), ("height", 480),
                       ("flags", "pass_unhandled_to_focused_child up_down_tabs_children"),
@@ -2834,135 +2979,119 @@ def _host() -> list:
                       '<on event="created" run="port host init"/>',
                       f'<on event="x" run="port host edit" open="{HOST}/builder_screen"/>',
                       '<on event="y" run="port host delete"/>',
-                      f'<on event="start" open="{HOST}/settings/settings_screen"/>',
-                      *rows, f'<child widget="{HOST}/hub_button_bar" y="414"/>'])
+                      f'<on event="start" open="{HOST}/settings/settings_screen"/>', *rows])
     for index in range(HOST_ROWS):
-        lines += _host_row(f"{HOST}/hub/list_item_{index}", 390,
-                           "bitmaps/sel_list_item_bkd_top" if index == 0 else "bitmaps/sel_list_item_bkd",
+        lines += _host_row(f"{hub}/list_item_{index}", HOST_ROW_HEIGHT, f"{HOST}/row",
                            [f'<on event="a" run="port host choose" open="{HOST}/builder_screen"/>'],
-                           "main_menu/new_select/list_item_text", True)
-    # (in the frame, sel_list_desc_bkd's: the playlist's name and its rounds)
+                           [f"{HOST}/rows/list_item_text"])
+    for key, text, function, target in pills:
+        handlers = [f'<on event="{event}"{attributes([("run", function), ("open", target)])}/>' for event in ("a",)]
+        lines += _host_pill(f"{hub}/{key}", HOST_PILL_WIDTHS[1], text, handlers)
+    # (in the preview: the playlist's name and its rounds)
     lines += _widget(f"{HOST}/playlist_details", [("width", 640), ("height", 480)],
                      [f'<child widget="{HOST}/playlist_details_name"/>', f'<child widget="{HOST}/playlist_details_text"/>'])
-    lines += _widget(f"{HOST}/playlist_details_name",
-                     [("type", "text"), ("controller", 1), ("left", 412), ("top", 84), ("width", 200), ("height", 44),
-                      ("font", "ui\\large_ui"), ("color", "#FFFFFFFF")], [])
-    lines += _widget(f"{HOST}/playlist_details_text",
-                     [("type", "text"), ("controller", 1), ("left", 412), ("top", 130), ("width", 200),
-                      ("height", 272), ("font", "ui\\small_ui"), ("color", "#FF2896FF")], [])
-    lines += _widget(f"{HOST}/hub_button_bar",
-                     [("type", "column_list"), ("width", 640), ("height", 28),
-                      ("flags", "pass_unhandled_to_focused_child left_right_tabs_items")],
-                     [f'<child widget="{HOST}/button_settings" y="1"/>',
-                      f'<child widget="{HOST}/button_edit" x="130" y="1"/>',
-                      f'<child widget="{HOST}/button_delete" x="260" y="1"/>',
-                      '<child widget="common_button_back" x="510" y="1"/>'])
-    lines += _text_button(f"{HOST}/button_settings", "SETTINGS",
-                          [f'<on event="a" open="{HOST}/settings/settings_screen"/>',
-                           f'<on event="start" open="{HOST}/settings/settings_screen"/>'])
-    lines += _text_button(f"{HOST}/button_edit", "EDIT",
-                          [f'<on event="a" run="port host edit" open="{HOST}/builder_screen"/>',
-                           f'<on event="start" run="port host edit" open="{HOST}/builder_screen"/>'])
-    lines += _text_button(f"{HOST}/button_delete", "DELETE",
-                          ['<on event="a" run="port host delete"/>', '<on event="start" run="port host delete"/>'])
+    lines += _host_text(f"{HOST}/playlist_details_name", HOST_RIGHT_X + 16, HOST_PANEL_Y + 10, HOST_COLUMN_WIDTH - 32,
+                        24, None, color=HOST_WHITE)
+    lines += _host_text(f"{HOST}/playlist_details_text", HOST_RIGHT_X + 16, HOST_PANEL_Y + 40, HOST_COLUMN_WIDTH - 32,
+                        HOST_PANEL_BOTTOM - HOST_PANEL_Y - 84, None, "small")
 
-    # the Playlist Builder: two lists side by side, left and right going
-    # from one to the other (the screen's), up and down through each
+    # the Playlist Builder: the maps (MULTIPLAYER's or CUSTOM MAPS', the
+    # chooser over them) and the playlist's rounds side by side, left and
+    # right going from one to the other (the screen's), up and down through
+    # each; X saves it
     builder = f"{HOST}/builder"
+    hints, hint_children = _host_hints(builder, [("save", "%x-button =SAVE PLAYLIST"), ("select", "%a-button =SELECT"),
+                                                 ("back", "%b-button =BACK")])
     lines += _widget(f"{HOST}/builder_screen", [("width", 640), ("height", 480),
                                                 ("flags", "pass_unhandled_to_focused_child left_right_tabs_children"),
                                                 ("bitmap", "bitmaps/gradient")],
-                     [*HOST_BACK,
-                      f'<child widget="{builder}/title"/>',
-                      f'<child widget="{builder}/maps_label"/>',
-                      f'<child widget="{builder}/entries_label"/>',
-                      f'<child widget="{builder}/map_list"/>',
-                      f'<child widget="{builder}/entry_list"/>',
-                      f'<child widget="{builder}/help" x="40" y="390"/>'])
-    lines += _widget(f"{builder}/title", [("type", "text"), ("controller", 1), ("left", 40), ("top", 22), ("width", 560),
-                                          ("height", 36), ("text", "CREATE PLAYLIST"), ("font", "ui\\large_ui"),
-                                          ("color", "#FF2896FF"), ("text_flags", "no_focus_test")], [])
-    for key, text, x in (("maps_label", "SELECT MAP", 40), ("entries_label", "CURRENT PLAYLIST", 340)):
-        lines += _widget(f"{builder}/{key}", [("type", "text"), ("controller", 1), ("left", x), ("top", 66),
-                                              ("width", 260), ("height", 24), ("text", text), ("font", "ui\\small_ui"),
-                                              ("color", "#FFFFFFFF"), ("text_x", 13), ("text_flags", "no_focus_test")], [])
-    lines += _widget(f"{builder}/help", [("type", "text"), ("controller", 1), ("width", 560), ("height", 20),
-                                         ("font", "ui\\small_ui"), ("color", "#FF2896FF"),
-                                         ("text_flags", "no_focus_test")], [])
-    # (the rows' text, for the rows of Multiplayer's width)
-    lines += _widget(f"{builder}/maps/list_item_text",
-                     [("type", "text"), ("controller", 1), ("width", 220), ("height", 22), ("font", "ui\\large_ui"),
-                      ("color", "#FF2896FF"), ("text_x", 13), ("text_y", 4)], [])
-    lines += _widget(f"{builder}/entries/list_item_text",
-                     [("type", "text"), ("controller", 1), ("width", 220), ("height", 22), ("font", "ui\\small_ui"),
-                      ("color", "#FF2896FF"), ("text_x", 13), ("text_y", 7)], [])
-    rows = [f'<child widget="{builder}/maps/list_item_{index}" x="40" y="{96 + 33 * index}"/>'
-            for index in range(HOST_MAP_ROWS)]
+                     [*HOST_BACK, '<on event="x" run="port host save" back="true"/>',
+                      f'<child widget="{builder}/title"/>', f'<child widget="{builder}/maps_tab"/>',
+                      f'<child widget="{builder}/maps_panel"/>', f'<child widget="{builder}/entries_tab"/>',
+                      f'<child widget="{builder}/entries_panel"/>', f'<child widget="{builder}/status"/>',
+                      f'<child widget="{builder}/map_list"/>', f'<child widget="{builder}/entry_list"/>',
+                      *hint_children])
+    lines += _host_text(f"{builder}/title", 0, 20, 640, 32, None, color=HOST_BLUE, align="center")
+    lines += _host_frame(builder, "maps", HOST_LEFT_X, "SELECT MAP", "panel_short", HOST_PANEL_Y + 34)
+    lines += _host_frame(builder, "entries", HOST_RIGHT_X, "CURRENT PLAYLIST", "panel", HOST_PANEL_Y)
+    lines += _host_text(f"{builder}/status", HOST_LEFT_X, 400, HOST_RIGHT_X + HOST_COLUMN_WIDTH - HOST_LEFT_X, 18,
+                        None, "small", HOST_WHITE, align="center")
+    lines += hints
+    rows = [f'<child widget="{builder}/op_kind" x="{HOST_LEFT_X}" y="{HOST_PANEL_Y}"/>']
+    rows += [f'<child widget="{builder}/maps/list_item_{index}" x="{HOST_LEFT_X + 10}" '
+             f'y="{HOST_PANEL_Y + 42 + 28 * index}"/>' for index in range(HOST_MAP_ROWS)]
     lines += _widget(f"{builder}/map_list",
                      [("type", "column_list"), ("width", 640), ("height", 480),
                       ("flags", "pass_unhandled_to_focused_child up_down_tabs_children")],
                      ['<data input="port host maps update"/>', '<on event="created" run="port host maps init"/>', *rows])
+    # (the chooser: MULTIPLAYER or CUSTOM MAPS, A changing it)
+    lines += _widget(f"{builder}/op_kind", [("type", "text"), ("width", HOST_COLUMN_WIDTH), ("height", 28),
+                                            ("bitmap", f"{HOST}/chooser"), ("font", "ui\\large_ui"),
+                                            ("color", HOST_TEXT), ("align", "center"), ("text_y", 4)],
+                     ['<on event="a" run="port host map kind"/>', '<on event="start" run="port host map kind"/>',
+                      '<on event="left_mouse" run="mouse emit accept event"/>'])
     for index in range(HOST_MAP_ROWS):
-        lines += _host_row(f"{builder}/maps/list_item_{index}", 232, "bitmaps/list_item_bkd",
+        lines += _host_row(f"{builder}/maps/list_item_{index}", HOST_ROW_HEIGHT, f"{HOST}/row",
                            [f'<on event="a" run="port host map choose" open="{HOST}/gametype_screen"/>',
                             f'<on event="start" run="port host map choose" open="{HOST}/gametype_screen"/>'],
-                           f"{builder}/maps/list_item_text", False)
-    # (its name's row first, then the rounds, then SAVE and CANCEL)
-    rows = [f'<child widget="{builder}/op_name" x="340" y="96"/>']
-    rows += [f'<child widget="{builder}/entries/list_item_{index}" x="340" y="{129 + 33 * index}"/>'
-             for index in range(HOST_ENTRY_ROWS)]
+                           [f"{HOST}/rows/list_item_text"])
+    # (its name's row first, then the rounds, then REMOVE ALL and REORDER)
+    rows = [f'<child widget="{builder}/op_name" x="{HOST_RIGHT_X + 10}" y="{HOST_PANEL_Y + 8}"/>']
+    rows += [f'<child widget="{builder}/entries/list_item_{index}" x="{HOST_RIGHT_X + 10}" '
+             f'y="{HOST_PANEL_Y + 40 + HOST_ENTRY_HEIGHT * index}"/>' for index in range(HOST_ENTRY_ROWS)]
+    pill_x = HOST_RIGHT_X + (HOST_COLUMN_WIDTH - 2 * HOST_PILL_WIDTHS[0] - 8) // 2
+    rows += [f'<child widget="{builder}/button_remove_all" x="{pill_x}" y="{HOST_PANEL_BOTTOM - 34}"/>',
+             f'<child widget="{builder}/button_reorder" x="{pill_x + HOST_PILL_WIDTHS[0] + 8}" '
+             f'y="{HOST_PANEL_BOTTOM - 34}"/>']
     lines += _widget(f"{builder}/entry_list",
                      [("type", "column_list"), ("width", 640), ("height", 480),
                       ("flags", "pass_unhandled_to_focused_child up_down_tabs_children")],
                      ['<data input="port host entries update"/>',
                       '<on event="y" run="port host entry remove"/>',
                       '<on event="white" run="port host entry up"/>', '<on event="black" run="port host entry down"/>',
-                      *rows, f'<child widget="{builder}/button_bar" y="414"/>'])
-    lines += _widget(f"{builder}/op_name", [("type", "text"), ("width", 232), ("height", 32),
-                                            ("bitmap", "bitmaps/list_item_bkd"), ("color", "#FF2896FF")],
+                      *rows])
+    lines += _widget(f"{builder}/op_name", [("type", "text"), ("width", HOST_ROW_WIDTH), ("height", HOST_ROW_HEIGHT),
+                                            ("bitmap", f"{HOST}/row")],
                      ['<on event="a" run="port host name edit"/>', '<on event="start" run="port host name edit"/>',
                       '<on event="left_mouse" run="mouse emit accept event"/>',
                       f'<child widget="{builder}/name_value"/>'])
-    lines += _widget(f"{builder}/name_value", [("type", "text"), ("controller", 1), ("width", 220), ("height", 22),
-                                               ("font", "ui\\large_ui"), ("color", "#FF2896FF"), ("text_x", 13),
-                                               ("text_y", 4), ("text_flags", "no_focus_test")], [])
+    lines += _host_text(f"{builder}/name_value", 0, 0, HOST_ROW_WIDTH, HOST_ROW_HEIGHT, None, color=HOST_WHITE,
+                        text_x=22, text_y=4)
     for index in range(HOST_ENTRY_ROWS):
-        lines += _host_row(f"{builder}/entries/list_item_{index}", 232, "bitmaps/list_item_bkd", [],
-                           f"{builder}/entries/list_item_text", False)
-    lines += _widget(f"{builder}/button_bar",
-                     [("type", "column_list"), ("width", 640), ("height", 28),
-                      ("flags", "pass_unhandled_to_focused_child left_right_tabs_items")],
-                     [f'<child widget="{builder}/button_save" x="380" y="1"/>',
-                      '<child widget="common_button_cancel" x="510" y="1"/>'])
-    lines += _text_button(f"{builder}/button_save", "SAVE",
-                          ['<on event="a" run="port host save" back="true"/>',
-                           '<on event="start" run="port host save" back="true"/>'])
+        lines += _host_row(f"{builder}/entries/list_item_{index}", HOST_ENTRY_HEIGHT, f"{HOST}/entry_row",
+                           ['<on event="a" run="port host entry grab"/>', '<on event="up" run="port host entry up"/>',
+                            '<on event="down" run="port host entry down"/>'],
+                           [f"{HOST}/entries/list_item_text", f"{HOST}/entries/list_item_detail"])
+    lines += _host_pill(f"{builder}/button_remove_all", HOST_PILL_WIDTHS[0], "REMOVE ALL",
+                        ['<on event="a" run="port host remove all"/>'])
+    lines += _host_pill(f"{builder}/button_reorder", HOST_PILL_WIDTHS[0], "REORDER",
+                        ['<on event="a" run="port host reorder"/>'])
 
     # Select Gametype: the gametypes a round can play, A adding the round
     gametype = f"{HOST}/gametype"
+    x = (640 - HOST_COLUMN_WIDTH) // 2
+    hints, hint_children = _host_hints(gametype, [("select", "%a-button =SELECT"), ("back", "%b-button =BACK")])
     lines += _widget(f"{HOST}/gametype_screen", [("width", 640), ("height", 480),
                                                  ("flags", "pass_unhandled_to_focused_child"),
                                                  ("bitmap", "bitmaps/gradient")],
                      ['<on event="b" back="true"/>', '<on event="back" back="true"/>',
-                      f'<child widget="{gametype}/gametype_list"/>',
-                      f'<child widget="{gametype}/header_gametype"/>'])
-    lines += _header(f"{gametype}/header_gametype", "main_menu/gametype_select/header_select_gametype")
-    rows = [f'<child widget="{gametype}/list_item_{index}" x="125" y="{73 + 30 * index}"/>'
+                      f'<child widget="{gametype}/title"/>', f'<child widget="{gametype}/types_tab"/>',
+                      f'<child widget="{gametype}/types_panel"/>', f'<child widget="{gametype}/gametype_list"/>',
+                      *hint_children])
+    lines += _host_text(f"{gametype}/title", 0, 20, 640, 32, "SELECT GAME TYPE", color=HOST_BLUE, align="center")
+    lines += _host_frame(gametype, "types", x, None, "panel", HOST_PANEL_Y)
+    lines += hints
+    rows = [f'<child widget="{gametype}/list_item_{index}" x="{x + 10}" y="{HOST_PANEL_Y + 10 + 28 * index}"/>'
             for index in range(HOST_GAMETYPE_ROWS)]
     lines += _widget(f"{gametype}/gametype_list",
                      [("type", "column_list"), ("width", 640), ("height", 480),
                       ("flags", "pass_unhandled_to_focused_child up_down_tabs_children")],
-                     ['<data input="port host gametypes update"/>', *rows,
-                      f'<child widget="{gametype}/button_bar" y="414"/>'])
+                     ['<data input="port host gametypes update"/>', *rows])
     for index in range(HOST_GAMETYPE_ROWS):
-        lines += _host_row(f"{gametype}/list_item_{index}", 390,
-                           "bitmaps/sel_list_item_bkd_top" if index == 0 else "bitmaps/sel_list_item_bkd",
+        lines += _host_row(f"{gametype}/list_item_{index}", HOST_ROW_HEIGHT, f"{HOST}/row",
                            ['<on event="a" run="port host gametype choose" back="true"/>',
                             '<on event="start" run="port host gametype choose" back="true"/>'],
-                           "main_menu/new_select/list_item_text", True)
-    lines += _widget(f"{gametype}/button_bar", [("type", "column_list"), ("width", 640), ("height", 28),
-                                                ("flags", "pass_unhandled_to_focused_child left_right_tabs_items")],
-                     ['<child widget="common_button_back" x="510" y="1"/>'])
+                           [f"{HOST}/rows/list_item_text"])
 
     # Server Settings, as a settings screen: spinners writing config.toml
     # at OK, the values typed at once

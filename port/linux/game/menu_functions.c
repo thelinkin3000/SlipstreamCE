@@ -7136,11 +7136,19 @@ static boolean list_focused_tab(struct widget_instance *screen)
 
 /* halo_linux_source_fixups.h: the server browser's list sorts with the
 d-pad's up and down (its stick goes through the rows) */
+static boolean host_menu_grabbed(void);
+
 unsigned char ui_widget_port_dpad_updown_taken(void *instance)
 {
 	struct widget_instance *widget = instance;
 	size_t length = widget && widget->name ? strlen(widget->name) : 0;
 
+	/* (and the Playlist Builder's rounds while one is picked up: its row's
+	up and down move it, host_entry_move) */
+	if (host_menu_grabbed() && length >= 10 && !strcmp(widget->name + length - 10, "entry_list"))
+	{
+		return TRUE;
+	}
 	return multiplayer.mode == _multiplayer_mode_server_browser && length >= 20 &&
 		!strcmp(widget->name + length - 20, "join_game_items_list");
 }
@@ -11015,8 +11023,11 @@ enum
 	/* the rows of each list (tools/port_settings.py's HOST_*ROWS) */
 	HOST_HUB_ROWS = 10,
 	HOST_MAP_ROWS = 9,
-	HOST_ENTRY_ROWS = 8,
-	HOST_GAMETYPE_ROWS = 11,
+	HOST_ENTRY_ROWS = 6,
+	HOST_GAMETYPE_ROWS = 10,
+	/* the Builder's maps: the stock maps', or Custom Edition's */
+	_host_maps_multiplayer = 0,
+	_host_maps_custom,
 	HOST_DETAILS_LENGTH = 1024,
 	/* the text fields' lengths: the server's name as the game's names
 	(15), its password, its message of the day */
@@ -11052,11 +11063,19 @@ struct host_menu_globals
 	short editing;
 	short map_first, map_chosen;
 	short entry_first, entry_chosen;
+	/* a round picked up (A, or REORDER) to be moved with up and down; REMOVE
+	ALL pressed once (a second press removes them) */
+	boolean grabbed;
+	boolean removing_all;
+	/* the maps shown: MULTIPLAYER's or CUSTOM MAPS' (the chooser's) */
+	short map_kind;
 	char map_picked[HOST_MAP_NAME_LENGTH];
 	char builder_status[128];
 	/* the maps there are, and the gametypes (read once) */
 	char maps[HOST_MAXIMUM_MAPS][HOST_MAP_NAME_LENGTH];
 	short map_count;
+	/* (the custom maps, after the stock ones: the first's place) */
+	short custom_first;
 	boolean maps_read;
 	char gametypes[HOST_MAXIMUM_GAMETYPES][HOST_GAMETYPE_LENGTH];
 	short gametype_count;
@@ -11082,6 +11101,12 @@ static struct host_menu_globals *host_menu_get(void)
 }
 
 #define host_menu (*host_menu_get())
+
+/* whether a round of the Builder's is picked up (ui_widget_port_dpad_updown_taken) */
+static boolean host_menu_grabbed(void)
+{
+	return host_menu_pointer && host_menu_pointer->grabbed;
+}
 
 /* text without the spaces at its ends, in place */
 static char *host_trim(char *text)
@@ -11288,7 +11313,7 @@ off its ends), each shown with its item's text (row_text) and hidden past
 the last, the focus off a hidden one; the item chosen updated (NONE: the
 focus is on none of the rows) */
 static void host_list_update(struct widget_instance *list, short *first, short *chosen, short count, short rows,
-	void (*row_text)(short item, wchar_t *text))
+	void (*row_text)(short item, wchar_t *text), void (*row_detail)(short item, wchar_t *text), short grabbed)
 {
 	struct widget_instance *row;
 	short focused = host_row_number(list->focused_child);
@@ -11325,7 +11350,15 @@ static void host_list_update(struct widget_instance *list, short *first, short *
 		{
 			row_text((short)(*first + number), text);
 			text_set(named(row, "list_item_text", 0), text);
+			if (row_detail)
+			{
+				row_detail((short)(*first + number), text);
+				text_set(named(row, "list_item_detail", 0), text);
+			}
 		}
+		/* (its band: none, the row chosen's, or a round picked up) */
+		row->animation.current_frame_index = row != list->focused_child ? 0 :
+			grabbed != NONE && *first + number == grabbed ? 2 : 1;
 		if ((arrows = named(row, "list_item_arrows", 0)) != NULL)
 			arrows->visible = row == list->focused_child;
 	}
@@ -11372,7 +11405,7 @@ static void host_playlists_update(struct widget_instance *list)
 	size_t length = 0;
 
 	host_list_update(list, &host_menu.hub_first, &host_menu.hub_chosen, (short)(host_menu.playlist_count + 1),
-		HOST_HUB_ROWS, host_hub_row_text);
+		HOST_HUB_ROWS, host_hub_row_text, NULL, NONE);
 	if (host_menu.hub_chosen != before)
 	{
 		host_menu.deleting = NONE;
@@ -11384,8 +11417,7 @@ static void host_playlists_update(struct widget_instance *list)
 	if (host_menu.hub_chosen <= 0 || host_menu.hub_chosen > host_menu.playlist_count)
 	{
 		host_wide("NEW PLAYLIST", wide, NUMBEROF(wide));
-		snprintf(text, sizeof(text), "Make a playlist of rounds,\na map and a gametype each,\nplayed one after another.\n\n"
-			"A: make it\nSTART: server settings");
+		snprintf(text, sizeof(text), "Make a playlist of rounds,\na map and a gametype each,\nplayed one after another.");
 	}
 	else
 	{
@@ -11401,8 +11433,8 @@ static void host_playlists_update(struct widget_instance *list)
 			snprintf(text + length, sizeof(text) - length, "%d. %s\n", index + 1, title);
 			length = strlen(text);
 		}
-		snprintf(text + length, sizeof(text) - length, "\n%s", host_menu.deleting == host_menu.hub_chosen ?
-			"Press Y again to delete it." : "A: host it   X: edit\nY: delete   START: settings");
+		if (host_menu.deleting == host_menu.hub_chosen)
+			snprintf(text + length, sizeof(text) - length, "\nPress Y again to delete it.");
 	}
 	text_set_length(named(details, "playlist_details_name", 0), wide, ROW_TEXT_LENGTH);
 	length = strlen(text);
@@ -11421,6 +11453,8 @@ static void host_builder_begin(short index)
 		host_menu.builder = host_menu.playlists[index];
 	host_menu.map_first = host_menu.map_chosen = 0;
 	host_menu.entry_first = host_menu.entry_chosen = 0;
+	host_menu.grabbed = FALSE;
+	host_menu.removing_all = FALSE;
 	host_menu.builder_status[0] = 0;
 }
 
@@ -11482,9 +11516,9 @@ static boolean host_delete(void)
 
 static void host_map_found(void *context, char const *name, char const *level, char const *kind)
 {
-	(void)context;
 	(void)level;
-	if (host_menu.map_count >= HOST_MAXIMUM_MAPS)
+	/* (the kind this pass gathers: the stock maps, then the custom ones) */
+	if (host_menu.map_count >= HOST_MAXIMUM_MAPS || strcmp(kind, (char const *)context))
 		return;
 	/* (a Custom Edition map by its folder's path, as the rotation names it) */
 	if (!strcmp(kind, "custom"))
@@ -11504,7 +11538,9 @@ static boolean host_maps_init(void)
 	{
 		host_menu.maps_read = TRUE;
 		host_menu.map_count = 0;
-		server_maps_each(host_map_found, NULL);
+		server_maps_each(host_map_found, (void *)"xbox");
+		host_menu.custom_first = host_menu.map_count;
+		server_maps_each(host_map_found, (void *)"custom");
 		host_menu.gametype_count = 0;
 		for (index = 0; (name = server_gametype_builtin_name(index)) != NULL &&
 			host_menu.gametype_count < HOST_MAXIMUM_GAMETYPES; index++)
@@ -11517,25 +11553,63 @@ static boolean host_maps_init(void)
 	return TRUE;
 }
 
+/* the chooser's maps: their first in host_menu.maps, and how many */
+static short host_maps_shown(short *first)
+{
+	if (host_menu.map_kind == _host_maps_custom)
+	{
+		*first = host_menu.custom_first;
+		return (short)(host_menu.map_count - host_menu.custom_first);
+	}
+	*first = 0;
+	return host_menu.custom_first;
+}
+
 static void host_map_row_text(short item, wchar_t *text)
 {
 	char title[64];
+	short first;
 
-	host_map_title(host_menu.maps[item], title, sizeof(title));
+	host_maps_shown(&first);
+	host_map_title(host_menu.maps[first + item], title, sizeof(title));
 	host_wide(title, text, ROW_TEXT_LENGTH);
 }
 
-/* "port host maps update" */
+/* "port host maps update": the chooser's kind, and the rows */
 static void host_maps_update(struct widget_instance *list)
 {
-	host_list_update(list, &host_menu.map_first, &host_menu.map_chosen, host_menu.map_count, HOST_MAP_ROWS,
-		host_map_row_text);
+	short first;
+	short count = host_maps_shown(&first);
+
+	text_set(named(list, "op_kind", 0), host_menu.map_kind == _host_maps_custom ? L"CUSTOM MAPS" : L"MULTIPLAYER");
+	host_list_update(list, &host_menu.map_first, &host_menu.map_chosen, count, HOST_MAP_ROWS, host_map_row_text,
+		NULL, NONE);
+}
+
+/* "port host map kind" (A on the chooser): MULTIPLAYER's maps, or CUSTOM
+MAPS' (when there are any) */
+static boolean host_map_kind(void)
+{
+	if (host_menu.map_kind == _host_maps_multiplayer && host_menu.map_count == host_menu.custom_first)
+	{
+		snprintf(host_menu.builder_status, sizeof(host_menu.builder_status), "NO CUSTOM MAPS IN CUSTOM_MAPS.");
+		ui_play_audio_feedback_sound(SOUND_ERROR);
+		return TRUE;
+	}
+	host_menu.map_kind = host_menu.map_kind == _host_maps_custom ? _host_maps_multiplayer : _host_maps_custom;
+	host_menu.map_first = host_menu.map_chosen = 0;
+	host_menu.builder_status[0] = 0;
+	ui_play_audio_feedback_sound(SOUND_FORWARD);
+	return TRUE;
 }
 
 /* "port host map choose" (A on a map): Select Gametype, for it */
 static boolean host_map_choose(void)
 {
-	if (host_menu.map_chosen < 0 || host_menu.map_chosen >= host_menu.map_count)
+	short first;
+	short count = host_maps_shown(&first);
+
+	if (host_menu.map_chosen < 0 || host_menu.map_chosen >= count)
 		return FALSE;
 	if (host_menu.builder.count >= HOST_MAXIMUM_ENTRIES)
 	{
@@ -11543,7 +11617,7 @@ static boolean host_map_choose(void)
 			HOST_MAXIMUM_ENTRIES);
 		return FALSE;
 	}
-	snprintf(host_menu.map_picked, sizeof(host_menu.map_picked), "%s", host_menu.maps[host_menu.map_chosen]);
+	snprintf(host_menu.map_picked, sizeof(host_menu.map_picked), "%s", host_menu.maps[first + host_menu.map_chosen]);
 	host_menu.gametype_first = host_menu.gametype_chosen = 0;
 	return TRUE;
 }
@@ -11559,8 +11633,15 @@ static void host_gametype_row_text(short item, wchar_t *text)
 /* "port host gametypes update" */
 static void host_gametypes_update(struct widget_instance *list)
 {
+	char title[64];
+	wchar_t wide[64];
+
 	host_list_update(list, &host_menu.gametype_first, &host_menu.gametype_chosen, host_menu.gametype_count,
-		HOST_GAMETYPE_ROWS, host_gametype_row_text);
+		HOST_GAMETYPE_ROWS, host_gametype_row_text, NULL, NONE);
+	/* (its tab: the map the round plays) */
+	host_map_title(host_menu.map_picked, title, sizeof(title));
+	host_wide(title, wide, NUMBEROF(wide));
+	text_set(named(screen_of(list), "types_tab", 0), wide);
 }
 
 /* "port host gametype choose" (A on a gametype): the round added, its row
@@ -11584,12 +11665,36 @@ static boolean host_gametype_choose(void)
 	return TRUE;
 }
 
+/* a round's row: its map, and its gametype under it */
+static void host_entry_part(short item, wchar_t *text, boolean gametype)
+{
+	char const *entry = host_menu.builder.entries[item];
+	char const *colon = strchr(entry, ':');
+	char part[HOST_ENTRY_LENGTH];
+	char title[64];
+
+	if (gametype)
+	{
+		snprintf(part, sizeof(part), "%s", colon ? colon + 1 : "slayer");
+		part[strcspn(part, "+")] = 0;
+		host_gametype_title(part, title, sizeof(title));
+	}
+	else
+	{
+		snprintf(part, sizeof(part), "%.*s", (int)(colon ? colon - entry : (long)strlen(entry)), entry);
+		host_map_title(part, title, sizeof(title));
+	}
+	host_wide(title, text, ROW_TEXT_LENGTH);
+}
+
 static void host_entry_row_text(short item, wchar_t *text)
 {
-	char title[96];
+	host_entry_part(item, text, FALSE);
+}
 
-	host_entry_title(host_menu.builder.entries[item], title, sizeof(title), FALSE);
-	host_wide(title, text, ROW_TEXT_LENGTH);
+static void host_entry_row_detail(short item, wchar_t *text)
+{
+	host_entry_part(item, text, TRUE);
 }
 
 /* "port host entries update": the rounds, the name's row, and the screen's
@@ -11602,16 +11707,79 @@ static void host_entries_update(struct widget_instance *list)
 	wchar_t wide[128];
 
 	host_list_update(list, &host_menu.entry_first, &host_menu.entry_chosen, host_menu.builder.count,
-		HOST_ENTRY_ROWS, host_entry_row_text);
-	snprintf(text, sizeof(text), "%s", host_menu.builder.name[0] ? host_menu.builder.name : "NAME THIS PLAYLIST");
-	text_field_show(named(list, "name_value", 0), text, text_field_editing(name_row));
-	text_set(named(screen, "title", 0), host_menu.editing == NONE ? L"CREATE PLAYLIST" : L"EDIT PLAYLIST");
+		HOST_ENTRY_ROWS, host_entry_row_text, host_entry_row_detail,
+		host_menu.grabbed ? host_menu.entry_chosen : NONE);
+	/* (a round picked up is let go when the focus leaves the rounds) */
+	if (host_menu.grabbed && host_row_number(list->focused_child) == NONE)
+		host_menu.grabbed = FALSE;
+	if (list->focused_child != named(list, "button_remove_all", 0))
+		host_menu.removing_all = FALSE;
+	snprintf(text, sizeof(text), "NAME: %s", host_menu.builder.name[0] ? host_menu.builder.name : "(NONE)");
+	text_field_show(named(list, "name_value", 0), text_field_editing(name_row) ? host_menu.builder.name : text,
+		text_field_editing(name_row));
+	text_set(named(screen, "title", 0), host_menu.editing == NONE ? L"CREATE MULTIPLAYER PLAYLIST" :
+		L"EDIT MULTIPLAYER PLAYLIST");
 	if (host_menu.builder_status[0])
 		snprintf(text, sizeof(text), "%s", host_menu.builder_status);
+	else if (host_menu.removing_all)
+		snprintf(text, sizeof(text), "PRESS A AGAIN TO REMOVE EVERY ROUND.");
+	else if (host_menu.grabbed)
+		snprintf(text, sizeof(text), "UP AND DOWN MOVE THE ROUND; A PUTS IT DOWN.");
 	else
-		snprintf(text, sizeof(text), "A: ADD A ROUND   Y: REMOVE IT   L / R: MOVE IT   B: CANCEL");
+		snprintf(text, sizeof(text), "Y REMOVES A ROUND; A PICKS IT UP TO MOVE IT.");
 	host_wide(text, wide, NUMBEROF(wide));
-	text_set(named(screen, "help", 0), wide);
+	text_set(named(screen, "status", 0), wide);
+}
+
+/* "port host entry grab" (A on a round): picked up, or put down */
+static boolean host_entry_grab(struct widget_instance *row)
+{
+	short number = host_row_number(row);
+
+	if (number == NONE || host_menu.entry_first + number >= host_menu.builder.count)
+		return FALSE;
+	host_menu.entry_chosen = (short)(host_menu.entry_first + number);
+	host_menu.grabbed = !host_menu.grabbed;
+	ui_play_audio_feedback_sound(host_menu.grabbed ? SOUND_FORWARD : SOUND_BACK);
+	return TRUE;
+}
+
+/* "port host reorder" (REORDER): the round chosen last picked up, the focus
+on it */
+static boolean host_reorder(struct widget_instance *button)
+{
+	struct widget_instance *list = button ? button->parent : NULL;
+
+	if (!host_menu.builder.count || !list)
+		return FALSE;
+	host_menu.entry_chosen = (short)PIN(host_menu.entry_chosen, 0, host_menu.builder.count - 1);
+	if (host_menu.entry_chosen < host_menu.entry_first)
+		host_menu.entry_first = host_menu.entry_chosen;
+	else if (host_menu.entry_chosen >= host_menu.entry_first + HOST_ENTRY_ROWS)
+		host_menu.entry_first = (short)(host_menu.entry_chosen - HOST_ENTRY_ROWS + 1);
+	host_focus_row(list, (short)(host_menu.entry_chosen - host_menu.entry_first));
+	host_menu.grabbed = TRUE;
+	ui_play_audio_feedback_sound(SOUND_FORWARD);
+	return TRUE;
+}
+
+/* "port host remove all" (REMOVE ALL): the first press asks, the second
+removes every round */
+static boolean host_remove_all(void)
+{
+	if (!host_menu.builder.count)
+		return FALSE;
+	if (!host_menu.removing_all)
+	{
+		host_menu.removing_all = TRUE;
+		return TRUE;
+	}
+	host_menu.builder.count = 0;
+	host_menu.entry_first = host_menu.entry_chosen = 0;
+	host_menu.removing_all = FALSE;
+	host_menu.grabbed = FALSE;
+	ui_play_audio_feedback_sound(SOUND_BACK);
+	return TRUE;
 }
 
 /* "port host entry remove" (Y on the rounds) */
@@ -11627,6 +11795,7 @@ static boolean host_entry_remove(void)
 	builder->count--;
 	if (host_menu.entry_chosen >= builder->count)
 		host_menu.entry_chosen = (short)MAX(0, builder->count - 1);
+	host_menu.grabbed = FALSE;
 	ui_play_audio_feedback_sound(SOUND_BACK);
 	return TRUE;
 }
@@ -11801,7 +11970,23 @@ static boolean host_menu_event(char const *name, struct widget_instance *widget)
 	if (!strcmp(name, "entry remove"))
 		return host_entry_remove();
 	if (!strcmp(name, "entry up") || !strcmp(name, "entry down"))
-		return host_entry_move(widget, (short)(!strcmp(name, "entry up") ? -1 : 1));
+	{
+		/* (a row's up and down move it only while it is picked up: the
+		list's own take them otherwise, ui_widget_port_dpad_updown_taken) */
+		boolean row = host_row_number(widget) != NONE;
+
+		if (row && !host_menu.grabbed)
+			return FALSE;
+		return host_entry_move(row ? widget->parent : widget, (short)(!strcmp(name, "entry up") ? -1 : 1));
+	}
+	if (!strcmp(name, "entry grab"))
+		return host_entry_grab(widget);
+	if (!strcmp(name, "reorder"))
+		return host_reorder(widget);
+	if (!strcmp(name, "remove all"))
+		return host_remove_all();
+	if (!strcmp(name, "map kind"))
+		return host_map_kind();
 	if (!strcmp(name, "name edit"))
 		return host_name_edit(widget);
 	if (!strcmp(name, "save"))

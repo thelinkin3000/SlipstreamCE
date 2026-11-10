@@ -423,6 +423,7 @@ static char const *const port_function_names[] =
 	"port host map choose", "port host gametype choose", "port host entry remove", "port host entry up",
 	"port host entry down", "port host name edit", "port host save", "port host back",
 	"port host edit server name", "port host edit server password", "port host edit motd",
+	"port host map kind", "port host entry grab", "port host reorder", "port host remove all",
 };
 
 /* the PC version's game data functions that the Xbox's have not, from
