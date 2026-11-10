@@ -33,6 +33,9 @@ static struct
 {
 	int active;
 	unsigned long started;
+	/* the host asked it to stop (server_director.c): the game's own client
+	hears the host go, as every machine does, and that is no error */
+	int stopping;
 } server_hosting;
 
 #if HALO_SERVER_BUILD
@@ -582,6 +585,7 @@ int halo_server_host_begin(void)
 	if (server_hosting.active || halo_server_headless())
 		return 0;
 	server_hosting.active = 1;
+	server_hosting.stopping = 0;
 	server_hosting.started = system_milliseconds();
 	return 1;
 }
@@ -589,4 +593,16 @@ int halo_server_host_begin(void)
 void halo_server_host_end(void)
 {
 	server_hosting.active = 0;
+	server_hosting.stopping = 0;
+}
+
+void halo_server_host_set_stopping(void)
+{
+	if (server_hosting.active)
+		server_hosting.stopping = 1;
+}
+
+int halo_server_host_stopping(void)
+{
+	return server_hosting.active && server_hosting.stopping;
 }

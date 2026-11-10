@@ -2005,6 +2005,13 @@ boolean filesystem_check_thread_is_active(
 void display_error_when_main_menu_loaded(
 	short error_code)
 {
+	/* port: hosting from the menus stopping as the host asked, its own
+	client's "the host went down" (port/linux/src/server_mode.c) */
+	if (halo_server_host_stopping())
+	{
+		error(_error_silent, "the hosted server stopped: error %d not shown", error_code);
+		return;
+	}
 	if (widget_globals.main_menu_deferred_error_code == NONE)
 	{
 		widget_globals.main_menu_deferred_error_code = error_code;

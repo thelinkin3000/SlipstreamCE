@@ -1034,6 +1034,10 @@ void server_director_quit(
 		return;
 	server.quitting = TRUE;
 	server.exit_code = exit_code;
+	/* (hosting from the menus: the game's own client hears the host go too,
+	which is no error to show it) */
+	if (!halo_server_headless())
+		halo_server_host_set_stopping();
 	server_set_state(_server_state_stopping);
 	server_log(_server_log_info, "server", "stopping (%s)", why);
 	{

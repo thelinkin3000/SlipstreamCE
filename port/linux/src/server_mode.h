@@ -53,6 +53,11 @@ server has stopped: port/linux/game/server_director.c) */
 int halo_server_hosting(void);
 int halo_server_host_begin(void);
 void halo_server_host_end(void);
+/* hosting from the menus stopping, as the host asked (server_director.c):
+until it has ended, the game's own client hearing its host go is no error
+to show (ui_widget.c's display_error_when_main_menu_loaded) */
+void halo_server_host_set_stopping(void);
+int halo_server_host_stopping(void);
 
 /* main()'s first (source/shell/shell_xbox.c): --version, --help, --keygen
 and --sign answered (and the process ended), and a dedicated server's

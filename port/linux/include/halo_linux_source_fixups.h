@@ -159,6 +159,9 @@ int halo_server_headless(void);
 /* ... whether the player's app hosts from its menus (network_client_manager.c:
 no player of its own joins) */
 int halo_server_hosting(void);
+/* ... and whether it is stopping, as the host asked: its own client's
+"the host went down" is no error then (ui_widget.c) */
+int halo_server_host_stopping(void);
 void server_mode_start(void);
 void server_mode_pace_frame(void);
 void server_fatal(char const *text);
