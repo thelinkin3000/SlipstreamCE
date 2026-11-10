@@ -11022,8 +11022,8 @@ enum
 	HOST_GAMETYPE_LENGTH = 32,
 	/* the rows of each list (tools/port_settings.py's HOST_*ROWS) */
 	HOST_HUB_ROWS = 10,
-	HOST_MAP_ROWS = 9,
-	HOST_ENTRY_ROWS = 6,
+	HOST_MAP_ROWS = 8,
+	HOST_ENTRY_ROWS = 5,
 	HOST_GAMETYPE_ROWS = 10,
 	/* the Builder's maps: the stock maps', or Custom Edition's */
 	_host_maps_multiplayer = 0,

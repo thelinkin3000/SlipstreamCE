@@ -2764,15 +2764,17 @@ def _coop() -> list:
 
 HOST = f"{MT}/host"
 HOST_ROWS = 10
-HOST_MAP_ROWS = 9
-HOST_ENTRY_ROWS = 6
+HOST_MAP_ROWS = 8
+HOST_ENTRY_ROWS = 5
 HOST_GAMETYPE_ROWS = 10
 # their look, the Host Server mockup's (the PC menus' blue outlines, dark
 # panels and tabs): its pictures (host_pictures) and their places
 HOST_BLUE, HOST_DARK, HOST_DEEP = "#2896ff", "#0a2649", "#050d1c"
 HOST_TEXT, HOST_WHITE = "#FF8CA8E8", "#FFFFFFFF"
 HOST_COLUMN_WIDTH, HOST_LEFT_X, HOST_RIGHT_X = 260, 40, 340
-HOST_TAB_Y, HOST_PANEL_Y, HOST_PANEL_BOTTOM = 62, 96, 396
+# (inside the menus' band, bitmaps/gradient's lines at 70 and 409, as the
+# other screens keep theirs; the title above it, the buttons below)
+HOST_TAB_Y, HOST_PANEL_Y, HOST_PANEL_BOTTOM = 76, 108, 400
 HOST_ROW_WIDTH, HOST_ROW_HEIGHT, HOST_ENTRY_HEIGHT = 240, 26, 36
 HOST_PILL_WIDTHS = (116, 76)
 
@@ -3017,7 +3019,7 @@ def _host() -> list:
     lines += _host_text(f"{builder}/title", 0, 20, 640, 32, None, color=HOST_BLUE, align="center")
     lines += _host_frame(builder, "maps", HOST_LEFT_X, "SELECT MAP", "panel_short", HOST_PANEL_Y + 34)
     lines += _host_frame(builder, "entries", HOST_RIGHT_X, "CURRENT PLAYLIST", "panel", HOST_PANEL_Y)
-    lines += _host_text(f"{builder}/status", HOST_LEFT_X, 400, HOST_RIGHT_X + HOST_COLUMN_WIDTH - HOST_LEFT_X, 18,
+    lines += _host_text(f"{builder}/status", HOST_LEFT_X, 50, HOST_RIGHT_X + HOST_COLUMN_WIDTH - HOST_LEFT_X, 18,
                         None, "small", HOST_WHITE, align="center")
     lines += hints
     rows = [f'<child widget="{builder}/op_kind" x="{HOST_LEFT_X}" y="{HOST_PANEL_Y}"/>']
