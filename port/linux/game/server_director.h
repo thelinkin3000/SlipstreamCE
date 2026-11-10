@@ -195,6 +195,9 @@ char const *server_status_state_name(short state);
 boolean server_status_scores_changed(void);
 /* the network game's player at slot (its name in ASCII into name): TRUE */
 boolean server_status_player_name(long slot, char *name, long size);
+/* the slot's player's datum in the game being played (the host's screen
+watches them: network_replay_live_begin); NONE outside one */
+long server_status_player_datum(long slot);
 /* whether the host muted the slot's player (mute) */
 boolean server_status_player_muted(long slot);
 /* a stock map's title (bloodgulch: "Blood Gulch"), else its name */

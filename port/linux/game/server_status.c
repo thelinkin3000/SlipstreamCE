@@ -167,6 +167,19 @@ boolean server_status_scores_changed(
 	return changed;
 }
 
+long server_status_player_datum(
+	long slot)
+{
+	struct network_game *game = server_game();
+
+	if (!game || slot < 0 || slot >= MAXIMUM_SLOTS || !network_player_is_valid(&game->players[slot]) ||
+		!game_engine_running())
+	{
+		return NONE;
+	}
+	return game->players[slot].player_list_index;
+}
+
 boolean server_status_player_muted(
 	long slot)
 {

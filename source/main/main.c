@@ -3456,7 +3456,7 @@ static void main_game_render(
 			local player 0's, as film playback's is above, so that it is drawn
 			as a player's, with the playback's own view of the player watched
 			(port/linux/game/network_replay_playback.c) */
-			if (window_index == 0 && network_replay_playing() && network_replay_camera())
+			if (window_index == 0 && network_replay_viewing() && network_replay_camera())
 			{
 				last_local_player_index = 0;
 				window->local_player_index = 0;

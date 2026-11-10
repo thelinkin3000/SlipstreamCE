@@ -1161,9 +1161,9 @@ int halo_push_to_talk_held(void)
 	and the game still gets it, network_chat.c; not in a replay's playback,
 	whose D-pad Down is its camera's: network_replay_playback.c) */
 	{
-		extern unsigned char network_replay_playing(void);
+		extern unsigned char network_replay_viewing(void);
 
-		return !input.menus && !network_replay_playing() && (chat_pad[0] & (1UL << HALO_CHAT_PAD_DOWN)) != 0;
+		return !input.menus && !network_replay_viewing() && (chat_pad[0] & (1UL << HALO_CHAT_PAD_DOWN)) != 0;
 	}
 }
 
@@ -2008,7 +2008,7 @@ DWORD WINAPI XInputGetState(HANDLE device, PXINPUT_STATE state)
 		}
 		if (gamepad && !gamepad_capturing(gamepad))
 		{
-			extern unsigned char network_replay_playing(void);
+			extern unsigned char network_replay_viewing(void);
 			BOOL held_back[INPUT_GAMEPAD_END - INPUT_GAMEPAD];
 			int index;
 
@@ -2016,7 +2016,7 @@ DWORD WINAPI XInputGetState(HANDLE device, PXINPUT_STATE state)
 			/* (a replay's playback has no voice chat and no game's controls: its
 			own take every button, a shoulder bound to talk its speed too:
 			port/linux/game/network_replay_playback.c) */
-			BOOL replay = network_replay_playing() != 0;
+			BOOL replay = network_replay_viewing() != 0;
 
 			for (index = 0; index < INPUT_GAMEPAD_END - INPUT_GAMEPAD; index++)
 				held_back[index] = !replay &&

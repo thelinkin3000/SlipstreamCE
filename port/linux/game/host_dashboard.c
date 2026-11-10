@@ -35,6 +35,7 @@ menus' (xinput_sdl.c, hud_hires.c).
 #include "halo_host_dashboard.h"
 #include "halo_overlay_menu.h"
 #include "server_director.h"
+#include "network_replay.h" /* port: the live view, network_replay_playback.c */
 
 #include "../src/server_console.h" /* port: port/linux/src/server_console.c */
 #include "../src/server_rotation.h" /* port: port/linux/src/server_rotation.c */
@@ -87,6 +88,8 @@ static struct
 	char const *done;
 } const host_player_actions[] =
 {
+	/* (no command: the host watches them, network_replay_live_begin) */
+	{ "WATCH", NULL, "watch" },
 	{ "KICK", "kick %ld", "kicked" },
 	{ "BAN FOR A DAY", "ban %ld 1d", "banned for a day" },
 	{ "BAN", "ban %ld", "banned" },
@@ -123,7 +126,40 @@ static struct
 	short menu;
 	short menu_row;
 	long menu_slot;
+	/* watching the game live (network_replay_playback.c's live view) in
+	place of the screen */
+	boolean watching;
 } host;
+
+static void host_set_status(char const *text);
+
+/* the game watched live from a player (NONE: the first), in place of the
+screen: only while a game is played */
+static void host_watch(
+	long slot)
+{
+	if (server_director_state() != _server_state_playing)
+	{
+		host_set_status("no game to watch");
+		return;
+	}
+	if (network_replay_live_begin(slot != NONE ? server_status_player_datum(slot) : NONE))
+		host.watching = TRUE;
+	else
+		host_set_status("cannot watch now");
+}
+
+/* back to the screen from watching (B, or the game over) */
+static void host_watch_end(
+	void)
+{
+	if (!host.watching)
+		return;
+	host.watching = FALSE;
+	network_replay_live_end();
+	/* (the button that ended it, held, is no press here) */
+	host.previous_buttons = (unsigned long)-1;
+}
 
 static void host_run(char const *line, char const *done);
 
@@ -144,6 +180,13 @@ static void host_menu_choose(
 	char name[16];
 	long score, ping;
 
+	if (host.menu == _host_menu_player && host.menu_row < (short)NUMBEROF(host_player_actions) &&
+		!host_player_actions[host.menu_row].command && host_player_actions[host.menu_row].done)
+	{
+		host.menu = _host_menu_none;
+		host_watch(host.menu_slot);
+		return;
+	}
 	if (host.menu == _host_menu_player && host.menu_row < (short)NUMBEROF(host_player_actions) &&
 		host_player_actions[host.menu_row].command &&
 		server_status_player_row(host.menu_slot, name, sizeof(name), &score, &ping))
@@ -217,7 +260,8 @@ unsigned char host_dashboard_take_pad(
 		return FALSE;
 	if (port >= 0 && port < HOST_PORTS)
 		host.port_buttons[port] = buttons;
-	return TRUE;
+	/* (watching: the game's controls are the view's, network_replay_live_update) */
+	return !host.watching;
 }
 
 /* the chosen player moved by a row */
@@ -253,7 +297,23 @@ void host_dashboard_update(
 	unsigned long now = system_milliseconds();
 	short port;
 
-	if (!halo_server_hosting() || overlay_menu_open())
+	if (!halo_server_hosting())
+	{
+		if (host.watching)
+		{
+			host.watching = FALSE;
+			network_replay_live_end();
+		}
+		return;
+	}
+	/* (watching: its controls, until B or the game's end) */
+	if (host.watching)
+	{
+		if (!game_in_progress() || server_director_state() != _server_state_playing || !network_replay_live_update())
+			host_watch_end();
+		return;
+	}
+	if (overlay_menu_open())
 	{
 		host.previous_buttons = (unsigned long)-1;
 		return;
@@ -311,6 +371,13 @@ void host_dashboard_update(
 	{
 		host.menu = _host_menu_notice;
 		host.menu_row = 0;
+	}
+	/* (R: the game watched, from the player chosen) */
+	if (pressed & (1UL << HALO_OVERLAY_PAD_RIGHT_SHOULDER))
+	{
+		host_watch(host.chosen_slot);
+		if (host.watching)
+			return;
 	}
 	if (pressed & (1UL << HALO_OVERLAY_PAD_X))
 	{
@@ -641,9 +708,18 @@ void host_dashboard_draw(
 	static pixel32 const BAND = HOST_COLOR(0x38, 0x28, 0x96, 0xFF);
 	static pixel32 const CHOSEN_BAND = HOST_COLOR(0x70, 0x28, 0x96, 0xFF);
 	/* (no START: the Switch has no picture of it) */
-	static wchar_t const *const hints[] = { L"%a-button Player", L"%y-button Notices", L"%x-button Next Round",
-		L"%b-button Stop Hosting" };
-	static char const *const hint_words[] = { "Player", "Notices", "Next Round", "Stop Hosting" };
+	/* (the right shoulder named, not pictured: the menus' text pictures it as
+	the Xbox's black button) */
+#if defined(HALO_SWITCH)
+#define HOST_WATCH_HINT "R Watch"
+#elif defined(HALO_PS5)
+#define HOST_WATCH_HINT "R1 Watch"
+#else
+#define HOST_WATCH_HINT "RB Watch"
+#endif
+	static wchar_t const *const hints[] = { L"%a-button Player", L"" HOST_WATCH_HINT, L"%y-button Notices",
+		L"%x-button Next Round", L"%b-button Stop Hosting" };
+	static char const *const hint_words[] = { "Player", HOST_WATCH_HINT, "Notices", "Next Round", "Stop Hosting" };
 	real_argb_color white = get_ui_argb_white();
 	struct server_entry const *current;
 	struct server_rotation const *rotation;
@@ -655,7 +731,8 @@ void host_dashboard_draw(
 	rectangle2d rectangle, inside;
 	char text[128];
 
-	if (!halo_server_hosting())
+	/* (watching: the view's own lines, network_replay_playback_draw) */
+	if (!halo_server_hosting() || host.watching)
 		return;
 	if (!host_font("ui\\large_ui", &font_index, &line_height) ||
 		!host_font("ui\\small_ui", &small_font_index, &small_line_height))

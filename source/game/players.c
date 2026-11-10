@@ -1870,7 +1870,7 @@ static void players_compute_combined_pvs(
 		/* port: a replay's playback has no local player: what its view sees is
 		the local players' (the effects and particles made where they can be
 		seen: port/linux/game/network_replay_playback.c) */
-		if (local_player_only && network_replay_playing())
+		if (local_player_only && network_replay_viewing())
 		{
 			struct observer_result const *camera = network_replay_camera();
 

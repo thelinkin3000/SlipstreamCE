@@ -690,7 +690,17 @@ static struct
 	/* where in the records the window starts, and how much of them it has */
 	long window_start;
 	long window_length;
+	/* the host watching its game live (network_replay_live_begin): the
+	cameras' and the players' alone, nothing of a file's */
+	boolean live;
 } playback = { NULL, 0, 0, 0, FALSE, FALSE, FALSE, 0, FALSE, FALSE, NONE };
+
+/* whether a view is up: a replay's, or the host's live */
+static boolean playback_viewing(
+	void)
+{
+	return playback.playing || playback.live;
+}
 
 static unsigned long replay_get_long(
 	byte const *source)
@@ -1201,6 +1211,12 @@ boolean network_replay_playing(
 	void)
 {
 	return playback.window != NULL && (playback.starting || playback.playing);
+}
+
+boolean network_replay_viewing(
+	void)
+{
+	return network_replay_playing() || playback.live;
 }
 
 boolean network_replay_hold_wanted(
@@ -2377,7 +2393,7 @@ void network_replay_playback_damage(
 	struct player_datum *player;
 	struct object_datum *object;
 
-	if (!playback.playing || playback.view != _replay_view_cinematic || playback.watched == NONE)
+	if (!playback_viewing() || playback.view != _replay_view_cinematic || playback.watched == NONE)
 		return;
 	player = player_try_and_get(playback.watched);
 	if (!player || player->unit_index == NONE)
@@ -3486,7 +3502,7 @@ void network_replay_playback_frame(
 	struct player_datum *player;
 	long unit_index;
 
-	if (!playback.playing)
+	if (!playback_viewing())
 		return;
 	/* (paused: the camera where it was, its sticks let be) */
 	if (playback.paused && playback.camera_valid)
@@ -3544,19 +3560,134 @@ void network_replay_playback_frame(
 long network_replay_watched_player(
 	void)
 {
-	return playback.playing ? playback.watched : NONE;
+	return playback_viewing() ? playback.watched : NONE;
 }
 
 boolean network_replay_viewing_eyes(
 	void)
 {
-	return playback.playing && playback.view == _replay_view_eyes && playback.first_person;
+	return playback_viewing() && playback.view == _replay_view_eyes && playback.first_person;
 }
 
 struct observer_result const *network_replay_camera(
 	void)
 {
-	return playback.playing && playback.camera_valid ? &playback.camera : NULL;
+	return playback_viewing() && playback.camera_valid ? &playback.camera : NULL;
+}
+
+/* ---------- the host watching its game live */
+
+/* the buttons held now, as if pressed already: the press that began the
+watching, or ended it, does nothing in it */
+static void playback_buttons_held_now(
+	void)
+{
+	short button;
+
+	for (button = 0; button < NUMBER_OF_GAMEPAD_BUTTONS; button++)
+	{
+		boolean down = FALSE;
+		short controller;
+
+		for (controller = 0; controller < MAXIMUM_GAMEPADS; controller++)
+		{
+			struct gamepad_state const *gamepad = input_get_gamepad_state(controller);
+
+			down |= gamepad && gamepad->buttons[button] > 0;
+		}
+		playback.held[button] = down;
+	}
+}
+
+boolean network_replay_live_begin(
+	long player_index)
+{
+	if (network_replay_playing() || !game_in_progress())
+		return FALSE;
+	playback.live = TRUE;
+	playback.watched = player_index != NONE && player_try_and_get(player_index) ? player_index : NONE;
+	playback.view = _replay_view_behind;
+	playback.camera_valid = FALSE;
+	playback.first_person = FALSE;
+	playback.behind_orbiting = FALSE;
+	playback.behind_zoom = 1.0f;
+	playback.cinematic_distance = 1.0f;
+	playback.free_placing = FALSE;
+	playback.free_tracking = FALSE;
+	playback.scores = FALSE;
+	playback.hidden = FALSE;
+	playback.paused = FALSE;
+	playback.ended = 0;
+	playback.eyes_unit = NONE;
+	playback.threat_tick = NONE;
+	playback_buttons_held_now();
+	error(_error_log, "host: watching the game live");
+	return TRUE;
+}
+
+boolean network_replay_live(
+	void)
+{
+	return playback.live;
+}
+
+void network_replay_live_end(
+	void)
+{
+	if (!playback.live)
+		return;
+	playback.live = FALSE;
+	playback.camera_valid = FALSE;
+	playback.first_person = FALSE;
+	playback.scores = FALSE;
+	error(_error_log, "host: watching ended");
+}
+
+boolean network_replay_live_update(
+	void)
+{
+	unsigned long now = system_milliseconds();
+
+	if (!playback.live)
+		return FALSE;
+	/* (B: back to the host's screen) */
+	if (playback_pressed(FIRST_GAMEPAD_ANALOG_BUTTON + _gamepad_analog_button_b))
+		return FALSE;
+	if (playback_pressed(FIRST_GAMEPAD_ANALOG_BUTTON + _gamepad_analog_button_a))
+		playback.watched = playback_next_player(playback.watched, FALSE);
+	if (playback_pressed(FIRST_GAMEPAD_ANALOG_BUTTON + _gamepad_analog_button_x))
+		playback.watched = playback_next_player(playback.watched, TRUE);
+	if (playback_pressed(FIRST_GAMEPAD_ANALOG_BUTTON + _gamepad_analog_button_y))
+	{
+		playback.view = (short)((playback.view + 1) % NUMBER_OF_REPLAY_VIEWS);
+		if (playback.view == _replay_view_free || playback.view == _replay_view_cinematic)
+			playback.free_placing = TRUE;
+		if (playback.view == _replay_view_cinematic)
+			playback.cinematic_distance = 1.0f;
+		if (playback.view == _replay_view_behind)
+		{
+			playback.behind_orbiting = FALSE;
+			playback.behind_zoom = 1.0f;
+		}
+	}
+	/* (R3 or D-pad Up, D-pad Down or L3: as the playback's) */
+	if (playback_pressed(_gamepad_binary_button_right_thumb) | playback_pressed(_gamepad_binary_button_dpad_up))
+	{
+		if (playback.view == _replay_view_behind)
+			playback.behind_orbiting = FALSE;
+		else if (playback.view == _replay_view_free && !playback.free_placing)
+			playback.free_tracking = !playback.free_tracking;
+	}
+	if ((playback_pressed(_gamepad_binary_button_dpad_down) | playback_pressed(_gamepad_binary_button_left_thumb)) &&
+		(playback.view == _replay_view_free || playback.view == _replay_view_cinematic) && !playback.free_placing &&
+		now - playback.free_reset_at >= REPLAY_CAMERA_RESET_MILLISECONDS)
+	{
+		playback.free_placing = TRUE;
+		playback.free_reset_at = now;
+	}
+	playback_pressed(_gamepad_binary_button_back);
+	playback.scores = playback.held[_gamepad_binary_button_back];
+	return TRUE;
 }
 
 /* the hints' and the top line's font: the menus' small one (as the overlay's
@@ -3779,7 +3910,17 @@ static void playback_draw_circle(
 (the time at the left, its length at the right, and between them the line,
 Halo blue to the playhead, a circle, and dimmer after it). It only shows:
 nothing on it is chosen */
+static void playback_draw_seek_bar(long font_index);
+
+/* (watching live: no file, no seek bar) */
 static void playback_draw_seek(
+	long font_index)
+{
+	if (!playback.live)
+		playback_draw_seek_bar(font_index);
+}
+
+static void playback_draw_seek_bar(
 	long font_index)
 {
 	struct font_header *font = font_definition_get(font_index);
@@ -4097,6 +4238,22 @@ void network_replay_playback_draw(
 	static struct playback_hint const touch_show[] = {
 		{ { FIRST_GAMEPAD_ANALOG_BUTTON + _gamepad_analog_button_b, NONE }, L"SHOW" },
 	};
+	/* (watching live: the players, the views, the scores and the way back to
+	the host's screen; nothing of a file's) */
+	static struct playback_hint const live_hints[] = {
+		{ { FIRST_GAMEPAD_ANALOG_BUTTON + _gamepad_analog_button_a,
+			FIRST_GAMEPAD_ANALOG_BUTTON + _gamepad_analog_button_x }, L"PLAYER" },
+		{ { FIRST_GAMEPAD_ANALOG_BUTTON + _gamepad_analog_button_y, NONE }, L"VIEW" },
+		{ { _gamepad_binary_button_back, NONE }, L"SCORES" },
+		{ { FIRST_GAMEPAD_ANALOG_BUTTON + _gamepad_analog_button_b, NONE }, L"BACK" },
+	};
+	static struct playback_hint const live_touch_hints[] = {
+		{ { FIRST_GAMEPAD_ANALOG_BUTTON + _gamepad_analog_button_x, NONE }, L"PREV" },
+		{ { FIRST_GAMEPAD_ANALOG_BUTTON + _gamepad_analog_button_a, NONE }, L"NEXT" },
+		{ { FIRST_GAMEPAD_ANALOG_BUTTON + _gamepad_analog_button_y, NONE }, L"VIEW" },
+		{ { _gamepad_binary_button_back, NONE }, L"SCORES" },
+		{ { FIRST_GAMEPAD_ANALOG_BUTTON + _gamepad_analog_button_b, NONE }, L"BACK" },
+	};
 	/* (the replay over: back to the last keyframe, before it returns to
 	the menu) */
 	static struct playback_hint const touch_ended[] = {
@@ -4115,7 +4272,7 @@ void network_replay_playback_draw(
 	wchar_t speed[16];
 	struct player_datum *player;
 
-	if (!playback.playing)
+	if (!playback_viewing())
 		return;
 	player = playback.watched != NONE ? player_try_and_get(playback.watched) : NULL;
 	if (playback.scores && player)
@@ -4151,6 +4308,14 @@ void network_replay_playback_draw(
 	speed[NUMBEROF(speed) - 1] = 0;
 	if (playback.ended)
 		usnprintf(text, NUMBEROF(text) - 1, L"REPLAY OVER");
+	else if (playback.live)
+	{
+		boolean tracking = playback.view == _replay_view_free && playback.free_tracking && !playback.free_placing;
+
+		usnprintf(text, NUMBEROF(text) - 1, L"LIVE   %.12s   %s",
+			(playback.view == _replay_view_free && !tracking) || !player ? L"" : player->name,
+			tracking ? L"FREE CAMERA (TRACKING)" : view_names[playback.view]);
+	}
 	else
 	{
 		/* (a client's recording's other player through their eyes: their
@@ -4182,6 +4347,31 @@ void network_replay_playback_draw(
 	{
 		if (playback_touch())
 			playback_draw_touch_hints(font_index, touch_ended, NUMBEROF(touch_ended));
+		return;
+	}
+	/* (watching live: its own buttons, the camera's bar above them as the
+	playback's) */
+	if (playback.live)
+	{
+		if (playback_touch())
+			playback_draw_hints(font_index, live_touch_hints, NUMBEROF(live_touch_hints), NULL, 0);
+		else if (playback.view == _replay_view_free)
+		{
+			struct playback_hint camera[NUMBEROF(free_camera_hints)];
+
+			csmemcpy(camera, free_camera_hints, sizeof(camera));
+			if (playback.free_tracking && !playback.free_placing)
+				camera[2].action = L"FREE";
+			playback_draw_hints(font_index, live_hints, NUMBEROF(live_hints), camera, NUMBEROF(camera));
+		}
+		else if (playback.view == _replay_view_behind)
+			playback_draw_hints(font_index, live_hints, NUMBEROF(live_hints), behind_camera_hints,
+				NUMBEROF(behind_camera_hints));
+		else if (playback.view == _replay_view_cinematic)
+			playback_draw_hints(font_index, live_hints, NUMBEROF(live_hints), cinematic_camera_hints,
+				NUMBEROF(cinematic_camera_hints));
+		else
+			playback_draw_hints(font_index, live_hints, NUMBEROF(live_hints), NULL, 0);
 		return;
 	}
 	if (playback_touch())

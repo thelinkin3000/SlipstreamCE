@@ -63,5 +63,5 @@ void touch_game_button_controls(int *controls)
 the touch controls show its buttons and their stick alone */
 int touch_game_replay_playing(void)
 {
-	return network_replay_playing();
+	return network_replay_viewing();
 }
