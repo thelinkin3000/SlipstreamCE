@@ -97,6 +97,7 @@ symbols in this file:
 #include "text/text_group.h"
 #include "text/unicode.h"
 #include "text_filter.h" /* port: port/linux/game/text_filter.c */
+#include "halo_onscreen_keyboard.h" /* port: port/linux/game/onscreen_keyboard.c */
 
 /* ---------- constants */
 
@@ -353,16 +354,22 @@ static rectangle2d keyboard_rect[NUMBER_OF_VIRTUAL_KEYS] =
 static struct virtual_keyboard_globals virtual_keyboard_globals= {0};
 
 /* port: the keyboard typing a free text (virtual_keyboard_launch_text): a
-menu's text field, not a profile's name. Its Done keeps whatever is typed
-(no profile's rules: a name of its own, not empty), its caption is its own,
-its text may be longer (MAXIMUM_VIRTUAL_KEYBOARD_FREE_BUFFER_SIZE) in a
-wider box, and a password's shows as stars. Kept beside the globals, whose
-size is the Xbox's */
+menu's text field, not a profile's name, typed on the on-screen keyboard
+the text chat has (port/linux/game/onscreen_keyboard.c, a QWERTY page in
+the menus' look) in this keyboard's place: its processing, drawing and
+taps are this keyboard's, so the menus stand still under it as they do
+under this one. Its Done keeps whatever is typed (no profile's rules),
+under its own caption, up to MAXIMUM_VIRTUAL_KEYBOARD_FREE_BUFFER_SIZE, a
+password's as stars. Kept beside the globals, whose size is the Xbox's */
 static struct
 {
 	boolean active;
 	boolean masked;
 	wchar_t caption[MAXIMUM_VIRTUAL_KEYBOARD_FREE_CAPTION_LENGTH];
+	struct onscreen_keyboard keys;
+	char text[MAXIMUM_VIRTUAL_KEYBOARD_FREE_BUFFER_SIZE / sizeof(wchar_t)];
+	short maximum;
+	unsigned long moved_at;
 } virtual_keyboard_free_text;
 
 /* port: the text as it is drawn (a password's stars) */
@@ -521,7 +528,180 @@ boolean virtual_keyboard_launch_text(
 	virtual_keyboard_free_text.caption[index] = 0;
 	/* (its whole length: past a name's) */
 	virtual_keyboard_globals.buffer_size = (word)MIN(buffer_size & ~1, MAXIMUM_VIRTUAL_KEYBOARD_FREE_BUFFER_SIZE);
+	virtual_keyboard_free_text.maximum = (short)(virtual_keyboard_globals.buffer_size / sizeof(wchar_t) - 1);
+	for (index = 0; text_buffer[index] && index < virtual_keyboard_free_text.maximum; index++)
+	{
+		virtual_keyboard_free_text.text[index] = text_buffer[index] >= L' ' && text_buffer[index] <= L'~' ?
+			(char)text_buffer[index] : '?';
+	}
+	virtual_keyboard_free_text.text[index] = 0;
+	onscreen_keyboard_reset(&virtual_keyboard_free_text.keys);
 	return TRUE;
+}
+
+/* port: a free text's character typed, at its end, and its last deleted */
+static void virtual_keyboard_free_type(
+	char character)
+{
+	size_t length = strlen(virtual_keyboard_free_text.text);
+
+	if ((short)length >= virtual_keyboard_free_text.maximum || character < ' ' || character > '~')
+	{
+		ui_play_audio_feedback_sound(_ui_audio_feedback_flag_failure);
+		return;
+	}
+	virtual_keyboard_free_text.text[length] = character;
+	virtual_keyboard_free_text.text[length + 1] = 0;
+	ui_play_audio_feedback_sound(_ui_audio_feedback_forward);
+}
+
+static void virtual_keyboard_free_delete(
+	void)
+{
+	size_t length = strlen(virtual_keyboard_free_text.text);
+
+	if (length)
+		virtual_keyboard_free_text.text[length - 1] = 0;
+	ui_play_audio_feedback_sound(_ui_audio_feedback_cursor);
+}
+
+/* port: a free text kept (Done, or Start): into the field's buffer, and the
+keyboard closed as Done closes it */
+static void virtual_keyboard_free_done(
+	void)
+{
+	short index;
+
+	for (index = 0; virtual_keyboard_free_text.text[index] && index < virtual_keyboard_free_text.maximum; index++)
+		virtual_keyboard_globals.text_buffer[index] = (wchar_t)(unsigned char)virtual_keyboard_free_text.text[index];
+	virtual_keyboard_globals.text_buffer[index] = 0;
+	virtual_keyboard_globals.last_exit_saved_text = TRUE;
+	ui_play_audio_feedback_sound(_ui_audio_feedback_back);
+	virtual_keyboard_set_active(FALSE);
+	event_manager_flush();
+}
+
+/* port: the on-screen keyboard's key picked pressed */
+static void virtual_keyboard_free_press(
+	void)
+{
+	char typed;
+
+	switch (onscreen_keyboard_press(&virtual_keyboard_free_text.keys, &typed))
+	{
+	case _onscreen_press_character:
+		virtual_keyboard_free_type(typed);
+		break;
+	case _onscreen_press_delete:
+		virtual_keyboard_free_delete();
+		break;
+	case _onscreen_press_done:
+		virtual_keyboard_free_done();
+		break;
+	default:
+		ui_play_audio_feedback_sound(_ui_audio_feedback_cursor);
+		break;
+	}
+}
+
+void draw_quad(rectangle2d *rectangle, pixel32 color);
+
+/* port: a free text's keyboard drawn over the menus (their 640x480): their
+gradient, dimmed, the field's caption, its text in its box, the keys, and
+the controller's buttons under them */
+static void virtual_keyboard_free_render(
+	void)
+{
+	static real_argb_color const blue = { 1.0f, 0x28 / 255.0f, 0x96 / 255.0f, 1.0f };
+	static wchar_t const *const hints[] = { L"%a-button Type", L"%x-button Delete", L"%y-button Shift",
+		L"%b-button Cancel" };
+	static char const *const hint_words[] = { "Type", "Delete", "Shift", "Cancel" };
+	real_argb_color white = get_ui_argb_white();
+	long large_font = tag_loaded(FONT_GROUP_TAG, "ui\\large_ui");
+	long small_font = tag_loaded(FONT_GROUP_TAG, "ui\\small_ui");
+	short large_height, small_height;
+	rectangle2d bounds;
+	short y;
+
+	if (large_font == NONE)
+		large_font = virtual_keyboard_globals.keyboard->font_tag.index;
+	if (small_font == NONE)
+		small_font = large_font;
+	{
+		struct font_header *font = font_definition_get(large_font);
+
+		large_height = (short)(font->ascending_height + font->descending_height + font->leading_height);
+		font = font_definition_get(small_font);
+		small_height = (short)(font->ascending_height + font->descending_height + font->leading_height);
+	}
+	/* (the menus under it, dimmed: their gradient's blue down to its dark) */
+	for (y = 0; y < 480; y = (short)(y + 8))
+	{
+		long t = (long)y * 255 / 480;
+
+		bounds.x0 = -320;
+		bounds.x1 = 960;
+		bounds.y0 = y;
+		bounds.y1 = (short)(y + 8);
+		draw_quad(&bounds, (pixel32)(((unsigned long)0xE0 << 24) | ((unsigned long)(0x0A - 0x07 * t / 255) << 16) |
+			((unsigned long)(0x26 - 0x1E * t / 255) << 8) | (unsigned long)(0x49 - 0x35 * t / 255)));
+	}
+	bounds.x0 = 0;
+	bounds.x1 = 640;
+	bounds.y0 = 58;
+	bounds.y1 = (short)(58 + large_height);
+	draw_string_set_draw_mode(large_font, NONE, 2, 0, &blue);
+	rasterizer_draw_unicode_string(&bounds, &bounds, NULL, 0, virtual_keyboard_free_text.caption);
+	bounds.x0 = 100;
+	bounds.x1 = 540;
+	bounds.y0 = 92;
+	bounds.y1 = 128;
+	text_filter_suspend();
+	onscreen_keyboard_draw_field(&bounds, large_font, large_height, virtual_keyboard_free_text.text,
+		virtual_keyboard_free_text.masked);
+	text_filter_resume();
+	bounds.x0 = 80;
+	bounds.x1 = 560;
+	bounds.y0 = 152;
+	bounds.y1 = 382;
+	onscreen_keyboard_draw(&virtual_keyboard_free_text.keys, &bounds, large_font, large_height, "DONE");
+	/* (the buttons, centred under it, each its picture beside its word) */
+	{
+		short widths[NUMBEROF(hints)];
+		short total = 0;
+		short index;
+		short x;
+
+		for (index = 0; index < (short)NUMBEROF(hints); index++)
+		{
+			wchar_t wide[32];
+			rectangle2d area, measured, cursor;
+			short length;
+
+			for (length = 0; hint_words[index][length] && length < (short)NUMBEROF(wide) - 1; length++)
+				wide[length] = (wchar_t)(unsigned char)hint_words[index][length];
+			wide[length] = 0;
+			area.x0 = 0;
+			area.y0 = 0;
+			area.x1 = 0x3FFF;
+			area.y1 = 480;
+			draw_string_set_draw_mode(small_font, NONE, 0, 0, &white);
+			draw_unicode_string_compute_bounds(&area, wide, &measured, &cursor);
+			widths[index] = (short)(small_height + 6 + MAX(measured.x1, cursor.x0));
+			total = (short)(total + widths[index] + (index ? 18 : 0));
+		}
+		x = (short)((640 - total) / 2);
+		for (index = 0; index < (short)NUMBEROF(hints); index++)
+		{
+			bounds.x0 = x;
+			bounds.x1 = (short)(x + widths[index] + 12);
+			bounds.y0 = 404;
+			bounds.y1 = (short)(404 + small_height);
+			draw_string_set_draw_mode(small_font, NONE, 0, 0, &white);
+			draw_string_and_hack_in_icons(&bounds, NULL, NULL, 0, hints[index], FALSE);
+			x = (short)(x + widths[index] + 18);
+		}
+	}
 }
 
 boolean virtual_keyboard_active(
@@ -683,6 +863,8 @@ static wchar_t virtual_keyboard_get_current_character(
 		virtual_keyboard_globals.row][virtual_keyboard_globals.column]);
 }
 
+static void virtual_keyboard_free_render(void);
+
 static void virtual_keyboard_render_internal(
 	void)
 {
@@ -690,6 +872,12 @@ static void virtual_keyboard_render_internal(
 	real_argb_color text_color;
 	struct font_header *keyboard_font_header;
 
+	/* port: a free text's is the on-screen keyboard (onscreen_keyboard.c) */
+	if (virtual_keyboard_free_text.active)
+	{
+		virtual_keyboard_free_render();
+		return;
+	}
 	text_color.alpha = 1.0f;
 	text_color.red = 0.9f;
 	text_color.green = 0.9f;
@@ -1296,6 +1484,96 @@ static void virtual_keyboard_port_type(
 	return;
 }
 
+/* port: a free text's keyboard's controller and computer keyboard: the
+stick and the d-pad move through its keys (held, again and again), A
+presses the key picked, X deletes, Y turns capitals on or off, Start keeps
+the text and B leaves it as it was; a computer's keys type, and its
+backspace deletes */
+static void virtual_keyboard_free_process(
+	void)
+{
+	unsigned long now = system_milliseconds();
+	struct event_record event;
+	struct key_stroke key;
+
+	while (input_get_key(&key))
+	{
+		if (key.key_code == _key_backspace)
+			virtual_keyboard_free_delete();
+		else if ((unsigned char)key.ascii_code >= ' ' && (unsigned char)key.ascii_code <= '~')
+			virtual_keyboard_free_type((char)key.ascii_code);
+	}
+	while (virtual_keyboard_globals.active && get_next_event(&event, NONE))
+	{
+		short rows_down = 0;
+		short columns_right = 0;
+		boolean first_press = FALSE;
+
+		if (event.type == _event_type_left_stick)
+		{
+			if (event.data.stick.y == SHORT_MAX)
+				rows_down = -1;
+			else if (event.data.stick.y == SHORT_MIN)
+				rows_down = 1;
+			else if (event.data.stick.x == SHORT_MIN)
+				columns_right = -1;
+			else if (event.data.stick.x == SHORT_MAX)
+				columns_right = 1;
+		}
+		else if (event.type == _event_type_button)
+		{
+			first_press = event.data.button.value == 1;
+			switch (event.data.button.index)
+			{
+			case _gamepad_binary_button_dpad_up:
+				rows_down = -1;
+				break;
+			case _gamepad_binary_button_dpad_down:
+				rows_down = 1;
+				break;
+			case _gamepad_binary_button_dpad_left:
+				columns_right = -1;
+				break;
+			case _gamepad_binary_button_dpad_right:
+				columns_right = 1;
+				break;
+			case _gamepad_analog_button_a:
+				if (first_press)
+					virtual_keyboard_free_press();
+				break;
+			case _gamepad_analog_button_x:
+				if (first_press)
+					virtual_keyboard_free_delete();
+				break;
+			case _gamepad_analog_button_y:
+				if (first_press)
+				{
+					virtual_keyboard_free_text.keys.shift = !virtual_keyboard_free_text.keys.shift;
+					ui_play_audio_feedback_sound(_ui_audio_feedback_cursor);
+				}
+				break;
+			case _gamepad_binary_button_start:
+				if (first_press)
+					virtual_keyboard_free_done();
+				break;
+			case _gamepad_analog_button_b:
+			case _gamepad_binary_button_back:
+				if (first_press)
+					virtual_keyboard_cancel();
+				break;
+			}
+		}
+		/* (a press moves at once; held, again each repeat) */
+		if ((rows_down || columns_right) && (first_press ||
+			now - virtual_keyboard_free_text.moved_at >= ONSCREEN_KEYBOARD_REPEAT_MILLISECONDS))
+		{
+			onscreen_keyboard_move(&virtual_keyboard_free_text.keys, rows_down, columns_right);
+			virtual_keyboard_free_text.moved_at = now;
+			ui_play_audio_feedback_sound(_ui_audio_feedback_cursor);
+		}
+	}
+}
+
 static void virtual_keyboard_process_internal(
 	void)
 {
@@ -1305,6 +1583,12 @@ static void virtual_keyboard_process_internal(
 	long action = NONE;
 	boolean handled = FALSE;
 
+	/* port: a free text's is the on-screen keyboard's */
+	if (virtual_keyboard_free_text.active)
+	{
+		virtual_keyboard_free_process();
+		return;
+	}
 	virtual_keyboard_port_type();
 
 	while (get_next_event(&event, NONE))
@@ -1508,6 +1792,14 @@ boolean virtual_keyboard_click(
 		*hit = NONE;
 	if (!virtual_keyboard_globals.active)
 		return FALSE;
+	/* port: a free text's: the on-screen keyboard's key under the tap */
+	if (virtual_keyboard_free_text.active)
+	{
+		if (!onscreen_keyboard_pick_at(&virtual_keyboard_free_text.keys, x, y))
+			return FALSE;
+		virtual_keyboard_free_press();
+		return TRUE;
+	}
 	if (x >= keyboard_back_legend_rect.x0 && x < keyboard_back_legend_rect.x1 &&
 		y >= keyboard_back_legend_rect.y0 && y < keyboard_back_legend_rect.y1)
 	{
