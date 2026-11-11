@@ -473,6 +473,31 @@ The paths, vantage points, routes, vehicles and health packs are from
 [halo-ce-vita](https://github.com/BirchWoodGod/halo-ce-vita)'s bots
 (BirchWoodGod's PS Vita port, GPL-3.0).
 
+`bots.kind` `"provinggrounds"` adds a second kind of bot for the bots added
+from then on (the overlay's Bots > Kind; each bot keeps the kind it joined
+as, so one game can hold both, and in Oddball and Race, which only this kind
+plays, every bot is one). It is written from our own design notes after
+[Project Proving Grounds](https://github.com/AyoItzKye/project-proving-grounds)'
+bots, none of their code (`game/pgbots*.c`):
+
+- It knows only what it has seen (recognised after a moment, slower at the
+  edge of its view), heard (gunfire, the motion tracker when the game shows
+  it), been hit by, or been told by its team's silent callouts (an area, a
+  little late; never chat or sound), and forgets after its level's memory.
+- It picks its goal about ten times a second by scores (fight, retreat to
+  cover, recharge, hunt, the objective, a hold, its role, items, a vehicle),
+  its team's director handing out roles (defenders, runners, escorts,
+  hunters, anchors, hill scorers, overlooks) by each bot's leanings.
+- Its hands are a person's: it reads a target's movement now and then (a
+  juke beats it), flicks and sometimes overshoots, fires only on target with
+  a clear line, and paces its trigger by its weapon's class, taken from the
+  weapon's tag (so Custom Edition maps' weapons too).
+- `bots.skill` sets its hands and craft, its personality its preferences:
+  balanced, rusher, anchor, marksman, flanker, grenadier, objective player
+  or grudger, hidden, dealt in turn so both teams mirror each other, and
+  never its aim. `HALO_PGBOT_PERSONALITY=<name>` makes every one the same
+  (for testing).
+
 `bots.skill` sets six levels, from `"recruit"` (for new players: it reacts
 late, aims loosely and never throws) to `"legendary"`. Each level fights as
 a player of that level does (`game/bots_combat.c`): its reaction is never
@@ -659,6 +684,7 @@ over a profile's own `settings.toml`.
 | `game.unlock_all_levels` | `false` | `HALO_UNLOCK_ALL_LEVELS` | `true`: a profile created afterward starts with all the campaign levels finished on all the difficulties. `false`: a new profile starts at The Pillar of Autumn, and each level opens when you finish the level before it, as on the Xbox. Existing profiles keep their progress. To start a profile over, type `profile_reset_campaign` in the console. |
 | `bots.count` | `0` | `HALO_BOTS` | Computer players (bots) in a game hosted here, local (split screen), system link or a private internet game: `0` to `63` join its lobby with the players, as far as the game has room. Not in public internet games. `0`: none, as in the stock game. Refer to "Bots". |
 | `bots.skill` | `"normal"` | `HALO_BOT_SKILL` | How well the bots play: `"recruit"`, `"easy"`, `"normal"`, `"heroic"`, `"veteran"` or `"legendary"`: how soon they react, how far and how wide they see, how large their aim error is and how fast it settles, how fast they turn, and how they fight. `"easy"`, `"normal"`, `"heroic"` and `"legendary"` keep their numbers; `"recruit"` is below `"easy"`, and `"veteran"` halfway from `"heroic"` to `"legendary"`. Refer to "Bots". |
+| `bots.kind` | `"birchwood"` | `HALO_BOT_KIND` | The kind of bot added from now on: `"birchwood"`, the bots as they were, or `"provinggrounds"`, a second kind with hidden personalities that also plays Oddball and Race. Each bot keeps the kind it joined as, so one game can hold both. Refer to "Bots". |
 | `bots.teams` | `"even"` | `HALO_BOT_TEAMS` | In a team game: `"even"` puts the bots on both teams, evening them with the players; `"against"` puts them all on the team the players are not on. |
 | `bots.vehicles` | `1` | `HALO_BOT_VEHICLES` | `1`: the bots drive and ride the map's vehicles to goals a long way off, and man its turrets. `0`: they stay on foot. |
 | `bots.routes` | `"direct"` | `HALO_BOT_ROUTES` | How the bots go to their goals: `"direct"`, everyone the shortest way; `"lanes"`, each team's attackers spread over the map's side lanes; `"mixed"`, most direct and a few on the side lanes. |

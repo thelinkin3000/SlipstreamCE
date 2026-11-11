@@ -16,9 +16,18 @@ gametype, round of the rotation, time and team scores) and the players
 (their scores and pings). Up and down choose a player, A opens what can be
 done to them (kick, ban for a day or for good, mute or unmute), X ends the
 game and plays the rotation's next, Y (or START) opens the notices the
-host can show every player, and B (twice) stops hosting and goes back to
-the main menu. It is a menu, in a game too: the Switch's buttons are the
-menus' (xinput_sdl.c, hud_hires.c).
+host can show every player, the left shoulder opens BOTS (below), and B
+(twice) stops hosting and goes back to the main menu. It is a menu, in a
+game too: the Switch's buttons are the menus' (xinput_sdl.c, hud_hires.c).
+
+BOTS: the server's bots (sv_bot_add, sv_bot_drop: server_commands.c), in its
+lobby or its game. Its first rows set the bots to add - their kind
+(Birchwood, Proving Grounds), their level (the server's bots.skill, or
+recruit to legendary), how a group gets its levels (each the same, any at
+random, or about the level: a normal distribution), their team in a team
+game (the smaller, red or blue) and how many - left and right changing a
+row, A on ADD adding them; then the bots there, A removing one, and REMOVE
+ALL. A bot's own menu (A on it among the players) watches it or removes it.
 */
 
 #include "cseries.h"
@@ -27,6 +36,7 @@ menus' (xinput_sdl.c, hud_hires.c).
 #include "interface/interface.h"
 #include "interface/ui_widget.h"
 #include "networking/network_game_globals.h"
+#include "networking/network_server_manager.h"
 #include "rasterizer/rasterizer.h"
 #include "render/render.h"
 #include "tag_files/tag_groups.h"
@@ -36,6 +46,10 @@ menus' (xinput_sdl.c, hud_hires.c).
 #include "halo_overlay_menu.h"
 #include "server_director.h"
 #include "network_replay.h" /* port: the live view, network_replay_playback.c */
+#include "game/game_engine.h"
+#include "bots.h" /* port: port/linux/game/bots.c */
+#include "bots_common.h"
+#include "bots_combat.h"
 
 #include "../src/server_console.h" /* port: port/linux/src/server_console.c */
 #include "../src/server_rotation.h" /* port: port/linux/src/server_rotation.c */
@@ -76,7 +90,18 @@ enum
 	_host_menu_none = 0,
 	_host_menu_player,
 	_host_menu_notice,
+	_host_menu_bot,
 	HOST_MENU_MAXIMUM_ROWS = 8,
+	/* the BOTS panel's rows: its settings, ADD, then its bots and REMOVE ALL */
+	_host_bots_row_kind = 0,
+	_host_bots_row_skill,
+	_host_bots_row_levels,
+	_host_bots_row_team,
+	_host_bots_row_count,
+	_host_bots_row_add,
+	HOST_BOTS_SETTING_ROWS,
+	/* the most bots added at once from the panel */
+	HOST_BOTS_MOST_AT_ONCE = 16,
 };
 
 /* a player's menu's rows: their label, and the command run on the player's
@@ -95,6 +120,19 @@ static struct
 	{ "BAN", "ban %ld", "banned" },
 	{ "MUTE", "mute %ld", "muted" },
 	{ "UNMUTE", "unmute %ld", "unmuted" },
+	{ "CANCEL", NULL, NULL },
+};
+
+/* a bot's menu's rows (its number, %ld: sv_bots') */
+static struct
+{
+	char const *label;
+	char const *command;
+	char const *done;
+} const host_bot_actions[] =
+{
+	{ "WATCH", NULL, "watch" },
+	{ "REMOVE BOT", "sv_bot_drop %ld", "removed" },
 	{ "CANCEL", NULL, NULL },
 };
 
@@ -129,6 +167,23 @@ static struct
 	/* watching the game live (network_replay_playback.c's live view) in
 	place of the screen */
 	boolean watching;
+	/* the BOTS panel: open, its row chosen and its first row shown; the
+	bots to add (their kind, level - 0 the server's, 1 up recruit up -, how
+	a group's levels are picked, their team - 0 the smaller, 1 red, 2 blue -
+	and how many); the bots there, as last listed; a bot's menu's bot */
+	boolean bots_open;
+	short bots_row;
+	short bots_top;
+	short bot_kind;
+	short bot_skill_choice;
+	short bot_pick;
+	short bot_team;
+	short bot_count;
+	long bot_indices[BOTS_MAXIMUM];
+	long bot_teams[BOTS_MAXIMUM];
+	char bot_names[BOTS_MAXIMUM][16];
+	long bots_listed;
+	long menu_bot;
 } host;
 
 static void host_set_status(char const *text);
@@ -168,6 +223,7 @@ static short host_menu_rows(
 	void)
 {
 	return host.menu == _host_menu_player ? (short)NUMBEROF(host_player_actions) :
+		host.menu == _host_menu_bot ? (short)NUMBEROF(host_bot_actions) :
 		host.menu == _host_menu_notice ? (short)(NUMBEROF(host_notices) + 1) : 0;
 }
 
@@ -185,6 +241,20 @@ static void host_menu_choose(
 	{
 		host.menu = _host_menu_none;
 		host_watch(host.menu_slot);
+		return;
+	}
+	if (host.menu == _host_menu_bot && host.menu_row < (short)NUMBEROF(host_bot_actions))
+	{
+		host.menu = _host_menu_none;
+		if (!host_bot_actions[host.menu_row].command && host_bot_actions[host.menu_row].done)
+			host_watch(host.menu_slot);
+		else if (host_bot_actions[host.menu_row].command &&
+			server_status_player_row(host.menu_slot, name, sizeof(name), &score, &ping))
+		{
+			snprintf(line, sizeof(line), host_bot_actions[host.menu_row].command, host.menu_bot + 1);
+			snprintf(done, sizeof(done), "%s %s", name, host_bot_actions[host.menu_row].done);
+			host_run(line, done);
+		}
 		return;
 	}
 	if (host.menu == _host_menu_player && host.menu_row < (short)NUMBEROF(host_player_actions) &&
@@ -217,10 +287,24 @@ static void host_run(
 {
 	boolean succeeded = FALSE;
 	char *output = server_commands_run(line, _server_role_owner, _server_origin_standard_input, &succeeded);
+	char said[96] = "not done";
 
+	/* (not done: the command's last line says why) */
 	if (output)
+	{
+		char *end = output + strlen(output);
+		char *start;
+
+		while (end > output && (end[-1] == '\n' || end[-1] == '\r'))
+			end--;
+		start = end;
+		while (start > output && start[-1] != '\n')
+			start--;
+		if (!succeeded && end > start)
+			snprintf(said, sizeof(said), "%.*s", (int)(end - start), start);
 		server_console_free(output);
-	host_set_status(succeeded ? done : "not done");
+	}
+	host_set_status(succeeded ? done : said);
 	error(_error_silent, "host: %s (%s)", line, succeeded ? "done" : "not done");
 }
 
@@ -247,8 +331,11 @@ int host_dashboard_start(
 	}
 	if (!server_director_host_begin(rotation, error_text, (long)error_size))
 		return FALSE;
+	bots_clear_roster();
 	memset(&host, 0, sizeof(host));
 	host.chosen_slot = NONE;
+	host.bot_kind = bots_kind();
+	host.bot_count = 1;
 	return TRUE;
 }
 
@@ -285,12 +372,139 @@ static void host_move(
 	host.chosen_slot = host.slots[row];
 }
 
+/* ---------- the BOTS panel */
+
+static short host_bots_rows(
+	void)
+{
+	return (short)(HOST_BOTS_SETTING_ROWS + host.bots_listed + (host.bots_listed > 0 ? 1 : 0));
+}
+
+/* the bots there listed again (sv_bots'), the chosen row kept in range */
+static void host_bots_list(
+	void)
+{
+	host.bots_listed = network_game_server_port_bot_roster(host.bot_indices, host.bot_teams, host.bot_names,
+		BOTS_MAXIMUM);
+	if (host.bots_row >= host_bots_rows())
+		host.bots_row = (short)(host_bots_rows() - 1);
+}
+
+/* the level chosen, by name (the server's: "default") */
+static char const *host_bot_skill_word(
+	short choice)
+{
+	return choice <= 0 ? "default" : bots_skill_name((short)(choice - 1));
+}
+
+/* a setting row changed by a step (left -1, right and A +1) */
+static void host_bots_change(
+	short row,
+	short by)
+{
+	switch (row)
+	{
+	case _host_bots_row_kind:
+		host.bot_kind = (short)((host.bot_kind + by + NUMBER_OF_BOTS_KINDS) % NUMBER_OF_BOTS_KINDS);
+		break;
+	case _host_bots_row_skill:
+		host.bot_skill_choice = (short)((host.bot_skill_choice + by + NUMBER_OF_BOTS_SKILLS + 1) %
+			(NUMBER_OF_BOTS_SKILLS + 1));
+		break;
+	case _host_bots_row_levels:
+		host.bot_pick = (short)((host.bot_pick + by + NUMBER_OF_BOTS_SKILL_PICKS) % NUMBER_OF_BOTS_SKILL_PICKS);
+		break;
+	case _host_bots_row_team:
+		host.bot_team = (short)((host.bot_team + by + 3) % 3);
+		break;
+	case _host_bots_row_count:
+		host.bot_count = (short)PIN(host.bot_count + by, 1, HOST_BOTS_MOST_AT_ONCE);
+		break;
+	}
+}
+
+/* the bots asked for added (sv_bot_add) */
+static void host_bots_add(
+	void)
+{
+	static char const *const teams[3] = { "auto", "red", "blue" };
+	char line[128];
+	char skill[32];
+	char done[48];
+	boolean has_teams;
+
+	server_status_game_engine(&has_teams);
+	if (host.bot_pick == _bots_skill_pick_random)
+		snprintf(skill, sizeof(skill), "random");
+	else if (host.bot_pick == _bots_skill_pick_normal && host.bot_skill_choice <= 0)
+		snprintf(skill, sizeof(skill), "normal");
+	else if (host.bot_pick == _bots_skill_pick_normal)
+		snprintf(skill, sizeof(skill), "normal:%s", host_bot_skill_word(host.bot_skill_choice));
+	else
+		snprintf(skill, sizeof(skill), "%s", host_bot_skill_word(host.bot_skill_choice));
+	snprintf(line, sizeof(line), "sv_bot_add %d %s %s %s", (int)host.bot_count,
+		host.bot_kind == _bots_kind_proving_grounds ? "provinggrounds" : "birchwood", skill,
+		has_teams ? teams[host.bot_team] : "auto");
+	if (host.bot_count == 1)
+		snprintf(done, sizeof(done), "a bot added");
+	else
+		snprintf(done, sizeof(done), "%d bots added", (int)host.bot_count);
+	host_run(line, done);
+	host_bots_list();
+}
+
+/* the panel's buttons: up and down its rows, left and right a setting, A
+the row's (a setting a step on, ADD, a bot removed, all removed), B closed */
+static void host_bots_update(
+	unsigned long pressed)
+{
+	short rows;
+
+	host_bots_list();
+	rows = host_bots_rows();
+	if (pressed & (1UL << HALO_OVERLAY_PAD_UP))
+		host.bots_row = (short)((host.bots_row + rows - 1) % rows);
+	if (pressed & (1UL << HALO_OVERLAY_PAD_DOWN))
+		host.bots_row = (short)((host.bots_row + 1) % rows);
+	if (host.bots_row < _host_bots_row_add)
+	{
+		if (pressed & (1UL << HALO_OVERLAY_PAD_LEFT))
+			host_bots_change(host.bots_row, -1);
+		if (pressed & ((1UL << HALO_OVERLAY_PAD_RIGHT) | (1UL << HALO_OVERLAY_PAD_A)))
+			host_bots_change(host.bots_row, 1);
+	}
+	else if (pressed & (1UL << HALO_OVERLAY_PAD_A))
+	{
+		if (host.bots_row == _host_bots_row_add)
+			host_bots_add();
+		else if (host.bots_row - HOST_BOTS_SETTING_ROWS < host.bots_listed)
+		{
+			long listed = host.bots_row - HOST_BOTS_SETTING_ROWS;
+			char line[48];
+			char done[48];
+
+			snprintf(line, sizeof(line), "sv_bot_drop %ld", host.bot_indices[listed] + 1);
+			snprintf(done, sizeof(done), "%s removed", host.bot_names[listed]);
+			host_run(line, done);
+			host_bots_list();
+		}
+		else
+		{
+			host_run("sv_bot_drop all", "every bot removed");
+			host_bots_list();
+		}
+	}
+	if (pressed & ((1UL << HALO_OVERLAY_PAD_B) | (1UL << HALO_OVERLAY_PAD_LEFT_SHOULDER)))
+		host.bots_open = FALSE;
+}
+
 void host_dashboard_update(
 	void)
 {
 	enum
 	{
-		DIRECTIONS = (1UL << HALO_OVERLAY_PAD_UP) | (1UL << HALO_OVERLAY_PAD_DOWN),
+		DIRECTIONS = (1UL << HALO_OVERLAY_PAD_UP) | (1UL << HALO_OVERLAY_PAD_DOWN) | (1UL << HALO_OVERLAY_PAD_LEFT) |
+			(1UL << HALO_OVERLAY_PAD_RIGHT),
 	};
 	unsigned long buttons = 0;
 	unsigned long pressed;
@@ -335,6 +549,12 @@ void host_dashboard_update(
 		pressed |= buttons & DIRECTIONS;
 		host.repeat_at = now + HOST_REPEAT_MILLISECONDS;
 	}
+	/* (the BOTS panel open: its rows alone) */
+	if (host.bots_open)
+	{
+		host_bots_update(pressed);
+		return;
+	}
 	/* (a menu open: its rows alone, B closing it) */
 	if (host.menu != _host_menu_none)
 	{
@@ -358,7 +578,8 @@ void host_dashboard_update(
 	{
 		if (host.chosen_slot != NONE)
 		{
-			host.menu = _host_menu_player;
+			host.menu_bot = server_status_player_bot(host.chosen_slot);
+			host.menu = host.menu_bot != NONE ? _host_menu_bot : _host_menu_player;
 			host.menu_row = 0;
 			host.menu_slot = host.chosen_slot;
 		}
@@ -371,6 +592,13 @@ void host_dashboard_update(
 	{
 		host.menu = _host_menu_notice;
 		host.menu_row = 0;
+	}
+	/* (the left shoulder: BOTS) */
+	if (pressed & (1UL << HALO_OVERLAY_PAD_LEFT_SHOULDER))
+	{
+		host.bots_open = TRUE;
+		host_bots_list();
+		return;
 	}
 	/* (R: the game watched, from the player chosen) */
 	if (pressed & (1UL << HALO_OVERLAY_PAD_RIGHT_SHOULDER))
@@ -702,6 +930,170 @@ static void host_hints(
 	}
 }
 
+/* the BOTS panel: its settings, ADD, the bots there and REMOVE ALL, a
+window of them about the row chosen; its buttons along the foot */
+static void host_bots_draw(
+	long font_index,
+	short line_height,
+	long small_font_index,
+	short small_line_height,
+	short width,
+	short height,
+	short margin,
+	short foot)
+{
+	static pixel32 const BAND = HOST_COLOR(0x38, 0x28, 0x96, 0xFF);
+	static pixel32 const CHOSEN_BAND = HOST_COLOR(0x70, 0x28, 0x96, 0xFF);
+	static char const *const kinds[NUMBER_OF_BOTS_KINDS] = { "BIRCHWOOD", "PROVING GROUNDS" };
+	static char const *const picks[NUMBER_OF_BOTS_SKILL_PICKS] = { "SAME FOR ALL", "RANDOM", "AROUND THE SKILL" };
+	static char const *const teams[3] = { "AUTO (SMALLER TEAM)", "RED", "BLUE" };
+	static char const *const labels[HOST_BOTS_SETTING_ROWS] = { "KIND", "SKILL", "LEVELS", "TEAM", "HOW MANY", "" };
+	static wchar_t const *const hints[] = { L"%a-button Select", L"%b-button Back" };
+	static char const *const hint_words[] = { "Select", "Back" };
+	real_argb_color white = get_ui_argb_white();
+	short row_height = (short)(small_line_height + 2 * HOST_PADDING);
+	short box_width = (short)MIN(width - 2 * margin, 620);
+	short x0 = (short)((width - box_width) / 2);
+	short y0 = (short)(height / 12);
+	short y1 = (short)(foot - HOST_PADDING * 2);
+	short rows = host_bots_rows();
+	short visible, row, y;
+	boolean teams_game;
+	long engine = server_status_game_engine(&teams_game);
+	rectangle2d rectangle;
+	char text[96];
+	char value[96];
+
+	rectangle.x0 = 0;
+	rectangle.y0 = 0;
+	rectangle.x1 = width;
+	rectangle.y1 = height;
+	draw_quad(&rectangle, HOST_COLOR(0xA0, 0, 0, 0));
+	rectangle.x0 = x0;
+	rectangle.y0 = y0;
+	rectangle.x1 = (short)(x0 + box_width);
+	rectangle.y1 = y1;
+	host_box(&rectangle, 12, HOST_COLOR(0xF4, 0x08, 0x1A, 0x34));
+	y = (short)(y0 + HOST_PADDING * 2);
+	host_text(font_index, x0, y, (short)(x0 + box_width), line_height, _host_text_centre, &host_blue, "BOTS");
+	y = (short)(y + line_height + 2);
+	/* (what the game being hosted lets them do) */
+	if (engine == NONE)
+		snprintf(text, sizeof(text), "THE SERVER IS STARTING");
+	else if (!bots_game_type_played(engine))
+		snprintf(text, sizeof(text), "BOTS DO NOT PLAY THIS GAME TYPE");
+	else if (engine == game_engine_oddball || engine == game_engine_race)
+		snprintf(text, sizeof(text), "%s: EVERY BOT PLAYS AS PROVING GROUNDS",
+			engine == game_engine_oddball ? "ODDBALL" : "RACE");
+	else
+		snprintf(text, sizeof(text), "%s, %ld BOT%s IN THE SERVER", teams_game ? "TEAM GAME" : "FREE FOR ALL",
+			host.bots_listed, host.bots_listed == 1 ? "" : "S");
+	host_text(small_font_index, x0, y, (short)(x0 + box_width), small_line_height, _host_text_centre,
+		engine != NONE && bots_game_type_played(engine) ? &host_lavender : &host_red, text);
+	y = (short)(y + small_line_height + HOST_PADDING * 2);
+	/* (the rows that fit, a window kept about the row chosen) */
+	visible = (short)MAX(1, (y1 - HOST_PADDING * 2 - y) / (row_height + HOST_ROW_GAP));
+	if (host.bots_row < host.bots_top)
+		host.bots_top = host.bots_row;
+	if (host.bots_row >= host.bots_top + visible)
+		host.bots_top = (short)(host.bots_row - visible + 1);
+	host.bots_top = (short)PIN(host.bots_top, 0, MAX(0, rows - visible));
+	for (row = host.bots_top; row < rows && row < host.bots_top + visible; row++)
+	{
+		boolean chosen = row == host.bots_row;
+		short left = (short)(x0 + HOST_PADDING * 2 + 14);
+		short right = (short)(x0 + box_width - HOST_PADDING * 3);
+		real_argb_color const *color = chosen ? &white : &host_lavender;
+
+		rectangle.x0 = (short)(x0 + HOST_PADDING * 2);
+		rectangle.x1 = (short)(x0 + box_width - HOST_PADDING * 2);
+		rectangle.y0 = y;
+		rectangle.y1 = (short)(y + row_height);
+		host_rounded(&rectangle, 4, chosen ? CHOSEN_BAND : BAND);
+		if (chosen)
+			host_arrow((short)(rectangle.x0 + 4), (short)(y + row_height / 2), 5, HOST_COLOR(0xFF, 0x5F, 0xB4, 0xFF));
+		if (row < _host_bots_row_add)
+		{
+			switch (row)
+			{
+			case _host_bots_row_kind:
+				snprintf(value, sizeof(value), "%s", kinds[host.bot_kind]);
+				break;
+			case _host_bots_row_skill:
+				if (host.bot_skill_choice <= 0)
+					snprintf(value, sizeof(value), "SERVER'S (%s)", bots_skill_name(bots_skill()));
+				else
+					snprintf(value, sizeof(value), "%s", bots_skill_name((short)(host.bot_skill_choice - 1)));
+				break;
+			case _host_bots_row_levels:
+				snprintf(value, sizeof(value), "%s", picks[host.bot_pick]);
+				break;
+			case _host_bots_row_team:
+				snprintf(value, sizeof(value), "%s", teams_game ? teams[host.bot_team] : "NO TEAMS");
+				break;
+			default:
+				snprintf(value, sizeof(value), "%d", (int)host.bot_count);
+				break;
+			}
+			host_capitals(value);
+			if (chosen)
+				snprintf(text, sizeof(text), "<  %s  >", value);
+			else
+				snprintf(text, sizeof(text), "%s", value);
+			host_text(small_font_index, left, (short)(y + HOST_PADDING), right, small_line_height, _host_text_left, color,
+				labels[row]);
+			host_text(small_font_index, left, (short)(y + HOST_PADDING), right, small_line_height, _host_text_right,
+				row == _host_bots_row_team && !teams_game ? &host_lavender : &white, text);
+		}
+		else if (row == _host_bots_row_add)
+		{
+			if (host.bot_count == 1)
+				snprintf(text, sizeof(text), "ADD A BOT");
+			else
+				snprintf(text, sizeof(text), "ADD %d BOTS", (int)host.bot_count);
+			host_text(small_font_index, left, (short)(y + HOST_PADDING), right, small_line_height, _host_text_centre,
+				&host_green, text);
+		}
+		else if (row - HOST_BOTS_SETTING_ROWS < host.bots_listed)
+		{
+			long listed = row - HOST_BOTS_SETTING_ROWS;
+			long bot_index = host.bot_indices[listed];
+			short own = bots_bot_own_skill(bot_index);
+
+			snprintf(text, sizeof(text), "%s", host.bot_names[listed]);
+			host_text(small_font_index, left, (short)(y + HOST_PADDING), right, small_line_height, _host_text_left, color,
+				text);
+			snprintf(value, sizeof(value), "%s   %s%s%s", kinds[bots_bot_joined_kind(bot_index) == _bots_kind_proving_grounds],
+				own >= 0 ? bots_skill_name(own) : "SERVER'S", teams_game ? "   " : "",
+				!teams_game ? "" : host.bot_teams[listed] == 1 ? "BLUE" : "RED");
+			host_capitals(value);
+			host_text(small_font_index, left, (short)(y + HOST_PADDING), right, small_line_height, _host_text_right,
+				&white, value);
+		}
+		else
+		{
+			host_text(small_font_index, left, (short)(y + HOST_PADDING), right, small_line_height, _host_text_centre,
+				&host_red, "REMOVE ALL BOTS");
+		}
+		y = (short)(y + row_height + HOST_ROW_GAP);
+	}
+	/* (the foot: what the last command did, else the panel's buttons) */
+	if (host.status[0] && (long)(system_milliseconds() - host.status_until) < 0)
+	{
+		snprintf(text, sizeof(text), "%s", host.status);
+		host_capitals(text);
+		host_text(small_font_index, margin, foot, (short)(width - margin), small_line_height, _host_text_left, &white,
+			text);
+	}
+	else
+	{
+		host_text(small_font_index, margin, foot, (short)(width - margin), small_line_height, _host_text_left,
+			&host_lavender, "LEFT/RIGHT CHANGE");
+		host_hints(small_font_index, small_line_height, (short)(width - margin), foot, hints, hint_words,
+			(short)NUMBEROF(hints));
+	}
+}
+
 void host_dashboard_draw(
 	void)
 {
@@ -712,14 +1104,18 @@ void host_dashboard_draw(
 	the Xbox's black button) */
 #if defined(HALO_SWITCH)
 #define HOST_WATCH_HINT "R Watch"
+#define HOST_BOTS_HINT "L Bots"
 #elif defined(HALO_PS5)
 #define HOST_WATCH_HINT "R1 Watch"
+#define HOST_BOTS_HINT "L1 Bots"
 #else
 #define HOST_WATCH_HINT "RB Watch"
+#define HOST_BOTS_HINT "LB Bots"
 #endif
-	static wchar_t const *const hints[] = { L"%a-button Player", L"" HOST_WATCH_HINT, L"%y-button Notices",
-		L"%x-button Next Round", L"%b-button Stop Hosting" };
-	static char const *const hint_words[] = { "Player", HOST_WATCH_HINT, "Notices", "Next Round", "Stop Hosting" };
+	static wchar_t const *const hints[] = { L"%a-button Player", L"" HOST_BOTS_HINT, L"" HOST_WATCH_HINT,
+		L"%y-button Notices", L"%x-button Next Round", L"%b-button Stop Hosting" };
+	static char const *const hint_words[] = { "Player", HOST_BOTS_HINT, HOST_WATCH_HINT, "Notices", "Next Round",
+		"Stop Hosting" };
 	real_argb_color white = get_ui_argb_white();
 	struct server_entry const *current;
 	struct server_rotation const *rotation;
@@ -900,34 +1296,45 @@ void host_dashboard_draw(
 			band.x1 = (short)(inside.x1 + HOST_PADDING);
 			band.y0 = line;
 			band.y1 = (short)(line + row_height);
-			if (chosen)
+			/* (a team game's player on its team's colour, brighter chosen) */
 			{
-				host_rounded(&band, 4, CHOSEN_BAND);
-				host_arrow((short)(band.x0 + 4), (short)(line + row_height / 2), 5, HOST_COLOR(0xFF, 0x5F, 0xB4, 0xFF));
-			}
-			else
-			{
-				host_rounded(&band, 4, BAND);
+				long team = server_status_player_team(host.slots[column]);
+				pixel32 fill = team == 0 ? (chosen ? HOST_COLOR(0xC0, 0xC8, 0x30, 0x30) : HOST_COLOR(0x70, 0xA0, 0x20, 0x20)) :
+					team == 1 ? (chosen ? HOST_COLOR(0xC0, 0x30, 0x58, 0xD0) : HOST_COLOR(0x70, 0x20, 0x40, 0xA8)) :
+					chosen ? CHOSEN_BAND : BAND;
+
+				host_rounded(&band, 4, fill);
+				if (chosen)
+					host_arrow((short)(band.x0 + 4), (short)(line + row_height / 2), 5, HOST_COLOR(0xFF, 0xFF, 0xFF, 0xFF));
 			}
 			if (server_status_player_muted(host.slots[column]))
 				snprintf(text, sizeof(text), "%s (MUTED)", name);
 			else
 				snprintf(text, sizeof(text), "%s", name);
 			host_text(small_font_index, (short)(inside.x0 + 10), (short)(line + HOST_PADDING), inside.x1,
-				small_line_height, _host_text_left, chosen ? &white : &host_lavender, text);
-			if (ping == NONE)
-				snprintf(value, sizeof(value), "%ld", score);
-			else
-				snprintf(value, sizeof(value), "%ld   %ld MS", score, ping);
+				small_line_height, _host_text_left,
+				chosen || server_status_player_team(host.slots[column]) != NONE ? &white : &host_lavender, text);
+			/* (the points at the right edge, the ping to their left) */
+			snprintf(value, sizeof(value), "%ld", score);
 			host_text(small_font_index, inside.x0, (short)(line + HOST_PADDING), inside.x1, small_line_height,
 				_host_text_right, &white, value);
+			if (ping != NONE)
+			{
+				short points_room = (short)(host_text_width(small_font_index, "0000") + HOST_PADDING * 3);
+
+				snprintf(value, sizeof(value), "%ld MS", ping);
+				host_text(small_font_index, inside.x0, (short)(line + HOST_PADDING), (short)(inside.x1 - points_room),
+					small_line_height, _host_text_right, &host_lavender, value);
+			}
 			line = (short)(line + row_height + HOST_ROW_GAP);
 		}
 	}
 
 	/* the foot: what the last command did, or the second B's question,
-	else the buttons */
-	if (host.confirm_until && (long)(now - host.confirm_until) < 0)
+	else the buttons (the BOTS panel's own, open) */
+	if (host.bots_open)
+		;
+	else if (host.confirm_until && (long)(now - host.confirm_until) < 0)
 	{
 		rectangle2d bounds;
 
@@ -973,14 +1380,15 @@ void host_dashboard_draw(
 		rectangle.x1 = (short)(x0 + box_width);
 		rectangle.y1 = (short)(y0 + box_height);
 		host_box(&rectangle, 12, HOST_COLOR(0xF4, 0x08, 0x1A, 0x34));
-		if (host.menu == _host_menu_player)
+		if (host.menu == _host_menu_player || host.menu == _host_menu_bot)
 		{
 			char name[16];
 			long score, ping;
 
 			if (!server_status_player_row(host.menu_slot, name, sizeof(name), &score, &ping))
 				snprintf(name, sizeof(name), "PLAYER");
-			snprintf(title, sizeof(title), "%s%s", name, server_status_player_muted(host.menu_slot) ? " (MUTED)" : "");
+			snprintf(title, sizeof(title), "%s%s", name, host.menu == _host_menu_bot ? " (BOT)" :
+				server_status_player_muted(host.menu_slot) ? " (MUTED)" : "");
 		}
 		else
 		{
@@ -992,6 +1400,7 @@ void host_dashboard_draw(
 		for (row = 0; row < rows; row++)
 		{
 			char const *label = host.menu == _host_menu_player ? host_player_actions[row].label :
+				host.menu == _host_menu_bot ? host_bot_actions[row].label :
 				row < (short)NUMBEROF(host_notices) ? host_notices[row] : "Cancel";
 			boolean chosen = row == host.menu_row;
 
@@ -1008,6 +1417,10 @@ void host_dashboard_draw(
 			y = (short)(y + row_height + HOST_ROW_GAP);
 		}
 	}
+
+	/* the BOTS panel, over the screen */
+	if (host.bots_open)
+		host_bots_draw(font_index, line_height, small_font_index, small_line_height, width, height, margin, foot);
 }
 
 #else

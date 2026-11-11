@@ -649,11 +649,18 @@ static const struct config_setting config_settings[] =
 		"internet one (not a public one, which the server browser lists): 0 to\n"
 		"63 join its lobby with the players, as far as the game has room. In a\n"
 		"game, the console's add_bot and drop_bot (add_bot_red, drop_bot_blue...)\n"
-		"add or take one. 0: none, as in the stock game." },
+		"add or take one. 0: none, as in the stock game. With bots.kind\n"
+		"\"provinggrounds\", Oddball and Race games take bots too." },
 	{ "bots.skill", _config_string, "\"normal\"", "HALO_BOT_SKILL", _environment_value, _platform_all,
 		"How well the bots play: \"recruit\", \"easy\", \"normal\", \"heroic\",\n"
 		"\"veteran\" or \"legendary\" (how soon they react, how well they aim,\n"
 		"how far they see, and how they fight: blows, grenades, strafes, retreats)." },
+	{ "bots.kind", _config_string, "\"birchwood\"", "HALO_BOT_KIND", _environment_value, _platform_all,
+		"The kind of bot added from now on: \"birchwood\" (the bots as they\n"
+		"were) or \"provinggrounds\" (a second kind, with hidden personalities,\n"
+		"that also plays Oddball and Race). Each bot keeps the kind it joined as,\n"
+		"so one game can hold both; in Oddball and Race every bot plays as\n"
+		"Proving Grounds." },
 	{ "bots.teams", _config_string, "\"even\"", "HALO_BOT_TEAMS", _environment_value, _platform_all,
 		"In team games: \"even\" puts the bots on both teams, evening them with\n"
 		"the players; \"against\" puts them all on the team the players are not on." },
@@ -2650,6 +2657,7 @@ static const struct
 	{ "game.language", { "", "ja", "de", "fr", "es", "it", NULL }, NULL },
 	{ "network.text_chat", { "on", "links", "off", NULL }, NULL },
 	{ "bots.routes", { "direct", "lanes", "mixed", NULL }, "\"direct\"'s" },
+	{ "bots.kind", { "birchwood", "provinggrounds", NULL }, "\"birchwood\"'s" },
 	{ "server.chat_filter", { "off", "censor", "block", NULL }, NULL },
 	{ "server.chat_filter_slurs", { "off", "severe", "strong", "mild", NULL }, NULL },
 	{ "server.chat_filter_swearing", { "off", "severe", "strong", "mild", NULL }, NULL },

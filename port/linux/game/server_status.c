@@ -23,6 +23,7 @@ owner, or with server.log_addresses; the invite only for admins.
 #include "network_distributed.h"
 #include "server_director.h"
 #include "server_gametypes.h"
+#include "bots.h" /* port: port/linux/game/bots.c */
 
 #include "../src/p2p.h" /* port: port/linux/src/p2p.c */
 #include "../src/server_console.h" /* port: port/linux/src/server_console.c */
@@ -178,6 +179,41 @@ long server_status_player_datum(
 		return NONE;
 	}
 	return game->players[slot].player_list_index;
+}
+
+long server_status_player_bot(
+	long slot)
+{
+	struct network_game *game = server_game();
+
+	if (!game || slot < 0 || slot >= MAXIMUM_SLOTS || !network_player_is_valid(&game->players[slot]) ||
+		!bots_machine_is_bot(game->players[slot].machine_index))
+	{
+		return NONE;
+	}
+	return game->players[slot].machine_index - BOTS_FIRST_MACHINE;
+}
+
+long server_status_player_team(
+	long slot)
+{
+	struct network_game *game = server_game();
+
+	if (!game || !game->variant.universal_variant.teams || slot < 0 || slot >= MAXIMUM_SLOTS ||
+		!network_player_is_valid(&game->players[slot]) || !VALID_INDEX(game->players[slot].team_index, 2))
+	{
+		return NONE;
+	}
+	return game->players[slot].team_index;
+}
+
+long server_status_game_engine(
+	boolean *teams)
+{
+	struct network_game *game = server_game();
+
+	*teams = game ? game->variant.universal_variant.teams : FALSE;
+	return game ? game->variant.game_engine_index : NONE;
 }
 
 boolean server_status_player_muted(

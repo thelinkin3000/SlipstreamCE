@@ -200,6 +200,12 @@ watches them: network_replay_live_begin); NONE outside one */
 long server_status_player_datum(long slot);
 /* whether the host muted the slot's player (mute) */
 boolean server_status_player_muted(long slot);
+/* the bot number (0 up) of the player in the slot, NONE for a player who is none; and the server's game's type
+(game_engine.h's; NONE while it hosts none) and whether it has teams */
+long server_status_player_bot(long slot);
+/* the team of the player in the slot (0 red, 1 blue) in a team game, NONE otherwise */
+long server_status_player_team(long slot);
+long server_status_game_engine(boolean *teams);
 /* a stock map's title (bloodgulch: "Blood Gulch"), else its name */
 char const *server_map_title(char const *name);
 /* the slot's player for the host's screen (host_dashboard.c): its name, its

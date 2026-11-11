@@ -38,6 +38,7 @@ Called from the main loop every frame (main.c).
 #include "network_distributed.h"
 #include "network_map_vote.h"
 #include "server_director.h"
+#include "bots.h" /* port: port/linux/game/bots.c */
 #include "server_gametypes.h"
 
 #include "../src/p2p.h" /* port: port/linux/src/p2p.c, p2p_lobby.c */
@@ -280,6 +281,23 @@ static long server_player_count(
 	for (index = 0; game && index < MAXIMUM_SLOTS; index++)
 	{
 		if (network_player_is_valid(&game->players[index]))
+			count++;
+	}
+	return count;
+}
+
+/* port: the server's bots (sv_bot_add): players of machines of their own,
+on the server's (bots.h) */
+static long server_bot_count(
+	void)
+{
+	struct network_game *game = server_game();
+	long count = 0;
+	long index;
+
+	for (index = 0; game && index < MAXIMUM_SLOTS; index++)
+	{
+		if (network_player_is_valid(&game->players[index]) && bots_machine_is_bot(game->players[index].machine_index))
 			count++;
 	}
 	return count;
@@ -1938,8 +1956,11 @@ static void server_playing(
 		time limit, else at its score) */
 		if (!server.end_asked)
 		{
+			/* (no machine but the server's own, and no bots: empty; bots
+			alone play on, the host watching) */
 			server.end_reason = server_players_in_game() == 0 ||
-				network_game_server_port_remote_machine_count(global_network_game_server_get(), TRUE) == 0 ?
+				(network_game_server_port_remote_machine_count(global_network_game_server_get(), TRUE) == 0 &&
+					server_bot_count() == 0) ?
 				_server_end_empty :
 				game && game->variant_options.time_limit > 0 &&
 				server.game_seconds >= 60.0f * game->variant_options.time_limit - 2.0f ? _server_end_time :

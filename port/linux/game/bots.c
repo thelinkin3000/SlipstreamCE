@@ -231,6 +231,7 @@ debug.bot_trace logs each bot's state.
 #include "cache/cache_files.h"
 
 #include "bots.h"
+#include "bots_common.h"
 #include "bots_combat.h"
 #include "bots_tactics.h"
 #include "game_modes.h"
@@ -883,7 +884,10 @@ static struct
 	/* the path searches (allocated once a game has bots) */
 	struct bots_search *search_slots;
 
-	/* the statistics of halo.log's line */
+	/* the statistics of halo.log's line; port: the microseconds and bot ticks
+	of each kind's bots (bots_common.h) */
+	unsigned long long kind_us[NUMBER_OF_BOTS_KINDS];
+	long kind_bot_ticks[NUMBER_OF_BOTS_KINDS];
 	unsigned long long tick_us;
 	unsigned long long search_us;
 	long ticks;
@@ -1164,6 +1168,103 @@ short bots_teams(void)
 		_bots_teams_against;
 }
 
+/* port: the bots' kinds and skill levels (bots_common.h): those each bot
+joined as, kept while it stays (a map's start keeps them: the lobby's bots
+stay); a level NONE is bots.skill's. The next to join takes those asked
+for it (bots_set_next_join), else bots.kind's and bots.skill's */
+static char bots_kinds[BOTS_MAXIMUM];
+static signed char bots_bot_skills[BOTS_MAXIMUM];
+static short bots_next_kind = NONE;
+static short bots_next_skill = NONE;
+/* port: the team each bot was asked for (NONE: the smaller one, kept even
+in the lobby of a server: network_server_manager.c), and the next's */
+static signed char bots_bot_teams_asked[BOTS_MAXIMUM];
+static long bots_next_team = NONE;
+/* port: a server's bots (sv_bot_add), which join each lobby again as they
+were until dropped (sv_bot_drop) */
+static boolean bots_roster[BOTS_MAXIMUM];
+
+void bots_set_on_roster(long bot_index, boolean on)
+{
+	if (bot_index >= 0 && bot_index < BOTS_MAXIMUM)
+		bots_roster[bot_index] = on;
+}
+
+void bots_clear_roster(void)
+{
+	csmemset(bots_roster, 0, sizeof(bots_roster));
+}
+
+boolean bots_on_roster(long bot_index)
+{
+	return bot_index >= 0 && bot_index < BOTS_MAXIMUM && bots_roster[bot_index];
+}
+
+void bots_set_next_team(long team_index)
+{
+	bots_next_team = team_index == 0 || team_index == 1 ? team_index : NONE;
+}
+
+long bots_bot_team_asked(long bot_index)
+{
+	return bot_index >= 0 && bot_index < BOTS_MAXIMUM ? bots_bot_teams_asked[bot_index] : NONE;
+}
+
+void bots_set_next_join(short kind, short skill)
+{
+	bots_next_kind = kind >= 0 && kind < NUMBER_OF_BOTS_KINDS ? kind : NONE;
+	bots_next_skill = skill >= 0 && skill < NUMBER_OF_BOTS_SKILLS ? skill : NONE;
+}
+
+short bots_bot_joined_kind(long bot_index)
+{
+	return bot_index >= 0 && bot_index < BOTS_MAXIMUM ? bots_kinds[bot_index] : _bots_kind_birchwood;
+}
+
+short bots_bot_own_skill(long bot_index)
+{
+	return bot_index >= 0 && bot_index < BOTS_MAXIMUM ? bots_bot_skills[bot_index] : NONE;
+}
+
+short bots_bot_skill(long bot_index)
+{
+	short skill = bots_bot_own_skill(bot_index);
+
+	return skill >= 0 && skill < NUMBER_OF_BOTS_SKILLS ? skill : bots_skill();
+}
+
+char const *bots_skill_name(short skill)
+{
+	return skill >= 0 && skill < NUMBER_OF_BOTS_SKILLS ? bots_skills[skill].name : "default";
+}
+
+boolean bots_game_type_played(long game_engine_index)
+{
+	return bots_birchwood_plays(game_engine_index) || game_engine_index == game_engine_oddball ||
+		game_engine_index == game_engine_race;
+}
+
+short bots_kind(void)
+{
+	return strcmp(bots_setting_string("HALO_BOT_KIND", "bots.kind"), "provinggrounds") ? _bots_kind_birchwood :
+		_bots_kind_proving_grounds;
+}
+
+boolean bots_birchwood_plays(long game_engine_index)
+{
+	return game_engine_index == game_engine_slayer || game_engine_index == game_engine_ctf ||
+		game_engine_index == game_engine_king;
+}
+
+short bots_bot_kind(long bot_index)
+{
+	if (bot_index < 0 || bot_index >= BOTS_MAXIMUM)
+		return _bots_kind_birchwood;
+	if (game_engine_get_variant() && !bots_birchwood_plays(game_engine_get_variant()->game_engine_index))
+		return _bots_kind_proving_grounds;
+	return bots_kinds[bot_index];
+}
+
 /* whether this machine hosts a game bots may play in: a local (split screen)
 one, one for the local network (system link), or one for internet play that
 the server browser does not list (a private game, joined by its invite), whose
@@ -1173,6 +1274,10 @@ int bots_game_allowed(void)
 {
 	if (!global_network_game_server_get())
 		return FALSE;
+	/* port: (a server's: its owner adds them by hand, sv_bot_add, listed or
+	not) */
+	if (halo_server_mode())
+		return TRUE;
 	return network_game_is_splitscreen_local() || !p2p_hosting_internet() || !p2p_hosting_listed();
 }
 
@@ -1189,27 +1294,60 @@ static int bots_player_is_bot(long player_index)
 		bots_machine_is_bot(player->network_player_data.machine_index);
 }
 
-void bots_network_player(long bot_index, struct network_player *player)
+/* port: whether the game hosted here appears in the server browser (hosted
+for the internet and listed): its bots' names then say they are bots */
+int bots_server_listed(void)
 {
-	/* (the Marines of Halo's campaign; eleven characters at most: past the fifteenth, each again with a number,
-	"Johnson 2") */
+	return global_network_game_server_get() && !network_game_is_splitscreen_local() && p2p_hosting_internet() &&
+		p2p_hosting_listed();
+}
+
+/* a bot's name (the Marines of Halo's campaign; eleven characters at most:
+past the fifteenth, each again with a number, "Johnson 2"); in a listed
+game "BOT-" before it, the name shortened to fit ("BOT-Johnson",
+"BOT-Fitzger", "BOT-Johns 2") */
+void bots_name(long bot_index, int listed, wchar_t *wide, long count)
+{
 	static char const *const names[] =
 	{
 		"Johnson", "Jenkins", "Mendoza", "Bisenti", "Stacker", "Polaski", "Chips", "Kojo",
 		"Rawley", "Riley", "Wellsley", "Hall", "Fitzgerald", "Locklear", "Mitchell",
 	};
+	char const *prefix = listed ? "BOT-" : "";
+	int room = 11 - (int)strlen(prefix);
 	char name[16];
 	long index;
 
 	if (bot_index < (long)NUMBEROF(names))
-		snprintf(name, sizeof(name), "%s", names[bot_index]);
+		snprintf(name, sizeof(name), "%s%.*s", prefix, room, names[bot_index]);
 	else
-		snprintf(name, sizeof(name), "%.8s %ld", names[bot_index % NUMBEROF(names)], bot_index / NUMBEROF(names) + 1);
+	{
+		char number[8];
 
+		snprintf(number, sizeof(number), " %ld", bot_index / (long)NUMBEROF(names) + 1);
+		snprintf(name, sizeof(name), "%s%.*s%s", prefix, MIN(8, room - (int)strlen(number)),
+			names[bot_index % NUMBEROF(names)], number);
+	}
+	for (index = 0; index < count - 1 && name[index]; index++)
+		wide[index] = (wchar_t)name[index];
+	wide[index] = 0;
+}
+
+void bots_network_player(long bot_index, struct network_player *player)
+{
+	/* port: (the kind and level it joins as: those asked for it, else
+	bots.kind's now and bots.skill's) */
+	if (bot_index >= 0 && bot_index < BOTS_MAXIMUM)
+	{
+		bots_kinds[bot_index] = (char)(bots_next_kind != NONE ? bots_next_kind : bots_kind());
+		bots_bot_skills[bot_index] = (signed char)bots_next_skill;
+		bots_bot_teams_asked[bot_index] = (signed char)bots_next_team;
+	}
+	bots_next_kind = NONE;
+	bots_next_skill = NONE;
+	bots_next_team = NONE;
 	csmemset(player, 0, sizeof(*player));
-	for (index = 0; index < (long)NUMBEROF(player->name) - 1 && name[index]; index++)
-		player->name[index] = (wchar_t)name[index];
-	player->name[index] = 0;
+	bots_name(bot_index, bots_server_listed(), player->name, (long)NUMBEROF(player->name));
 	player->primary_color_index = NONE;
 	player->icon_index = 0;
 	player->machine_index = (char)(BOTS_FIRST_MACHINE + bot_index);
@@ -2898,6 +3036,8 @@ void bots_initialize_for_new_map(void)
 	bots_globals.map_ready = FALSE;
 	bots_globals.roam_point_count = 0;
 	bots_globals.tick_us = 0;
+	csmemset(bots_globals.kind_us, 0, sizeof(bots_globals.kind_us));
+	csmemset(bots_globals.kind_bot_ticks, 0, sizeof(bots_globals.kind_bot_ticks));
 	bots_globals.search_us = 0;
 	bots_globals.ticks = 0;
 	bots_globals.bot_ticks = 0;
@@ -2966,6 +3106,8 @@ void bots_initialize_for_new_map(void)
 	bots_helper.helper_us = 0;
 	/* port: (the routes, vantage points and roles: bots_tactics.h) */
 	bots_tactics_initialize_for_new_map();
+	/* port: (the Proving Grounds kind's) */
+	pgbots_initialize_for_new_map();
 }
 
 void bots_dispose_from_old_map(void)
@@ -2975,6 +3117,7 @@ void bots_dispose_from_old_map(void)
 	bots_paths_release();
 	bots_globals.map_ready = FALSE;
 	bots_tactics_dispose_from_old_map();
+	pgbots_dispose_from_old_map();
 }
 
 /* ---------- path searches
@@ -6249,6 +6392,26 @@ static void bots_bot_fight(struct bots_bot *bot, struct bots_tick *tick)
 
 /* walking to the goal, looking where it goes; there, a look about (and the
 last bit straight onto a spot or an item); a reload when no one is about */
+/* port: the pitch the walk looks at: along the path's slope a couple of
+units ahead (up stairs and ramps, down them), level on the flat; at most
+40 degrees either way */
+static real bots_walk_pitch(struct bots_bot const *bot, real_point3d const *position)
+{
+	long step;
+
+	if (!bot->path.valid)
+		return 0.0f;
+	for (step = bot->path.step_index; step < bot->path.step_count; step++)
+	{
+		real_point3d const *point = &bot->path.steps[step].point;
+		real across = bots_distance2d(position, point);
+
+		if (across >= 2.0f || step == bot->path.step_count - 1)
+			return across > 0.5f ? PIN((real)atan2(point->z - position->z, across), -0.7f, 0.7f) : 0.0f;
+	}
+	return 0.0f;
+}
+
 static void bots_bot_walk(struct bots_bot *bot, struct bots_tick *tick)
 {
 	real direction;
@@ -6261,7 +6424,8 @@ static void bots_bot_walk(struct bots_bot *bot, struct bots_tick *tick)
 		tick->move_direction = direction;
 		tick->moving = TRUE;
 		bot->yaw += PIN(off, -turn, turn);
-		bot->pitch += PIN(-bot->pitch, -0.05f, 0.05f);
+		/* port: (up the stairs it climbs, down those it goes down) */
+		bot->pitch += PIN(bots_walk_pitch(bot, &tick->position) - bot->pitch, -0.05f, 0.05f);
 		if (bot->climb_until_tick && tick->now < bot->climb_until_tick && (bot->climb_until_tick - tick->now) % 20 == 0)
 			tick->flags |= FLAG(_unit_control_jump_bit);
 		if (bot->ladder_jump)
@@ -7844,32 +8008,11 @@ static void bots_bot_update(struct bots_bot *bot, long bot_index, struct player_
 	}
 	bots_profile_part(_bots_part_walk, &started);
 
-	if (tick.moving)
-	{
-		real relative = bots_angle_difference(tick.move_direction, bot->yaw);
-
-		action->throttle.i = (real)cos(relative) * tick.throttle_scale;
-		action->throttle.j = (real)sin(relative) * tick.throttle_scale;
-	}
 	bot->pitch = PIN(bot->pitch, -1.4f, 1.4f);
 	bot->yaw = bots_angle_difference(bot->yaw, 0.0f);
-	action->desired_facing.yaw = bot->yaw;
-	action->desired_facing.pitch = bot->pitch;
-
-	/* a press is one tick held and the next released (the jump, the grenade,
-	the blow, the reload, the action button: port, into and out of a
-	vehicle), as a player's buttons are; the trigger and the
-	swap button may be held */
-	{
-		unsigned long pressed = FLAG(_unit_control_jump_bit) | FLAG(_unit_control_throw_grenade_bit) |
-			FLAG(_unit_control_use_equipment_bit) | FLAG(_unit_control_weapon_reload_bit) |
-			FLAG(_unit_control_action_bit);
-
-		tick.flags &= ~(bot->previous_control_flags & pressed);
-		bot->previous_control_flags = tick.flags;
-	}
-	action->control_flags = tick.flags;
-	action->primary_trigger = TEST_FLAG(tick.flags, _unit_control_weapon_primary_trigger_bit) ? 1.0f : 0.0f;
+	bots_common_write_action(action, bot->yaw, bot->pitch, tick.moving, tick.move_direction, tick.throttle_scale,
+		tick.flags, &bot->previous_control_flags);
+	tick.flags = action->control_flags;
 	bots_bot_trace(bot, bot_index, &tick);
 	bots_profile_part(_bots_part_rest, &started);
 }
@@ -7900,6 +8043,13 @@ static void bots_report(void)
 				(int)player->statistics.kills[0], (int)player->statistics.deaths);
 	}
 	line[length] = 0;
+	/* port: (Proving Grounds bots alone: their lines) */
+	if (!count && bots_globals.kind_bot_ticks[_bots_kind_proving_grounds] > 0)
+	{
+		pgbots_report(now, bots_globals.kind_us[_bots_kind_proving_grounds],
+			bots_globals.kind_bot_ticks[_bots_kind_proving_grounds]);
+		return;
+	}
 	if (!count || !bots_globals.ticks)
 		return;
 	platform_log("bots: tick %ld, %ld bots (%s): %.0f us/tick (%.1f a bot), searches %ld (%ld failed, %ld short, %ld full, %ld unavoided, %ld unsmoothed, tick %.0f us, "
@@ -7963,6 +8113,21 @@ static void bots_report(void)
 	}
 	/* port: (the lanes, vantage points and posts: bots_tactics.h) */
 	bots_tactics_report(now);
+	/* port: each kind's microseconds a bot (bots_common.h: the Proving
+	Grounds kind's budget is the Birchwood kind's), and the Proving Grounds
+	kind's own lines */
+	if (bots_globals.kind_bot_ticks[_bots_kind_proving_grounds] > 0)
+	{
+		platform_log("bots: kinds at tick %ld: birchwood %.1f us a bot (%ld bot ticks), provinggrounds %.1f us a bot "
+			"(%ld bot ticks)", now, bots_globals.kind_bot_ticks[_bots_kind_birchwood] ?
+			(double)bots_globals.kind_us[_bots_kind_birchwood] / (double)bots_globals.kind_bot_ticks[_bots_kind_birchwood] : 0.0,
+			bots_globals.kind_bot_ticks[_bots_kind_birchwood],
+			(double)bots_globals.kind_us[_bots_kind_proving_grounds] /
+				(double)bots_globals.kind_bot_ticks[_bots_kind_proving_grounds],
+			bots_globals.kind_bot_ticks[_bots_kind_proving_grounds]);
+		pgbots_report(now, bots_globals.kind_us[_bots_kind_proving_grounds],
+			bots_globals.kind_bot_ticks[_bots_kind_proving_grounds]);
+	}
 	if (bots_profile.enabled > 0)
 	{
 		double ticks = (double)bots_globals.ticks;
@@ -8042,25 +8207,373 @@ static void bots_report(void)
 	}
 }
 
+/* ---------- shared with the Proving Grounds kind (bots_common.h): bots.c's
+own functions behind names of their own, unchanged */
+
+boolean bots_common_peaceful(void)
+{
+	return bots_peaceful();
+}
+
+boolean bots_common_vehicles_enabled(void)
+{
+	return bots_vehicles_enabled();
+}
+
+unsigned long bots_common_map_generation(void)
+{
+	return bots_map_generation;
+}
+
+int bots_common_profiling(void)
+{
+	return bots_profile_enabled();
+}
+
+boolean bots_common_line_of_sight(long unit_index, real_point3d const *eye, real_point3d const *point,
+	long target_unit_index)
+{
+	return bots_line_of_sight(unit_index, eye, point, target_unit_index);
+}
+
+long bots_common_surface_below(real_point3d const *point, real_point3d *ground)
+{
+	return bots_surface_below(point, ground);
+}
+
+long bots_common_unit_surface(long unit_index, real_point3d *point)
+{
+	return bots_unit_surface(unit_index, point);
+}
+
+long bots_common_unit_vehicle(long unit_index)
+{
+	return bots_unit_vehicle(unit_index);
+}
+
+boolean bots_common_surface_walkable(long surface_index)
+{
+	struct structure_bsp const *structure = bots_paths.active ? &bots_paths.structure : global_structure_bsp_get();
+	byte const *flags;
+
+	if (!structure || surface_index < 0 || surface_index >= structure->pathfinding_surfaces.count)
+		return FALSE;
+	flags = bots_paths.active && bots_paths.walkable ? bots_paths.walkable :
+		(byte const *)structure->pathfinding_surfaces.address;
+	return TEST_FLAG(flags[surface_index], BOTS_PATHFINDING_WALKABLE_BIT);
+}
+
+struct collision_bsp const *bots_common_bsp(void)
+{
+	struct structure_bsp *structure = global_structure_bsp_get();
+
+	if (!structure || structure->collision_bsp.count <= 0)
+		return NULL;
+	return TAG_BLOCK_GET_ELEMENT(&structure->collision_bsp, 0, struct collision_bsp);
+}
+
+long bots_common_surface_count(void)
+{
+	struct structure_bsp *structure = global_structure_bsp_get();
+	struct collision_bsp const *bsp = bots_common_bsp();
+
+	if (!structure || !bsp)
+		return 0;
+	return MIN((long)bsp->surfaces.count, (long)structure->pathfinding_surfaces.count);
+}
+
+long bots_common_surface_corners(long surface_index, real_point3d *corners)
+{
+	struct collision_bsp const *bsp = bots_common_bsp();
+
+	return bsp ? bots_surface_corners(bsp, surface_index, corners) : 0;
+}
+
+long bots_common_surface_neighbours(long surface_index, long *neighbours, long maximum)
+{
+	struct collision_bsp const *bsp = bots_common_bsp();
+	struct collision_surface const *surface;
+	long edge_index, count = 0, steps = 0;
+
+	if (!bsp || surface_index < 0 || surface_index >= bsp->surfaces.count)
+		return 0;
+	surface = TAG_BLOCK_GET_ELEMENT(&bsp->surfaces, surface_index, struct collision_surface);
+	edge_index = surface->first_edge_index;
+	do
+	{
+		struct collision_edge const *edge;
+		boolean right;
+
+		if (edge_index < 0 || edge_index >= bsp->edges.count)
+			break;
+		edge = TAG_BLOCK_GET_ELEMENT(&bsp->edges, edge_index, struct collision_edge);
+		right = edge->surface_indices[1] == surface_index;
+		if (count < maximum && edge->surface_indices[!right] != NONE)
+			neighbours[count++] = edge->surface_indices[!right];
+		edge_index = edge->edge_indices[right];
+	} while (edge_index != surface->first_edge_index && ++steps < 64);
+	return count;
+}
+
+long bots_common_paths_learn(real_point3d const *position, real_point3d const *goal)
+{
+	return bots_paths_learn(position, goal);
+}
+
+real bots_common_vehicle_path_radius(long vehicle_index)
+{
+	return bots_vehicle_path_radius(vehicle_index);
+}
+
+short bots_common_vehicle_type(long vehicle_index)
+{
+	return bots_vehicle_definition(vehicle_index)->vehicle_type;
+}
+
+short bots_common_turret_seat(long vehicle_index)
+{
+	return bots_turret_seat(vehicle_index);
+}
+
+long bots_common_seat_occupant(long vehicle_index, short seat_index)
+{
+	return bots_seat_occupant(vehicle_index, seat_index);
+}
+
+short bots_common_seat_kind(long vehicle_index, short seat_index)
+{
+	return bots_seat_kind(vehicle_index, seat_index);
+}
+
+long bots_common_current_weapon(long unit_index)
+{
+	return bots_current_weapon(unit_get(unit_index));
+}
+
+boolean bots_common_weapon_empty(long weapon_index)
+{
+	return bots_weapon_empty(weapon_index);
+}
+
+real bots_common_weapon_loaded(long weapon_index)
+{
+	return bots_weapon_loaded(weapon_index);
+}
+
+real bots_common_projectile_speed(long weapon_index)
+{
+	return bots_projectile_speed(weapon_index);
+}
+
+long bots_common_powerup_count(void)
+{
+	return bots_powerups.map_generation == bots_map_generation ? bots_powerups.count : 0;
+}
+
+boolean bots_common_powerup(long index, long *object_index, short *kind, real_point3d *position)
+{
+	if (index < 0 || index >= bots_common_powerup_count())
+		return FALSE;
+	*object_index = bots_powerups.items[index].object_index;
+	*kind = bots_powerups.items[index].kind;
+	*position = bots_powerups.items[index].position;
+	return TRUE;
+}
+
+long bots_common_turret_count(void)
+{
+	return bots_globals.turret_count;
+}
+
+long bots_common_turret(long index)
+{
+	return index >= 0 && index < bots_globals.turret_count ? bots_globals.turret_indices[index] : NONE;
+}
+
+/* the searches of another kind's bots: their slots' bot_index is the
+requester plus BOTS_MAXIMUM (no Birchwood bot's), its answer built as
+bots_search_build's is, but for the teleporters (Birchwood's alone) */
+long bots_common_search_ask(long requester, long unit_index, real radius, long target_object_index,
+	real_point3d const *start, long start_surface_index, real_point3d const *goal, long goal_surface_index)
+{
+	struct bots_search *search = NULL;
+	long slot;
+
+	if (!bots_helper.started)
+		bots_helper_start();
+	if (!bots_globals.search_slots || start_surface_index == NONE || goal_surface_index == NONE)
+		return NONE;
+	for (slot = 0; slot < BOTS_SEARCH_SLOTS && !search; slot++)
+	{
+		if (bots_search_state(&bots_globals.search_slots[slot]) == _bots_search_idle)
+			search = &bots_globals.search_slots[slot];
+	}
+	if (!search)
+		return NONE;
+	search->bot_index = BOTS_MAXIMUM + requester;
+	search->unit_index = unit_index;
+	search->radius = radius;
+	search->target_object_index = target_object_index;
+	search->start_point = *start;
+	search->start_surface_index = start_surface_index;
+	search->goal_point = *goal;
+	search->goal_surface_index = goal_surface_index;
+	search->purpose = _bots_search_for_path;
+	search->asked_tick = game_time_get();
+	search->goal_serial = 0;
+	search->found = FALSE;
+	bots_globals.searches++;
+	if (bots_helper.synchronous)
+	{
+		unsigned long long started = bots_time_us();
+
+		bots_search_run(search);
+		bots_globals.search_us += bots_time_us() - started;
+		search->state = _bots_search_done;
+		return (long)(search - bots_globals.search_slots);
+	}
+	pthread_mutex_lock(&bots_helper.lock);
+	search->state = _bots_search_waiting;
+	bots_helper.pending = 1;
+	pthread_cond_signal(&bots_helper.wake);
+	pthread_mutex_unlock(&bots_helper.lock);
+	return (long)(search - bots_globals.search_slots);
+}
+
+long bots_common_search_take(long slot, long requester, struct path_result *path, boolean *reached)
+{
+	struct bots_search *search;
+	struct path_state *state;
+	long object_index;
+	long answer = -1;
+
+	if (!bots_globals.search_slots || slot < 0 || slot >= BOTS_SEARCH_SLOTS)
+		return -1;
+	search = &bots_globals.search_slots[slot];
+	if (search->bot_index != BOTS_MAXIMUM + requester)
+		return -1;
+	if (bots_search_state(search) != _bots_search_done)
+		return 0;
+	state = &search->state_memory;
+	*reached = search->found && state->node_count > 0 &&
+		path_node_from_hash_table(state, search->goal_surface_index) != NONE;
+	csmemset(path, 0, sizeof(*path));
+	if (search->found && state->node_count > 0)
+	{
+		if (state->node_count >= PATH_NODE_LIST_SIZE)
+			bots_globals.search_overflows++;
+		if (!*reached)
+			bots_globals.search_partials++;
+		if (path_state_build_path(state, path) && path->step_count > 0)
+			answer = 1;
+		else
+		{
+			object_index = bots_object_at(&search->goal_point);
+			if (object_index == NONE)
+				object_index = bots_object_at(&search->start_point);
+			if (object_index != NONE)
+			{
+				state->input.ignore_target_object_index = object_index;
+				csmemset(path, 0, sizeof(*path));
+				if (path_state_build_path(state, path) && path->step_count > 0)
+					answer = 1;
+			}
+			if (answer < 0 && (search->radius > BOTS_PATH_RADIUS ||
+				bots_paths_learn(&search->start_point, &search->goal_point) <= 0) && bots_build_path_unavoided(state, path))
+			{
+				bots_globals.search_unavoided++;
+				answer = 1;
+			}
+		}
+		if (answer > 0 && bots_path_stalls(path, &search->start_point) &&
+			bots_path_unsmoothed(state, &search->start_point, path))
+		{
+			bots_globals.search_unsmoothed++;
+		}
+	}
+	if (answer < 0)
+		bots_globals.search_failures++;
+	search->bot_index = NONE;
+	bots_search_set_state(search, _bots_search_idle);
+	return answer;
+}
+
+void bots_common_search_drop(long slot)
+{
+	if (bots_globals.search_slots && slot >= 0 && slot < BOTS_SEARCH_SLOTS)
+	{
+		bots_search_drop(&bots_globals.search_slots[slot]);
+		bots_globals.search_slots[slot].bot_index = NONE;
+	}
+}
+
+void bots_common_write_action(struct player_action *action, real yaw, real pitch, boolean moving, real move_direction,
+	real throttle_scale, unsigned long flags, unsigned long *previous_control_flags)
+{
+	/* a press is one tick held and the next released (the jump, the grenade,
+	the blow, the reload, the action button: port, into and out of a
+	vehicle), as a player's buttons are; the trigger and the
+	swap button may be held */
+	unsigned long pressed = FLAG(_unit_control_jump_bit) | FLAG(_unit_control_throw_grenade_bit) |
+		FLAG(_unit_control_use_equipment_bit) | FLAG(_unit_control_weapon_reload_bit) |
+		FLAG(_unit_control_action_bit);
+
+	if (moving)
+	{
+		real relative = bots_angle_difference(move_direction, yaw);
+
+		action->throttle.i = (real)cos(relative) * throttle_scale;
+		action->throttle.j = (real)sin(relative) * throttle_scale;
+	}
+	action->desired_facing.yaw = yaw;
+	action->desired_facing.pitch = pitch;
+	flags &= ~(*previous_control_flags & pressed);
+	*previous_control_flags = flags;
+	action->control_flags = flags;
+	action->primary_trigger = TEST_FLAG(flags, _unit_control_weapon_primary_trigger_bit) ? 1.0f : 0.0f;
+}
+
+/* port: a Proving Grounds bot's slot here kept empty (no Birchwood bot: its
+search let go, out of the roles) */
+static void bots_bot_vacate(struct bots_bot *bot, long bot_index)
+{
+	if (bot->player_index == NONE)
+		return;
+	if (bot->search_slot != NONE && bots_globals.search_slots)
+		bots_search_drop(&bots_globals.search_slots[bot->search_slot]);
+	csmemset(bot, 0, sizeof(*bot));
+	bot->player_index = NONE;
+	bot->unit_index = NONE;
+	bot->search_slot = NONE;
+	bot->vehicle_index = NONE;
+	bot->vehicle_avoid_index = NONE;
+	bot->ride_vehicle_index = NONE;
+	bot->powerup_index = NONE;
+	bots_tactics_bot_reset(bot_index, NONE);
+}
+
 void bots_update_actions(struct player_action *actions)
 {
 	struct data_iterator iterator;
 	struct player_datum *player;
 	unsigned long long started;
 	long count = 0;
+	boolean birchwood_begun = FALSE, proving_grounds_begun = FALSE;
+	short skill;
 
 	/* (the host's alone: a client drives the bots with the input it relays) */
 	if (!game_engine_running() || !bots_game_allowed())
 		return;
 	started = bots_time_us();
 	bots_profile_enabled();
-	bots_globals.skill = bots_skill();
+	bots_globals.skill = skill = bots_skill();
 	data_iterator_new(&iterator, player_data);
 	while ((player = (struct player_datum *)data_iterator_next(&iterator)) != NULL)
 	{
 		long bot_index;
 		long absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(iterator.datum_index);
 		struct bots_bot *bot;
+		short kind;
 
 		if (player->local_player_index != NONE || !bots_machine_is_bot(player->network_player_data.machine_index))
 			continue;
@@ -8076,24 +8589,62 @@ void bots_update_actions(struct player_action *actions)
 			bots_ground_memo_begin();
 			bots_powerups_find();
 			bots_paths_scan();
-			/* port: the map's lanes and vantage points (a bounded step a
-			tick), the roles (bots_tactics.h) */
-			bots_tactics_update();
 			bots_profile_part(_bots_part_scan, &scan_started);
 		}
 		bot_index = player->network_player_data.machine_index - BOTS_FIRST_MACHINE;
 		bot = &bots_globals.bots[bot_index];
+		kind = bots_bot_kind(bot_index);
+		if (kind == _bots_kind_proving_grounds)
+		{
+			unsigned long long bot_started;
+
+			/* port: the Proving Grounds kind (pgbots.c): its tick's start
+			once, then its bot */
+			if (!proving_grounds_begun)
+			{
+				proving_grounds_begun = TRUE;
+				pgbots_tick_begin();
+			}
+			bots_bot_vacate(bot, bot_index);
+			bot_started = bots_time_us();
+			if (absolute_index >= 0 && absolute_index < HALO_PORT_MAXIMUM_NETWORK_PLAYERS)
+			{
+				pgbots_bot_update(bot_index, iterator.datum_index, &actions[absolute_index]);
+				update_server_note_bot_action((short)absolute_index, &actions[absolute_index]);
+			}
+			bots_globals.kind_us[_bots_kind_proving_grounds] += bots_time_us() - bot_started;
+			bots_globals.kind_bot_ticks[_bots_kind_proving_grounds]++;
+			count++;
+			continue;
+		}
+		if (!birchwood_begun)
+		{
+			unsigned long long scan_started = bots_profile.enabled > 0 ? bots_time_us() : 0;
+
+			/* port: the map's lanes and vantage points (a bounded step a
+			tick), the roles (bots_tactics.h) */
+			birchwood_begun = TRUE;
+			bots_tactics_update();
+			bots_profile_part(_bots_part_scan, &scan_started);
+		}
 		if (bot->player_index != iterator.datum_index)
 			bots_bot_reset(bot, iterator.datum_index, bot_index);
+		/* port: (its own level, or bots.skill's read for the tick) */
+		bots_globals.skill = bots_bot_own_skill(bot_index) >= 0 ? bots_bot_own_skill(bot_index) : skill;
 		if (absolute_index >= 0 && absolute_index < HALO_PORT_MAXIMUM_NETWORK_PLAYERS)
 		{
+			unsigned long long bot_started = bots_time_us();
+
 			bots_bot_update(bot, bot_index, &actions[absolute_index]);
 			/* (what the clients are relayed of it) */
 			update_server_note_bot_action((short)absolute_index, &actions[absolute_index]);
+			bots_globals.kind_us[_bots_kind_birchwood] += bots_time_us() - bot_started;
+			bots_globals.kind_bot_ticks[_bots_kind_birchwood]++;
 		}
 		count++;
 	}
 	bots_ground_memo.active = FALSE;
+	bots_globals.skill = skill;
 	if (count)
 	{
 		bots_globals.tick_us += bots_time_us() - started;
