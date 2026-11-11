@@ -7253,6 +7253,33 @@ unsigned char ui_widget_port_dpad_updown_taken(void *instance)
 		!strcmp(widget->name + length - 20, "join_game_items_list");
 }
 
+/* halo_linux_source_fixups.h: a touch drag, the wheel and a tap on a row
+step the server browser's rows with the stick (its d-pad sorts) */
+unsigned char ui_widget_port_pointer_steps_with_stick(void *instance)
+{
+	struct widget_instance *widget = instance;
+	size_t length = widget && widget->name ? strlen(widget->name) : 0;
+
+	return multiplayer.mode == _multiplayer_mode_server_browser && length >= 20 &&
+		!strcmp(widget->name + length - 20, "join_game_items_list");
+}
+
+/* halo_linux_source_fixups.h: the items past a list's rows (the server
+browser's), for a touch drag to go on through */
+short ui_widget_port_list_hidden(void *instance, unsigned char forward)
+{
+	struct widget_instance *widget = instance;
+
+	if (!widget || !widget->name)
+		return 0;
+	if (ui_widget_port_pointer_steps_with_stick(widget))
+	{
+		return (short)MAX(0, forward ? lobby_browser.count - lobby_browser.first - BROWSER_ROWS :
+			lobby_browser.first);
+	}
+	return 0;
+}
+
 /* the server browser's buttons by the controller's, whatever row has the
 focus (tools/port_settings.py: the north refreshes, the west opens the
 filters, the shoulders change the source tab); nothing while a panel is up

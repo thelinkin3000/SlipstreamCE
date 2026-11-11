@@ -6689,6 +6689,13 @@ static void ui_mouse_list_directions(
 		*back = _widget_event_dpad_left;
 		*forward = _widget_event_dpad_right;
 	}
+	else if (ui_widget_port_pointer_steps_with_stick(widget))
+	{
+		/* port: a list whose d-pad up and down do something else (the
+		server browser's sort) is stepped with the stick */
+		*back = _widget_event_left_stick_up;
+		*forward = _widget_event_left_stick_down;
+	}
 	else
 	{
 		*back = _widget_event_dpad_up;
@@ -6806,6 +6813,9 @@ static long ui_mouse_wheel_room(
 					room++;
 				}
 			}
+			/* port: and the items past its rows, which its steps at the end
+			scroll in */
+			room += ui_widget_port_list_hidden(widget, (unsigned char)forward);
 
 			return room;
 		}
@@ -7227,7 +7237,15 @@ static void ui_widgets_process_mouse(
 		}
 		if (ui_mouse_press_count)
 		{
-			event_manager_post_button(controller_index, ui_mouse_presses[0]);
+			/* port: (a step with the stick: ui_mouse_list_directions) */
+			if (ui_mouse_presses[0] == _widget_event_left_stick_up ||
+				ui_mouse_presses[0] == _widget_event_left_stick_down)
+			{
+				event_manager_post_left_stick(controller_index,
+					(short)(ui_mouse_presses[0] == _widget_event_left_stick_up ? 1 : -1));
+			}
+			else
+				event_manager_post_button(controller_index, ui_mouse_presses[0]);
 			csmemmove(ui_mouse_presses, ui_mouse_presses + 1, --ui_mouse_press_count * sizeof(ui_mouse_presses[0]));
 		}
 	}
@@ -8149,9 +8167,11 @@ static void widget_instance_process_one_event_recursive(
 		"c:\\halo\\SOURCE\\interface\\ui_widget.c",
 		3067,
 		widget && definition && event && return_widget_deleted);
-	if (event->type == _event_type_button &&
+	/* port: (the stick too: a list's end moves it on, list_scrolls_at_end) */
+	if ((event->type == _event_type_button &&
 		event->data.button.index >= _widget_event_dpad_up &&
-		event->data.button.index <= _widget_event_dpad_right)
+		event->data.button.index <= _widget_event_dpad_right) ||
+		event->type == _event_type_left_stick)
 	{
 		ui_mouse_focused_last = FALSE;
 		/* port: (ui_mouse_hovered_last) */

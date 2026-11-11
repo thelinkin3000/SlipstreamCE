@@ -192,6 +192,14 @@ unsigned char menu_port_back(void *widget);
 /* TRUE when a list's d-pad up and down are its own handlers', not a step
 through its rows (the server browser's sort: port/linux/game/menu_functions.c) */
 unsigned char ui_widget_port_dpad_updown_taken(void *widget);
+/* TRUE when the pointer steps a list's rows with the stick's up and down,
+not the d-pad's, which the list takes for something else: the server
+browser's, whose d-pad sorts (port/linux/game/menu_functions.c) */
+unsigned char ui_widget_port_pointer_steps_with_stick(void *widget);
+/* the items a list of the port's keeps past its rows, ahead (forward) or
+behind, which a step at its end scrolls in: a touch drag goes on through
+them (port/linux/game/menu_functions.c) */
+short ui_widget_port_list_hidden(void *widget, unsigned char forward);
 /* the Switch GPU, waited on before a map's memory goes
 (port/switch/guest/d3d8_dk.c) */
 #ifdef HALO_SWITCH
