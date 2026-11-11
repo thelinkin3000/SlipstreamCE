@@ -6314,14 +6314,19 @@ enum
 #define PING_COLOR_POOR 0xE86A5AFFUL
 #define ROW_COLOR_GREYED 0x8A8F99FFUL
 
+static boolean host_text_color(struct widget_instance *widget, real_argb_color *color);
+
 /* ui_widget.c: a text's colour in place of its own (FALSE: its own): a
-server browser row's ping by how good it is */
+server browser row's ping by how good it is, the Host screens' by where
+the focus is */
 boolean pc_menu_text_color(struct widget_instance *widget, real_argb_color *color)
 {
 	short row = widget->parent ? browser_row_index(widget->parent) : NONE;
 	short ping;
 	unsigned long rgba;
 
+	if (host_text_color(widget, color))
+		return TRUE;
 	if (row < 0 || row >= BROWSER_ROWS || strncmp(widget->name, "server_item_", 12))
 		return FALSE;
 	ping = browser_row_pings[row];
@@ -7254,7 +7259,8 @@ unsigned char ui_widget_port_dpad_updown_taken(void *instance)
 }
 
 /* halo_linux_source_fixups.h: a touch drag, the wheel and a tap on a row
-step the server browser's rows with the stick (its d-pad sorts) */
+step the server browser's rows with the stick (its d-pad sorts); the
+Builder's rounds keep the d-pad, which moves one picked up */
 unsigned char ui_widget_port_pointer_steps_with_stick(void *instance)
 {
 	struct widget_instance *widget = instance;
@@ -7264,8 +7270,10 @@ unsigned char ui_widget_port_pointer_steps_with_stick(void *instance)
 		!strcmp(widget->name + length - 20, "join_game_items_list");
 }
 
+static short host_list_hidden(struct widget_instance const *list, boolean forward);
+
 /* halo_linux_source_fixups.h: the items past a list's rows (the server
-browser's), for a touch drag to go on through */
+browser's, the Host screens'), for a touch drag to go on through */
 short ui_widget_port_list_hidden(void *instance, unsigned char forward)
 {
 	struct widget_instance *widget = instance;
@@ -7277,7 +7285,7 @@ short ui_widget_port_list_hidden(void *instance, unsigned char forward)
 		return (short)MAX(0, forward ? lobby_browser.count - lobby_browser.first - BROWSER_ROWS :
 			lobby_browser.first);
 	}
-	return 0;
+	return host_list_hidden(widget, forward);
 }
 
 /* the server browser's buttons by the controller's, whatever row has the
@@ -11195,6 +11203,8 @@ struct host_menu_globals
 	ALL pressed once (a second press removes them) */
 	boolean grabbed;
 	boolean removing_all;
+	/* B pressed once on a Builder with changes: a second leaves */
+	boolean leaving;
 	/* the maps shown: MULTIPLAYER's or CUSTOM MAPS' (the chooser's) */
 	short map_kind;
 	char map_picked[HOST_MAP_NAME_LENGTH];
@@ -11435,16 +11445,76 @@ static void host_focus_row(struct widget_instance *list, short number)
 	}
 }
 
+/* whether the focus is in the list: a screen of two (the Builder's maps and
+rounds) has it in the one its screen's focus is on */
+static boolean host_list_active(struct widget_instance const *list)
+{
+	struct widget_instance const *focus = list->parent ? list->parent->focused_child : NULL;
+
+	return !focus || focus == list || focus->type != 3;
+}
+
+/* a column's tab lit while the focus is in its list */
+static void host_tab_mark(struct widget_instance *list, char const *tab_name)
+{
+	struct widget_instance *tab = named(screen_of(list), tab_name, 0);
+
+	if (tab)
+		tab->animation.current_frame_index = host_list_active(list) ? 1 : 0;
+}
+
+/* the Host screens' texts' colours (pc_menu_text_color): white for the row,
+the button and the column's tab the focus is on (their pictures' frames,
+host_list_update's and host_tab_mark's), the screens' blue for the others,
+a round's gametype under its map a darker blue */
+#define HOST_COLOR_LIT 0xFFFFFFFFUL
+#define HOST_COLOR_TEXT 0x8CA8E8FFUL
+#define HOST_COLOR_DETAIL 0x6A84BCFFUL
+static boolean host_text_color(struct widget_instance *widget, real_argb_color *color)
+{
+	struct widget_instance const *screen = screen_of(widget);
+	struct widget_instance const *marked = widget;
+	size_t length = strlen(widget->name);
+	unsigned long rgba;
+
+	if (strcmp(screen->name, "host_screen") && strcmp(screen->name, "builder_screen") &&
+		strcmp(screen->name, "gametype_screen"))
+	{
+		return FALSE;
+	}
+	if (!strcmp(widget->name, "list_item_text") || !strcmp(widget->name, "list_item_detail") ||
+		!strcmp(widget->name, "name_value"))
+	{
+		marked = widget->parent;
+	}
+	else if (strcmp(widget->name, "op_kind") && strncmp(widget->name, "button_", 7) &&
+		(length < 4 || strcmp(widget->name + length - 4, "_tab")))
+	{
+		return FALSE;
+	}
+	if (!marked)
+		return FALSE;
+	rgba = marked->animation.current_frame_index > 0 ? HOST_COLOR_LIT :
+		!strcmp(widget->name, "list_item_detail") ? HOST_COLOR_DETAIL : HOST_COLOR_TEXT;
+	color->red = (real)((rgba >> 24) & 0xFF) / 255.0f;
+	color->green = (real)((rgba >> 16) & 0xFF) / 255.0f;
+	color->blue = (real)((rgba >> 8) & 0xFF) / 255.0f;
+	return TRUE;
+}
+
 /* a list's rows, list_item_0 to rows - 1 among its other children: moved
 on at its ends while there are more items past them (the row chosen kept
 off its ends), each shown with its item's text (row_text) and hidden past
 the last, the focus off a hidden one; the item chosen updated (NONE: the
-focus is on none of the rows) */
+focus is on none of the rows). The row (or other child: a name's row, a
+button) the focus is on is lit only while the focus is in the list, so
+that a screen of two shows which one it is in */
 static void host_list_update(struct widget_instance *list, short *first, short *chosen, short count, short rows,
 	void (*row_text)(short item, wchar_t *text), void (*row_detail)(short item, wchar_t *text), short grabbed)
 {
 	struct widget_instance *row;
 	short focused = host_row_number(list->focused_child);
+	boolean active = host_list_active(list);
 
 	if (focused == rows - 1 && *first + rows < count && list_scrolls_at_end())
 	{
@@ -11472,7 +11542,10 @@ static void host_list_update(struct widget_instance *list, short *first, short *
 		wchar_t text[ROW_TEXT_LENGTH];
 
 		if (number == NONE)
+		{
+			row->animation.current_frame_index = active && row == list->focused_child ? 1 : 0;
 			continue;
+		}
 		row->visible = *first + number < count;
 		if (row->visible)
 		{
@@ -11485,10 +11558,10 @@ static void host_list_update(struct widget_instance *list, short *first, short *
 			}
 		}
 		/* (its band: none, the row chosen's, or a round picked up) */
-		row->animation.current_frame_index = row != list->focused_child ? 0 :
+		row->animation.current_frame_index = !active || row != list->focused_child ? 0 :
 			grabbed != NONE && *first + number == grabbed ? 2 : 1;
 		if ((arrows = named(row, "list_item_arrows", 0)) != NULL)
-			arrows->visible = row == list->focused_child;
+			arrows->visible = active && row == list->focused_child;
 	}
 }
 
@@ -11539,6 +11612,7 @@ static void host_playlists_update(struct widget_instance *list)
 
 	host_list_update(list, &host_menu.hub_first, &host_menu.hub_chosen, (short)(host_menu.playlist_count + 1),
 		HOST_HUB_ROWS, host_hub_row_text, NULL, NONE);
+	host_tab_mark(list, "playlists_tab");
 	if (host_menu.hub_chosen != before)
 	{
 		host_menu.deleting = NONE;
@@ -11588,6 +11662,7 @@ static void host_builder_begin(short index)
 	host_menu.entry_first = host_menu.entry_chosen = 0;
 	host_menu.grabbed = FALSE;
 	host_menu.removing_all = FALSE;
+	host_menu.leaving = FALSE;
 	host_menu.builder_status[0] = 0;
 }
 
@@ -11708,19 +11783,68 @@ static void host_map_row_text(short item, wchar_t *text)
 	host_wide(title, text, ROW_TEXT_LENGTH);
 }
 
-/* "port host maps update": the chooser's kind, and the rows */
+/* the Builder's hints of the shoulders, which change the maps' kind: shown
+while the focus is in the maps (the consoles'; tools/port_settings.py) */
+static char const *const host_kind_hints[] =
+{
+	"hint_kind", "hint_kind_l_switch", "hint_kind_r_switch", "hint_kind_l_ps5", "hint_kind_r_ps5",
+};
+
+/* "port host maps update": the maps' kind (the touchscreens' row, the
+consoles' label over the list), the rows, and the shoulders' hints */
 static void host_maps_update(struct widget_instance *list)
 {
+	struct widget_instance *screen = screen_of(list);
+	wchar_t const *kind = host_menu.map_kind == _host_maps_custom ? L"MAPS: CUSTOM" : L"MAPS: MULTIPLAYER";
 	short first;
 	short count = host_maps_shown(&first);
+	size_t index;
 
-	text_set(named(list, "op_kind", 0), host_menu.map_kind == _host_maps_custom ? L"CUSTOM MAPS" : L"MULTIPLAYER");
+	text_set(named(list, "op_kind", 0), kind);
+	text_set(named(screen, "kind_label", 0), kind);
 	host_list_update(list, &host_menu.map_first, &host_menu.map_chosen, count, HOST_MAP_ROWS, host_map_row_text,
 		NULL, NONE);
+	host_tab_mark(list, "maps_tab");
+	for (index = 0; index < NUMBEROF(host_kind_hints); index++)
+	{
+		struct widget_instance *hint = named(screen, host_kind_hints[index], 0);
+
+		if (hint)
+			hint->visible = host_list_active(list);
+	}
 }
 
-/* "port host map kind" (A on the chooser): MULTIPLAYER's maps, or CUSTOM
-MAPS' (when there are any) */
+/* the items past a Host list's rows, ahead or behind
+(ui_widget_port_list_hidden) */
+static short host_list_hidden(struct widget_instance const *list, boolean forward)
+{
+	struct widget_instance const *screen = screen_of((struct widget_instance *)list);
+	short first, count, rows;
+
+	if (!host_menu_pointer || (strcmp(screen->name, "host_screen") && strcmp(screen->name, "builder_screen") &&
+		strcmp(screen->name, "gametype_screen")))
+	{
+		return 0;
+	}
+	if (!strcmp(list->name, "playlist_list"))
+		first = host_menu.hub_first, count = (short)(host_menu.playlist_count + 1), rows = HOST_HUB_ROWS;
+	else if (!strcmp(list->name, "map_list"))
+	{
+		short maps_first;
+
+		first = host_menu.map_first, count = host_maps_shown(&maps_first), rows = HOST_MAP_ROWS;
+	}
+	else if (!strcmp(list->name, "entry_list"))
+		first = host_menu.entry_first, count = host_menu.builder.count, rows = HOST_ENTRY_ROWS;
+	else if (!strcmp(list->name, "gametype_list"))
+		first = host_menu.gametype_first, count = host_menu.gametype_count, rows = HOST_GAMETYPE_ROWS;
+	else
+		return 0;
+	return (short)MAX(0, forward ? count - first - rows : first);
+}
+
+/* "port host map kind" (A on the touchscreens' row, a shoulder on the maps):
+MULTIPLAYER's maps, or CUSTOM MAPS' (when there are any) */
 static boolean host_map_kind(void)
 {
 	if (host_menu.map_kind == _host_maps_multiplayer && host_menu.map_count == host_menu.custom_first)
@@ -11771,6 +11895,7 @@ static void host_gametypes_update(struct widget_instance *list)
 
 	host_list_update(list, &host_menu.gametype_first, &host_menu.gametype_chosen, host_menu.gametype_count,
 		HOST_GAMETYPE_ROWS, host_gametype_row_text, NULL, NONE);
+	host_tab_mark(list, "types_tab");
 	/* (its tab: the map the round plays) */
 	host_map_title(host_menu.map_picked, title, sizeof(title));
 	host_wide(title, wide, NUMBEROF(wide));
@@ -11842,6 +11967,7 @@ static void host_entries_update(struct widget_instance *list)
 	host_list_update(list, &host_menu.entry_first, &host_menu.entry_chosen, host_menu.builder.count,
 		HOST_ENTRY_ROWS, host_entry_row_text, host_entry_row_detail,
 		host_menu.grabbed ? host_menu.entry_chosen : NONE);
+	host_tab_mark(list, "entries_tab");
 	/* (a round picked up is let go when the focus leaves the rounds) */
 	if (host_menu.grabbed && host_row_number(list->focused_child) == NONE)
 		host_menu.grabbed = FALSE;
@@ -11852,12 +11978,21 @@ static void host_entries_update(struct widget_instance *list)
 		text_field_editing(name_row));
 	text_set(named(screen, "title", 0), host_menu.editing == NONE ? L"CREATE MULTIPLAYER PLAYLIST" :
 		L"EDIT MULTIPLAYER PLAYLIST");
-	if (host_menu.builder_status[0])
+	if (host_menu.leaving)
+		snprintf(text, sizeof(text), "CHANGES WILL BE LOST: B AGAIN LEAVES, X SAVES.");
+	else if (host_menu.builder_status[0])
 		snprintf(text, sizeof(text), "%s", host_menu.builder_status);
 	else if (host_menu.removing_all)
 		snprintf(text, sizeof(text), "PRESS A AGAIN TO REMOVE EVERY ROUND.");
 	else if (host_menu.grabbed)
 		snprintf(text, sizeof(text), "UP AND DOWN MOVE THE ROUND; A PUTS IT DOWN.");
+	else if (!host_list_active(list))
+	{
+		struct widget_instance const *maps = screen->focused_child;
+
+		snprintf(text, sizeof(text), "%s", maps && maps->focused_child && !strcmp(maps->focused_child->name, "op_kind") ?
+			"A SHOWS THE OTHER MAPS: MULTIPLAYER OR CUSTOM." : "A ON A MAP CHOOSES ITS GAMETYPE AND ADDS IT.");
+	}
 	else
 		snprintf(text, sizeof(text), "Y REMOVES A ROUND; A PICKS IT UP TO MOVE IT.");
 	host_wide(text, wide, NUMBEROF(wide));
@@ -12016,15 +12151,46 @@ static boolean host_save(void)
 	return TRUE;
 }
 
+/* whether the Builder's playlist is not as it was: a new one with a round
+or a name, or the one edited with another name or other rounds */
+static boolean host_builder_changed(void)
+{
+	struct host_playlist const *builder = &host_menu.builder;
+	struct host_playlist const *saved;
+	short index;
+
+	if (host_menu.editing == NONE || host_menu.editing >= host_menu.playlist_count)
+		return builder->count > 0 || builder->name[0];
+	saved = &host_menu.playlists[host_menu.editing];
+	if (builder->count != saved->count || strcmp(builder->name, saved->name))
+		return TRUE;
+	for (index = 0; index < builder->count; index++)
+	{
+		if (strcmp(builder->entries[index], saved->entries[index]))
+			return TRUE;
+	}
+	return FALSE;
+}
+
 /* "port host back" (B on the Builder or Server Settings): the typing
-cancelled (FALSE: the screen stays), else back (TRUE) */
-static boolean host_back(void)
+cancelled (FALSE: the screen stays), else back (TRUE); the Builder's
+changes lost only at a second press, the first saying so */
+static boolean host_back(struct widget_instance *widget)
 {
 	if (text_field_editing(NULL))
 	{
 		text_field_end(FALSE);
 		return FALSE;
 	}
+	if (widget && !strcmp(screen_of(widget)->name, "builder_screen") && !host_menu.leaving &&
+		host_builder_changed())
+	{
+		host_menu.leaving = TRUE;
+		host_menu.grabbed = FALSE;
+		ui_play_audio_feedback_sound(SOUND_ERROR);
+		return FALSE;
+	}
+	host_menu.leaving = FALSE;
 	return TRUE;
 }
 
@@ -12091,6 +12257,9 @@ static void host_settings_update(struct widget_instance *list)
 /* a "port host ..." function (its name past "port host "), TRUE if done */
 static boolean host_menu_event(char const *name, struct widget_instance *widget)
 {
+	/* (anything else done on the Builder: B leaves at its first press again) */
+	if (strcmp(name, "back"))
+		host_menu.leaving = FALSE;
 	if (!strcmp(name, "init"))
 		return host_init();
 	if (!strcmp(name, "choose"))
@@ -12130,7 +12299,7 @@ static boolean host_menu_event(char const *name, struct widget_instance *widget)
 	if (!strcmp(name, "save"))
 		return host_save();
 	if (!strcmp(name, "back"))
-		return host_back();
+		return host_back(widget);
 	if (!strncmp(name, "edit ", 5))
 		return host_setting_edit(widget, name + 5);
 	return FALSE;

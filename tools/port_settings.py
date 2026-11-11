@@ -2830,23 +2830,29 @@ def _host_band(width: int, height: int, frame: int) -> str:
 def host_pictures() -> list:
     """the Host Server screens' pictures (ce_menus.py draws them): the tabs,
     the chooser, the panels, the rows' bands and the pill buttons"""
-    tab = _host_svg(HOST_COLUMN_WIDTH, 28, _host_box(HOST_COLUMN_WIDTH, 28, 10, 0.9))
-    chooser = _host_svg(HOST_COLUMN_WIDTH, 28, _host_box(HOST_COLUMN_WIDTH, 28, 6, 0.9) +
-                        [_host_arrow(14, 14, 5, "left"), _host_arrow(HOST_COLUMN_WIDTH - 14, 14, 5, "right")])
-    pictures = [(f"{HOST}/tab", [(tab, HOST_COLUMN_WIDTH, 28)]),
-                (f"{HOST}/chooser", [(chooser, HOST_COLUMN_WIDTH, 28)])]
-    for key, top in (("panel", HOST_PANEL_Y), ("panel_short", HOST_PANEL_Y + 34)):
-        height = HOST_PANEL_BOTTOM - top
-        pictures.append((f"{HOST}/{key}", [(_host_svg(HOST_COLUMN_WIDTH, height,
-                                                       _host_box(HOST_COLUMN_WIDTH, height, 12, 0.72)),
-                                             HOST_COLUMN_WIDTH, height)]))
+    # (a tab: its column's, lit (1) while the focus is in it)
+    tabs = []
+    for lit in (False, True):
+        body = _host_box(HOST_COLUMN_WIDTH, 28, 10, 0.9)
+        if lit:
+            body.append(f'  <rect x="2" y="2" width="{HOST_COLUMN_WIDTH - 4}" height="24" rx="9" fill="{HOST_BLUE}" '
+                        'fill-opacity="0.5"/>')
+        tabs.append((_host_svg(HOST_COLUMN_WIDTH, 28, body), HOST_COLUMN_WIDTH, 28))
+    pictures = [(f"{HOST}/tab", tabs)]
+    height = HOST_PANEL_BOTTOM - HOST_PANEL_Y
+    pictures.append((f"{HOST}/panel", [(_host_svg(HOST_COLUMN_WIDTH, height,
+                                                  _host_box(HOST_COLUMN_WIDTH, height, 12, 0.72)),
+                                        HOST_COLUMN_WIDTH, height)]))
+    # (the bands and the pills have three frames, so that the game's lists
+    # leave them be: menu_functions.c's host_list_update lights the one
+    # chosen only in the list the focus is in)
     pictures.append((f"{HOST}/row", [(_host_band(HOST_ROW_WIDTH, HOST_ROW_HEIGHT, frame), HOST_ROW_WIDTH,
-                                      HOST_ROW_HEIGHT) for frame in range(2)]))
+                                      HOST_ROW_HEIGHT) for frame in range(3)]))
     pictures.append((f"{HOST}/entry_row", [(_host_band(HOST_ROW_WIDTH, HOST_ENTRY_HEIGHT, frame), HOST_ROW_WIDTH,
                                             HOST_ENTRY_HEIGHT) for frame in range(3)]))
     for width in HOST_PILL_WIDTHS:
         frames = []
-        for focused in (False, True):
+        for focused in (False, True, True):
             body = _host_box(width, 24, 11, 0.9, glow=False)
             if focused:
                 body.append(f'  <rect x="2" y="2" width="{width - 4}" height="20" rx="10" fill="{HOST_BLUE}" '
@@ -2962,9 +2968,9 @@ def _host() -> list:
     # (the rows' words: a row's, a round's map and its gametype under it)
     lines += _host_text(f"{HOST}/rows/list_item_text", 0, 0, HOST_ROW_WIDTH, HOST_ROW_HEIGHT, None, text_x=22,
                         text_y=4)
-    lines += _host_text(f"{HOST}/entries/list_item_text", 0, 0, HOST_ROW_WIDTH, 18, None, text_x=22, text_y=2)
-    lines += _host_text(f"{HOST}/entries/list_item_detail", 0, 17, HOST_ROW_WIDTH, 18, None, color=HOST_WHITE,
-                        text_x=40)
+    # (large_ui's lines are 21 apart: a box less tall than that shows none)
+    lines += _host_text(f"{HOST}/entries/list_item_text", 0, 0, HOST_ROW_WIDTH, 22, None, text_x=22, text_y=2)
+    lines += _host_text(f"{HOST}/entries/list_item_detail", 0, 19, HOST_ROW_WIDTH, 17, None, "small", text_x=40)
 
     # the Host Hub: the playlists on the left, the one chosen on the right
     hub = f"{HOST}/hub"
@@ -3031,6 +3037,21 @@ def _host() -> list:
     builder = f"{HOST}/builder"
     hints, hint_children = _host_hints(builder, [("save", "%x-button =SAVE PLAYLIST"), ("select", "%a-button =SELECT"),
                                                  ("back", "%b-button =BACK")])
+    # (the consoles': the maps' kind a label over the list, not a row to
+    # choose, the shoulders changing it, their hint at the left of the bar
+    # while the focus is in the maps: menu_functions.c's host_maps_update)
+    kind_x = HOST_LEFT_X + 4
+    kind_children = [f'<child widget="{builder}/kind_label" x="{HOST_LEFT_X + 10}" y="{HOST_PANEL_Y + 8}" '
+                     'platform="switch ps5"/>',
+                     f'<child widget="{builder}/hint_kind" x="{kind_x + 34}" y="418" platform="switch ps5"/>']
+    for console, pictures in (("switch", ("switch_l", "switch_r")), ("ps5", ("ps5_l1", "ps5_r1"))):
+        for index, (side, picture) in enumerate(zip(("l", "r"), pictures)):
+            name = f"{builder}/hint_kind_{side}_{console}"
+            lines += _widget(name, [("controller", 1), ("width", 14), ("height", 14), ("bitmap", f"hints/{picture}")],
+                             [])
+            kind_children.append(f'<child widget="{name}" x="{kind_x + 16 * index}" y="422" platform="{console}"/>')
+    lines += _host_text(f"{builder}/hint_kind", 0, 0, 120, 24, "MAP TYPE", "small", HOST_WHITE, text_y=4)
+    lines += _host_text(f"{builder}/kind_label", 0, 0, HOST_ROW_WIDTH, HOST_ROW_HEIGHT, None, text_x=22, text_y=4)
     lines += _widget(f"{HOST}/builder_screen", [("width", 640), ("height", 480),
                                                 ("flags", "pass_unhandled_to_focused_child left_right_tabs_children"),
                                                 ("bitmap", "bitmaps/gradient")],
@@ -3039,24 +3060,29 @@ def _host() -> list:
                       f'<child widget="{builder}/maps_panel"/>', f'<child widget="{builder}/entries_tab"/>',
                       f'<child widget="{builder}/entries_panel"/>', f'<child widget="{builder}/status"/>',
                       f'<child widget="{builder}/map_list"/>', f'<child widget="{builder}/entry_list"/>',
-                      *hint_children])
+                      *hint_children, *kind_children])
     lines += _host_text(f"{builder}/title", 0, 20, 640, 32, None, color=HOST_BLUE, align="center")
-    lines += _host_frame(builder, "maps", HOST_LEFT_X, "SELECT MAP", "panel_short", HOST_PANEL_Y + 34)
+    lines += _host_frame(builder, "maps", HOST_LEFT_X, "SELECT MAP", "panel", HOST_PANEL_Y)
     lines += _host_frame(builder, "entries", HOST_RIGHT_X, "CURRENT PLAYLIST", "panel", HOST_PANEL_Y)
     lines += _host_text(f"{builder}/status", HOST_LEFT_X, 50, HOST_RIGHT_X + HOST_COLUMN_WIDTH - HOST_LEFT_X, 18,
                         None, "small", HOST_WHITE, align="center")
     lines += hints
-    rows = [f'<child widget="{builder}/op_kind" x="{HOST_LEFT_X}" y="{HOST_PANEL_Y}"/>']
+    # (the maps' kind's row first, as the rounds' name's, then the maps)
+    rows = [f'<child widget="{builder}/op_kind" x="{HOST_LEFT_X + 10}" y="{HOST_PANEL_Y + 8}" '
+            'platform="desktop android web"/>']
     rows += [f'<child widget="{builder}/maps/list_item_{index}" x="{HOST_LEFT_X + 10}" '
-             f'y="{HOST_PANEL_Y + 42 + 28 * index}"/>' for index in range(HOST_MAP_ROWS)]
+             f'y="{HOST_PANEL_Y + 40 + 28 * index}"/>' for index in range(HOST_MAP_ROWS)]
     lines += _widget(f"{builder}/map_list",
                      [("type", "column_list"), ("width", 640), ("height", 480),
                       ("flags", "pass_unhandled_to_focused_child up_down_tabs_children")],
-                     ['<data input="port host maps update"/>', '<on event="created" run="port host maps init"/>', *rows])
-    # (the chooser: MULTIPLAYER or CUSTOM MAPS, A changing it)
-    lines += _widget(f"{builder}/op_kind", [("type", "text"), ("width", HOST_COLUMN_WIDTH), ("height", 28),
-                                            ("bitmap", f"{HOST}/chooser"), ("font", "ui\\large_ui"),
-                                            ("color", HOST_TEXT), ("align", "center"), ("text_y", 4)],
+                     ['<data input="port host maps update"/>', '<on event="created" run="port host maps init"/>',
+                      '<on event="white" run="port host map kind"/>',
+                      '<on event="black" run="port host map kind"/>', *rows])
+    # (the maps' kind: MULTIPLAYER or CUSTOM MAPS, A changing it)
+    lines += _widget(f"{builder}/op_kind", [("type", "text"), ("width", HOST_ROW_WIDTH), ("height", HOST_ROW_HEIGHT),
+                                            ("bitmap", f"{HOST}/row"), ("font", "ui\\large_ui"),
+                                            ("color", HOST_TEXT), ("text_x", 22), ("text_y", 4),
+                                            ("text_flags", "no_focus_test")],
                      ['<on event="a" run="port host map kind"/>', '<on event="start" run="port host map kind"/>',
                       '<on event="left_mouse" run="mouse emit accept event"/>'])
     for index in range(HOST_MAP_ROWS):
