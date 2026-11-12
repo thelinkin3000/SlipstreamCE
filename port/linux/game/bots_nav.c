@@ -449,10 +449,12 @@ struct bots_nav_coarse *bots_nav_coarse_build(struct collision_bsp const *bsp, b
 	return coarse;
 }
 
-boolean bots_nav_coarse_waypoint(struct bots_nav_coarse *coarse, long start_surface_index,
-	long goal_surface_index, real ahead, real_point3d *waypoint, long *waypoint_surface_index)
+/* the shortest way through the cells from the start's to the goal's
+(coarse->cost and coarse->parent hold it); FALSE for none */
+static boolean bots_nav_coarse_search(struct bots_nav_coarse *coarse, long start_surface_index,
+	long goal_surface_index, short *start_cell, short *goal_cell)
 {
-	short start, goal, cell;
+	short start, goal;
 	long heap_count = 0, heap_capacity, index;
 
 	if (!coarse || start_surface_index < 0 || start_surface_index >= coarse->surface_count ||
@@ -462,6 +464,8 @@ boolean bots_nav_coarse_waypoint(struct bots_nav_coarse *coarse, long start_surf
 	}
 	start = coarse->cell_of[start_surface_index];
 	goal = coarse->cell_of[goal_surface_index];
+	*start_cell = start;
+	*goal_cell = goal;
 	if (start == NONE || goal == NONE || start == goal)
 		return FALSE;
 	heap_capacity = BOTS_NAV_MAXIMUM_CELLS * BOTS_NAV_CELL_LINKS;
@@ -538,7 +542,15 @@ boolean bots_nav_coarse_waypoint(struct bots_nav_coarse *coarse, long start_surf
 			}
 		}
 	}
-	if (!coarse->closed[goal])
+	return coarse->closed[goal];
+}
+
+boolean bots_nav_coarse_waypoint(struct bots_nav_coarse *coarse, long start_surface_index,
+	long goal_surface_index, real ahead, real_point3d *waypoint, long *waypoint_surface_index)
+{
+	short start, goal, cell;
+
+	if (!bots_nav_coarse_search(coarse, start_surface_index, goal_surface_index, &start, &goal))
 		return FALSE;
 	/* back from the goal: the first cell no further than `ahead` along the
 	way from the start */
@@ -551,5 +563,21 @@ boolean bots_nav_coarse_waypoint(struct bots_nav_coarse *coarse, long start_surf
 		return FALSE;
 	*waypoint = coarse->center[cell];
 	*waypoint_surface_index = coarse->surface[cell];
+	return TRUE;
+}
+
+boolean bots_nav_coarse_along(struct bots_nav_coarse *coarse, long start_surface_index, long goal_surface_index,
+	real fraction, real_point3d *point, long *point_surface_index, real *length)
+{
+	short start, goal, cell;
+
+	if (!bots_nav_coarse_search(coarse, start_surface_index, goal_surface_index, &start, &goal))
+		return FALSE;
+	*length = coarse->cost[goal];
+	cell = goal;
+	while (coarse->parent[cell] != NONE && coarse->cost[cell] > fraction * coarse->cost[goal])
+		cell = coarse->parent[cell];
+	*point = coarse->center[cell];
+	*point_surface_index = coarse->surface[cell];
 	return TRUE;
 }

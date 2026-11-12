@@ -61,5 +61,10 @@ void bots_nav_coarse_free(struct bots_nav_coarse *coarse);
 long bots_nav_coarse_cells(struct bots_nav_coarse const *coarse);
 boolean bots_nav_coarse_waypoint(struct bots_nav_coarse *coarse, long start_surface_index,
 	long goal_surface_index, real ahead, real_point3d *waypoint, long *waypoint_surface_index);
+/* the cell that far along the shortest way through the cells (a fraction of
+it: 0.5 halfway), its ground and surface, and the way's length; FALSE for
+none */
+boolean bots_nav_coarse_along(struct bots_nav_coarse *coarse, long start_surface_index, long goal_surface_index,
+	real fraction, real_point3d *point, long *point_surface_index, real *length);
 
 #endif
