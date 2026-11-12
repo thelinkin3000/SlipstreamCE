@@ -46,4 +46,20 @@ on different pieces (NONE: the same piece, or no way through portals) */
 long bots_nav_route(short const *component, long count, struct bots_nav_portal const *portals, long portal_count,
 	long start_surface_index, real_point3d const *start, long goal_surface_index, real_point3d const *goal);
 
+/* a coarse map of the ground for long trips (a vehicle's: a search holds
+1024 surfaces and stops as near the goal as it came, a canyon's wall away on
+Sidewinder): the walkable surfaces in cells 6 units across and 3 high, a
+cell joined to the next where a walkable surface of one meets one of the
+other edge to edge. Built from a copy (each a while after it changes), a
+waypoint asked of it: the cell on the shortest way through the cells about
+`ahead` units along it from the start (its ground and surface), FALSE for a
+goal nearer than that or none the cells lead to */
+struct bots_nav_coarse;
+struct bots_nav_coarse *bots_nav_coarse_build(struct collision_bsp const *bsp, byte const *walkable, long count,
+	short walkable_bit);
+void bots_nav_coarse_free(struct bots_nav_coarse *coarse);
+long bots_nav_coarse_cells(struct bots_nav_coarse const *coarse);
+boolean bots_nav_coarse_waypoint(struct bots_nav_coarse *coarse, long start_surface_index,
+	long goal_surface_index, real ahead, real_point3d *waypoint, long *waypoint_surface_index);
+
 #endif

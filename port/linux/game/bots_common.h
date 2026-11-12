@@ -86,6 +86,11 @@ long bots_common_surface_neighbours(long surface_index, long *neighbours, long m
 /* the scenery and machines about a stuck walk learnt to be in the way (the
 searches go round them from now on); how many were */
 long bots_common_paths_learn(real_point3d const *position, real_point3d const *goal);
+/* the ground just before a stuck vehicle (at `point`, the vehicle at
+`vehicle_point`, its goal left open) closed to the vehicles' searches alone,
+as far about as the vehicle is wide */
+void bots_common_paths_close_for_vehicles(real_point3d const *point, real_point3d const *vehicle_point,
+	real_point3d const *goal_point, real vehicle_radius);
 /* port: the first ladder or teleporter (Birchwood's, found once a map) on
 the way from a surface to a goal on another piece of the ground (bots_nav.h),
 its index, NONE for none: where it is entered, whether a ladder (climbed

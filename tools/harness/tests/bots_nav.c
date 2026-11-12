@@ -54,11 +54,18 @@ struct bsp3d
 	struct tag_block planes;
 };
 
+struct collision_vertex
+{
+	real_point3d point;
+	long first_edge_index;
+};
+
 struct collision_bsp
 {
 	struct bsp3d bsp3d;
 	struct tag_block surfaces;
 	struct tag_block edges;
+	struct tag_block vertices;
 };
 
 #include "under_test.inc"
@@ -197,6 +204,72 @@ int main(int argc, char **argv)
 		portals[2].usable = FALSE;
 		first = bots_nav_route(component, SURFACES, portals, 4, 0, &start, 6, &goal);
 		CHECK(first == NONE, "a goal no usable portal leads to is routed (%ld)", first);
+	}
+	CASE("coarse")
+	{
+		/* a U of triangles 6 units apart: along y 0 from x 0 to 60, up x 60
+		to y 12, back along y 12 to x 0 - the goal 12 units from the start
+		across a wall, 132 along the way - and a triangle apart */
+		enum { CHAIN = 24, ALL = CHAIN + 1 };
+		static struct collision_surface u_surfaces[ALL];
+		static struct collision_edge u_edges[ALL * 3];
+		static struct collision_vertex u_vertices[ALL * 3];
+		static byte u_walkable[ALL];
+		real_point3d centers[ALL];
+		struct bots_nav_coarse *coarse;
+		real_point3d waypoint;
+		long surface = NONE, index;
+
+		for (index = 0; index < ALL; index++)
+		{
+			long corner;
+
+			if (index <= 10)
+				centers[index].x = 6.0f * (real)index, centers[index].y = 0.0f;
+			else if (index == 11)
+				centers[index].x = 60.0f, centers[index].y = 6.0f;
+			else if (index < CHAIN)
+				centers[index].x = 60.0f - 6.0f * (real)(index - 12), centers[index].y = 12.0f;
+			else
+				centers[index].x = 200.0f, centers[index].y = 200.0f;
+			centers[index].z = 0.0f;
+			u_surfaces[index].first_edge_index = index * 3;
+			u_walkable[index] = FLAG(WALK);
+			for (corner = 0; corner < 3; corner++)
+			{
+				struct collision_edge *edge = &u_edges[index * 3 + corner];
+				real angle = (real)corner * 2.0944f;
+
+				u_vertices[index * 3 + corner].point.x = centers[index].x + (real)cos(angle);
+				u_vertices[index * 3 + corner].point.y = centers[index].y + (real)sin(angle);
+				u_vertices[index * 3 + corner].point.z = 0.0f;
+				edge->vertex_indices[0] = index * 3 + corner;
+				edge->vertex_indices[1] = index * 3 + (corner + 1) % 3;
+				edge->edge_indices[0] = index * 3 + (corner + 1) % 3;
+				edge->surface_indices[0] = index;
+				edge->surface_indices[1] = NONE;
+				if (index < CHAIN && corner == 0 && index > 0)
+					edge->surface_indices[1] = index - 1;
+				if (index < CHAIN && corner == 1 && index < CHAIN - 1)
+					edge->surface_indices[1] = index + 1;
+			}
+		}
+		bsp.surfaces.count = ALL;
+		bsp.surfaces.address = u_surfaces;
+		bsp.edges.count = ALL * 3;
+		bsp.edges.address = u_edges;
+		bsp.vertices.count = ALL * 3;
+		bsp.vertices.address = u_vertices;
+		coarse = bots_nav_coarse_build(&bsp, u_walkable, ALL, WALK);
+		CHECK(coarse && bots_nav_coarse_cells(coarse) == ALL, "%ld cells, not %d", bots_nav_coarse_cells(coarse), ALL);
+		CHECK(bots_nav_coarse_waypoint(coarse, 0, CHAIN - 1, 25.0f, &waypoint, &surface),
+			"no waypoint to a goal across the wall");
+		CHECK(fabs(waypoint.y) < 1.0f && waypoint.x > 17.0f && waypoint.x < 31.0f,
+			"the waypoint (%.1f %.1f) is not about 25 units along the way (24 0)", waypoint.x, waypoint.y);
+		CHECK(surface == 4, "the waypoint's surface %ld, not 4", surface);
+		CHECK(!bots_nav_coarse_waypoint(coarse, 0, 3, 25.0f, &waypoint, &surface), "a waypoint to a goal near along the way");
+		CHECK(!bots_nav_coarse_waypoint(coarse, 0, CHAIN, 25.0f, &waypoint, &surface), "a waypoint to a goal no cell leads to");
+		bots_nav_coarse_free(coarse);
 	}
 	return 0;
 }

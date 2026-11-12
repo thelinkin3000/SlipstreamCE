@@ -434,10 +434,13 @@ static short drive_stuck(struct pgbots_bot *bot, long vehicle_index, real_point3
 			ahead.x += (real)cos(yaw) * 3.0f;
 			ahead.y += (real)sin(yaw) * 3.0f;
 			bots_common_paths_learn(position, &ahead);
+			/* (and the ground it drives into closed to the vehicles' searches:
+			a bank, a ledge's foot, a doorway, as Birchwood's are) */
+			bots_common_paths_close_for_vehicles(&ahead, position, &bot->goal_point,
+				bots_common_vehicle_path_radius(vehicle_index));
 			pgbots_path_forget(bot);
 			ride->stuck_stage_tick = now;
 		}
-		(void)vehicle_index;
 		return ride->stuck_stage;
 	}
 	return 0;
@@ -731,9 +734,10 @@ void pgbots_drive_update(struct pgbots_bot *bot, struct player_datum *player, lo
 		input.cross_track = 0.0f;
 		if (input.ghost)
 			input.cross_track = (real)sin(pgbots_angle(walk_direction - chassis)) * MIN(input.point_distance, 2.0f);
-		stage = drive_stuck(bot, vehicle_index, &position, speed, top, action->throttle.i ? action->throttle.i : 1.0f, now);
+		stage = drive_stuck(bot, vehicle_index, &position, speed, top, ride->last_throttle, now);
 		input.stuck_reverse = stage == 1 || stage == 2;
 		pgbots_rules_drive(&input, &output);
+		ride->last_throttle = output.throttle;
 		if (output.reversing && !ride->reverse_tick)
 			ride->reverse_tick = now;
 		else if (!output.reversing)

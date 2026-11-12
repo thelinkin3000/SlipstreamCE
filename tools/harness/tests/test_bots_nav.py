@@ -12,7 +12,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from harness import CHECK_FAILED, build, mutated, read, run  # noqa: E402
 
-CASES = ["open", "components", "route"]
+CASES = ["open", "components", "route", "coarse"]
 NAV = "port/linux/game/bots_nav.c"
 
 NEGATIVE_CONTROLS = {
@@ -23,6 +23,10 @@ NEGATIVE_CONTROLS = {
                            "component[other] = (short)(pieces + 1000);", "components"),
     "unusable-taken": ("if (portals[index].usable &&\n", "if (1 &&\n", "route"),
     "one-hop-only": ("first[next] = first[current];", "first[next] = next;", "route"),
+    "coarse-unlinked": ("if (other_cell != NONE && other_cell != cell)", "if (0)", "coarse"),
+    "coarse-straight-line": ("while (coarse->parent[cell] != NONE && coarse->cost[cell] > ahead)",
+                             "while (coarse->parent[cell] != NONE && bots_nav_distance(&coarse->center[cell], "
+                             "&coarse->center[start]) > ahead)", "coarse"),
 }
 
 

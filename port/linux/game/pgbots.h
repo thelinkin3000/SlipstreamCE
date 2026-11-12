@@ -111,6 +111,8 @@ struct pgbots_ride
 	long vehicle_index;
 	short seat;
 	long since_tick;
+	/* the throttle the last tick drove with (the stuck test's) */
+	real last_throttle;
 	/* boarding: the vehicle gone for, its seat, until when; none until then
 	after a failure */
 	long board_vehicle;

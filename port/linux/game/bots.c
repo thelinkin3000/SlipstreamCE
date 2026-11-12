@@ -621,8 +621,10 @@ what for (_bots_search_for_path ...) */
 	long goal_serial;
 	short purpose;
 	/* port: to a ladder's foot or a teleporter's entrance on the way to a
-	goal on another piece of the ground (bots_nav.h), its index; NONE */
+	goal on another piece of the ground (bots_nav.h), its index; NONE; and
+	to a waypoint of a long drive's (the vehicles' coarse map) */
 	long portal_index;
+	boolean waypoint;
 	/* the answer */
 	boolean found;
 	struct path_state state_memory;
@@ -1069,6 +1071,18 @@ static struct
 	boolean components_dirty;
 	long components_tick;
 	unsigned long long prepare_us;
+	/* port: the vehicles' ground looked over for room (bots_paths_scan's
+	second pass: a ceiling over a Warthog, walls closer than it is wide),
+	what it closed and took; their coarse map for long drives (bots_nav.h),
+	built again a while after their ground changes */
+	long vehicle_scan_index;
+	boolean vehicle_scan_done;
+	long vehicle_cramped_count;
+	unsigned long long vehicle_scan_us;
+	struct bots_nav_coarse *vehicle_coarse;
+	boolean vehicle_coarse_dirty;
+	long vehicle_coarse_tick;
+	long coarse_waypoints;
 } bots_paths;
 
 /* the helper thread */
@@ -2216,6 +2230,14 @@ static void bots_paths_release(void)
 	bots_paths.vehicle_closed_count = 0;
 	free(bots_paths.component);
 	bots_paths.component = NULL;
+	bots_nav_coarse_free(bots_paths.vehicle_coarse);
+	bots_paths.vehicle_coarse = NULL;
+	bots_paths.vehicle_coarse_dirty = FALSE;
+	bots_paths.vehicle_scan_index = 0;
+	bots_paths.vehicle_scan_done = FALSE;
+	bots_paths.vehicle_cramped_count = 0;
+	bots_paths.vehicle_scan_us = 0;
+	bots_paths.coarse_waypoints = 0;
 	bots_paths.component_count = 0;
 	bots_paths.components_dirty = FALSE;
 	bots_paths.ramps_opened = bots_paths.vehicle_ramps_opened = 0;
@@ -2336,6 +2358,18 @@ static void bots_paths_components_refresh(void)
 {
 	struct collision_bsp const *bsp;
 
+	/* port: (the vehicles' coarse map too) */
+	if (bots_paths.vehicle_coarse_dirty && bots_paths.vehicle_walkable &&
+		game_time_get() - bots_paths.vehicle_coarse_tick >= TICKS_PER_SECOND * 3)
+	{
+		bsp = TAG_BLOCK_GET_ELEMENT(&bots_paths.vehicle_structure.collision_bsp, 0, struct collision_bsp);
+		bots_nav_coarse_free(bots_paths.vehicle_coarse);
+		bots_paths.vehicle_coarse = bots_nav_coarse_build(bsp, bots_paths.vehicle_walkable,
+			bots_paths.vehicle_structure.pathfinding_surfaces.count, BOTS_PATHFINDING_WALKABLE_BIT);
+		bots_paths.vehicle_coarse_dirty = FALSE;
+		bots_paths.vehicle_coarse_tick = game_time_get();
+	}
+
 	if (!bots_paths.components_dirty || !bots_paths.component || !bots_paths.walkable ||
 		game_time_get() - bots_paths.components_tick < TICKS_PER_SECOND * 2)
 	{
@@ -2388,10 +2422,16 @@ static boolean bots_paths_copy(void)
 			bots_nav_components(bsp, bots_paths.walkable, count, BOTS_PATHFINDING_WALKABLE_BIT, bots_paths.component) : 0;
 		bots_paths.components_dirty = FALSE;
 		bots_paths.components_tick = game_time_get();
+		bots_nav_coarse_free(bots_paths.vehicle_coarse);
+		bots_paths.vehicle_coarse = bots_nav_coarse_build(bsp, bots_paths.vehicle_walkable, count,
+			BOTS_PATHFINDING_WALKABLE_BIT);
+		bots_paths.vehicle_coarse_dirty = FALSE;
+		bots_paths.vehicle_coarse_tick = game_time_get();
 		bots_paths.prepare_us = bots_time_us() - started;
 		platform_log("bots: map ground: %ld surfaces, %ld opened a biped walks (slope k %.2f), %ld of them for vehicles, "
-			"%ld pieces (%.1f ms)", count, bots_paths.ramps_opened, minimum_k, bots_paths.vehicle_ramps_opened,
-			bots_paths.component_count, (double)bots_paths.prepare_us / 1000.0);
+			"%ld pieces, %ld vehicle cells (%.1f ms)", count, bots_paths.ramps_opened, minimum_k,
+			bots_paths.vehicle_ramps_opened, bots_paths.component_count, bots_nav_coarse_cells(bots_paths.vehicle_coarse),
+			(double)bots_paths.prepare_us / 1000.0);
 	}
 	bots_paths.structure = *structure;
 	bots_paths.structure.pathfinding_surfaces.address = bots_paths.walkable;
@@ -2465,7 +2505,7 @@ static void bots_paths_close_object(long object_index, char const *why)
 	}
 	bots_paths.closed_count += closed;
 	if (closed)
-		bots_paths.components_dirty = TRUE;
+		bots_paths.components_dirty = bots_paths.vehicle_coarse_dirty = TRUE;
 	if (closed)
 	platform_log("bots: %s %s at (%.1f %.1f %.1f): %ld walkable surfaces closed (%.1f ms)", why,
 		tag_get_name(object->definition_index), object->object.bounding_sphere_center.x,
@@ -2520,8 +2560,93 @@ static void bots_paths_close_for_vehicles(real_point3d const *point, real_point3
 		}
 	}
 	bots_paths.vehicle_closed_count += closed;
+	if (closed)
+		bots_paths.vehicle_coarse_dirty = TRUE;
 	platform_log("bots: a vehicle stuck at (%.1f %.1f %.1f): %ld walkable surfaces before it closed to vehicles (%ld in all)",
 		vehicle_point->x, vehicle_point->y, vehicle_point->z, closed, bots_paths.vehicle_closed_count);
+}
+
+/* port: the vehicles' ground looked over a few surfaces a tick once the
+bipeds' is (bots_paths_scan): a surface with a ceiling lower than a
+Warthog over its middle, or walls nearer each other across it than a
+Warthog is wide (a tunnel or a doorway a biped walks: Sidewinder's,
+Damnation's), closed to the vehicles' searches alone */
+#define BOTS_VEHICLE_HEADROOM 0.9f
+#define BOTS_VEHICLE_CORRIDOR 1.1f
+#define BOTS_VEHICLE_SCAN_A_TICK 8
+static void bots_paths_vehicle_scan(void)
+{
+	struct collision_bsp const *bsp;
+	long scanned;
+	unsigned long long started;
+	unsigned long flags = FLAG(_collision_test_structure_bit) | FLAG(_collision_test_front_facing_surfaces_bit) |
+		FLAG(_collision_test_back_facing_surfaces_bit);
+
+	if (bots_paths.vehicle_scan_done || !bots_paths.vehicle_walkable)
+		return;
+	started = bots_time_us();
+	bsp = TAG_BLOCK_GET_ELEMENT(&bots_paths.vehicle_structure.collision_bsp, 0, struct collision_bsp);
+	for (scanned = 0; scanned < BOTS_VEHICLE_SCAN_A_TICK; scanned++)
+	{
+		long surface_index = bots_paths.vehicle_scan_index++;
+		real_point3d corners[BOTS_SURFACE_CORNERS], middle, point;
+		struct collision_result collision;
+		real_vector3d up = { 0.0f, 0.0f, BOTS_VEHICLE_HEADROOM };
+		boolean cramped = FALSE;
+		long corner_count, axis;
+		real reach;
+
+		if (surface_index >= bsp->surfaces.count || surface_index >= bots_paths.vehicle_structure.pathfinding_surfaces.count)
+		{
+			bots_paths.vehicle_scan_done = TRUE;
+			bots_paths.vehicle_scan_us += bots_time_us() - started;
+			bots_paths.vehicle_coarse_dirty = TRUE;
+			platform_log("bots: %ld walkable surfaces too cramped for vehicles closed to them (%.1f ms)",
+				bots_paths.vehicle_cramped_count, (double)bots_paths.vehicle_scan_us / 1000.0);
+			return;
+		}
+		if (!TEST_FLAG(bots_paths.vehicle_walkable[surface_index], BOTS_PATHFINDING_WALKABLE_BIT))
+			continue;
+		corner_count = bots_surface_corners(bsp, surface_index, corners);
+		if (corner_count < 3)
+			continue;
+		middle.x = middle.y = middle.z = 0.0f;
+		for (axis = 0; axis < corner_count; axis++)
+		{
+			middle.x += corners[axis].x / (real)corner_count;
+			middle.y += corners[axis].y / (real)corner_count;
+			middle.z += corners[axis].z / (real)corner_count;
+		}
+		/* (a small surface by a wall is no corridor: the walls are looked
+		for from its middle, a surface wider than the corridor left be) */
+		reach = 0.0f;
+		for (axis = 0; axis < corner_count; axis++)
+			reach = MAX(reach, bots_distance2d(&middle, &corners[axis]));
+		point = middle;
+		point.z += 0.05f;
+		if (collision_test_vector(flags, &point, &up, NONE, &collision))
+			cramped = TRUE;
+		point.z = middle.z + 0.5f;
+		for (axis = 0; axis < 4 && !cramped && reach < BOTS_VEHICLE_CORRIDOR * 2.0f; axis++)
+		{
+			real angle = (real)axis * 3.14159265f / 4.0f, across = 0.0f, side;
+
+			for (side = -1.0f; side <= 1.0f; side += 2.0f)
+			{
+				real_vector3d out = { (real)cos(angle) * side * 1.5f, (real)sin(angle) * side * 1.5f, 0.0f };
+
+				across += collision_test_vector(flags, &point, &out, NONE, &collision) ? collision.t * 1.5f : 1.5f;
+			}
+			if (across < BOTS_VEHICLE_CORRIDOR)
+				cramped = TRUE;
+		}
+		if (cramped)
+		{
+			bots_paths.vehicle_walkable[surface_index] &= (byte)~FLAG(BOTS_PATHFINDING_WALKABLE_BIT);
+			bots_paths.vehicle_cramped_count++;
+		}
+	}
+	bots_paths.vehicle_scan_us += bots_time_us() - started;
 }
 
 /* the walkable surfaces with no room above them closed, a few a tick from
@@ -2538,8 +2663,13 @@ static void bots_paths_scan(void)
 	unsigned long long started;
 
 	bots_paths_components_refresh();
-	if (bots_paths.scan_done || !bots_paths_copy())
+	if (!bots_paths_copy())
 		return;
+	if (bots_paths.scan_done)
+	{
+		bots_paths_vehicle_scan();
+		return;
+	}
 	started = bots_time_us();
 	bots_paths.scan_ticks++;
 	bsp = TAG_BLOCK_GET_ELEMENT(&bots_paths.structure.collision_bsp, 0, struct collision_bsp);
@@ -2593,7 +2723,7 @@ static void bots_paths_scan(void)
 			bots_paths.walkable[surface_index] &= (byte)~FLAG(BOTS_PATHFINDING_WALKABLE_BIT);
 			bots_paths.vehicle_walkable[surface_index] &= (byte)~FLAG(BOTS_PATHFINDING_WALKABLE_BIT);
 			bots_paths.roofed_count++;
-			bots_paths.components_dirty = TRUE;
+			bots_paths.components_dirty = bots_paths.vehicle_coarse_dirty = TRUE;
 		}
 	}
 	bots_paths.scan_us += bots_time_us() - started;
@@ -3396,6 +3526,32 @@ void bots_common_ladder_result(long index, boolean climbed)
 		bots_globals.teleporters[index].failures++;
 }
 
+/* port: a vehicle's search to a goal far off: to a waypoint some way along
+the shortest way through the vehicles' coarse map instead (bots_nav.h),
+whose search ends short of nothing: a search holds 1024 surfaces and, cut
+short, went as near the goal as it came, the far side of a canyon's wall
+(Sidewinder) */
+static void bots_search_long_drive(struct bots_search *search)
+{
+	real_point3d waypoint;
+	long surface_index;
+
+	search->waypoint = FALSE;
+	if (search->radius <= BOTS_PATH_RADIUS || !bots_paths.vehicle_coarse ||
+		bots_distance3d(&search->start_point, &search->goal_point) < 12.0f)
+	{
+		return;
+	}
+	if (bots_nav_coarse_waypoint(bots_paths.vehicle_coarse, search->start_surface_index, search->goal_surface_index,
+		25.0f, &waypoint, &surface_index))
+	{
+		search->goal_point = waypoint;
+		search->goal_surface_index = surface_index;
+		search->waypoint = TRUE;
+		bots_paths.coarse_waypoints++;
+	}
+}
+
 /* asks for a path from where the bot's unit is to its goal */
 static void bots_search_ask(struct bots_bot *bot, long unit_index)
 {
@@ -3481,6 +3637,10 @@ static void bots_search_ask(struct bots_bot *bot, long unit_index)
 	{
 		bots_routes_search_goal(search->bot_index, &start, &search->goal_point, &search->goal_surface_index);
 	}
+	/* port: (a long drive: to a waypoint on the way) */
+	search->waypoint = FALSE;
+	if (vehicle_index != NONE && search->purpose == _bots_search_for_path)
+		bots_search_long_drive(search);
 	search->asked_tick = game_time_get();
 	search->goal_serial = bot->goal_serial;
 	search->found = FALSE;
@@ -4205,7 +4365,8 @@ static boolean bots_search_build(struct bots_bot *bot, struct bots_search *searc
 		return FALSE;
 	/* (the search spent: every surface the bot walks to tried, the goal
 	not among them) */
-	if (!reached && state->heap_count <= 1 && bots_search_teleporter(bot, search, path))
+	/* (port: on foot alone: a vehicle drives to no ladder nor teleporter) */
+	if (!reached && state->heap_count <= 1 && search->radius <= BOTS_PATH_RADIUS && bots_search_teleporter(bot, search, path))
 		return TRUE;
 	if (path_state_build_path(state, path) && path->step_count > 0)
 		return TRUE;
@@ -4324,7 +4485,8 @@ static void bots_search_take(struct bots_bot *bot, boolean alive)
 			bot->path_failures = 0;
 			/* (port: towards a teleporter's entrance it has yet to come to,
 			no climbing on to the goal: the next search from nearer) */
-			bot->path_short = !reached && !bot->via_teleporter && !entrance && search->portal_index == NONE;
+			bot->path_short = (!reached && !bot->via_teleporter && !entrance && search->portal_index == NONE) ||
+				search->waypoint;
 			if (!bot->path_short)
 				bot->climb_until_tick = 0;
 		}
@@ -8540,6 +8702,12 @@ long bots_common_paths_learn(real_point3d const *position, real_point3d const *g
 	return bots_paths_learn(position, goal);
 }
 
+void bots_common_paths_close_for_vehicles(real_point3d const *point, real_point3d const *vehicle_point,
+	real_point3d const *goal_point, real vehicle_radius)
+{
+	bots_paths_close_for_vehicles(point, vehicle_point, goal_point, vehicle_radius);
+}
+
 real bots_common_vehicle_path_radius(long vehicle_index)
 {
 	return bots_vehicle_path_radius(vehicle_index);
@@ -8639,6 +8807,9 @@ long bots_common_search_ask(long requester, long unit_index, real radius, long t
 	search->goal_point = *goal;
 	search->goal_surface_index = goal_surface_index;
 	search->purpose = _bots_search_for_path;
+	search->portal_index = NONE;
+	/* port: (a long drive: to a waypoint on the way) */
+	bots_search_long_drive(search);
 	search->asked_tick = game_time_get();
 	search->goal_serial = 0;
 	search->found = FALSE;
