@@ -2311,6 +2311,21 @@ static void pop_widget(
 	return;
 }
 
+/* port: the newest screen of the widget's player's history forgotten, so
+that its Back goes past it (port/linux/game/menu_functions.c's Host Server:
+Round Options back to the Playlist Builder, past Select Gametype) */
+void ui_widget_port_history_drop(
+	struct widget_instance *widget)
+{
+	short widget_stack = (!widget || widget->local_player_index == NONE) ? 0 : widget->local_player_index;
+	struct widget_stack_data data;
+
+	if (widget_globals.widget_stack[widget_stack])
+		pop_widget(&widget_globals.widget_stack[widget_stack], &data);
+
+	return;
+}
+
 static void dispose_widget_stack(
 	struct widget_stack_node **top)
 {

@@ -838,8 +838,9 @@ a rotation that long is saved whole and read back after a restart.
   `iron_ctf`, `teamrace`, `teamoddball`), an OpenCE gametype's (`swat`,
   `infection`, `gun_game`, `hardcore`, `hardcore_ctf`, `hardcore_oddball`,
   `hardcore_king`), a gametype file's name (`gametypes/<name>.toml`), or
-  `file=<name>` (a gametype a player's game saved, below). A gametype's
-  name is letters, digits, `_`, `-` and `.`, in any case.
+  `file=<name>` (a gametype a player's game saved, below), or
+  `saved=<name>` (a gametype in this machine's own saved games, below). A
+  gametype's name is letters, digits, `_`, `-` and `.`, in any case.
 - A rule is a gametype rule's name or its short name (`score`, `time`,
   `weapons`, `ff`...; `GET /api/gametypes`'s schema lists them), with a
   value it takes; a rule of another game engine than the gametype's is
@@ -899,9 +900,26 @@ Each rule goes in its table (the schema's `table`): `[universal]`,
 beside `config.toml` if there is one, else the data root's, and writes the
 web page's files to it.
 
+`team_vehicles` gives both teams their vehicles: the gametype's vehicle set
+(`gametype`), every one the map places (`pc`), the counts (`custom`, with
+`warthogs`, `ghosts`...), or one of the vehicle options' sets by its name
+(`default`, `none`, `warthogs`, `ghosts`, `scorpions`, `rocket_warthogs`,
+`banshees`, `gun_turrets`). `blue_team_vehicles` and `blue_warthogs`,
+`blue_ghosts`... give blue its own, over those, whatever their order.
+`force_team_spawns` spawns each team on its own side in any team game.
+Host Server's Round Options (the Playlist Builder's screen after a round's
+gametype) writes these rules for the options a round changes.
+
 A gametype a player's game saved is played with `file=<name>`: copy the
 saved gametype, as `<name>.gametype`, into the same `gametypes` folder
 (beside `config.toml` if there is one, else the data root's).
+
+A gametype made in the game's Edit Gametypes on the machine that hosts is
+played with `saved=<name>`, its name as the game shows it, looked up each
+time the round is played (so its later changes are played too). A byte of
+the name's UTF-8 that is not a letter, digit, `_`, `-` or `.` is written
+`%XX` (`saved=My%20Slayer` for "My Slayer"). Host Server's Playlist
+Builder writes these for the CUSTOM gametypes it lists.
 
 `vehicle_riding` under `[universal]` is a boolean: `true` lets players
 standing on a moving vehicle ride along with it; no rule means off.

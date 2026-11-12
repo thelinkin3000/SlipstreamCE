@@ -163,6 +163,8 @@
 	</widget>
 	<widget name="main_menu/multiplayer_type_select/host/builder/hint_kind_r_ps5" controller="1" width="14" height="14" bitmap="hints/ps5_r1">
 	</widget>
+	<widget name="main_menu/multiplayer_type_select/host/builder/hint_remove" type="text" controller="1" left="0" top="0" width="100" height="24" text="%y-button =REMOVE" font="ui\small_ui" color="#FFFFFFFF" text_y="4" text_flags="no_focus_test">
+	</widget>
 	<widget name="main_menu/multiplayer_type_select/host/builder/hint_kind" type="text" controller="1" left="0" top="0" width="120" height="24" text="MAP TYPE" font="ui\small_ui" color="#FFFFFFFF" text_y="4" text_flags="no_focus_test">
 	</widget>
 	<widget name="main_menu/multiplayer_type_select/host/builder/kind_label" type="text" controller="1" left="0" top="0" width="240" height="26" font="ui\large_ui" color="#FF8CA8E8" text_x="22" text_y="4" text_flags="no_focus_test">
@@ -188,6 +190,7 @@
 		<child widget="main_menu/multiplayer_type_select/host/builder/hint_kind_r_switch" x="60" y="422" platform="switch"/>
 		<child widget="main_menu/multiplayer_type_select/host/builder/hint_kind_l_ps5" x="44" y="422" platform="ps5"/>
 		<child widget="main_menu/multiplayer_type_select/host/builder/hint_kind_r_ps5" x="60" y="422" platform="ps5"/>
+		<child widget="main_menu/multiplayer_type_select/host/builder/hint_remove" x="44" y="418"/>
 	</widget>
 	<widget name="main_menu/multiplayer_type_select/host/builder/title" type="text" controller="1" left="0" top="20" width="640" height="32" font="ui\large_ui" color="#2896ff" align="center" text_flags="no_focus_test">
 	</widget>
@@ -379,64 +382,129 @@
 		<child widget="main_menu/multiplayer_type_select/host/gametype/list_item_9" x="200" y="370"/>
 	</widget>
 	<widget name="main_menu/multiplayer_type_select/host/gametype/list_item_0" width="240" height="26" bitmap="main_menu/multiplayer_type_select/host/row">
-		<on event="a" run="port host gametype choose" back="true"/>
-		<on event="start" run="port host gametype choose" back="true"/>
+		<on event="a" run="port host gametype choose" open="main_menu/multiplayer_type_select/host/round_screen"/>
+		<on event="start" run="port host gametype choose" open="main_menu/multiplayer_type_select/host/round_screen"/>
 		<on event="left_mouse" run="mouse emit accept event"/>
 		<child widget="main_menu/multiplayer_type_select/host/rows/list_item_text"/>
 	</widget>
 	<widget name="main_menu/multiplayer_type_select/host/gametype/list_item_1" width="240" height="26" bitmap="main_menu/multiplayer_type_select/host/row">
-		<on event="a" run="port host gametype choose" back="true"/>
-		<on event="start" run="port host gametype choose" back="true"/>
+		<on event="a" run="port host gametype choose" open="main_menu/multiplayer_type_select/host/round_screen"/>
+		<on event="start" run="port host gametype choose" open="main_menu/multiplayer_type_select/host/round_screen"/>
 		<on event="left_mouse" run="mouse emit accept event"/>
 		<child widget="main_menu/multiplayer_type_select/host/rows/list_item_text"/>
 	</widget>
 	<widget name="main_menu/multiplayer_type_select/host/gametype/list_item_2" width="240" height="26" bitmap="main_menu/multiplayer_type_select/host/row">
-		<on event="a" run="port host gametype choose" back="true"/>
-		<on event="start" run="port host gametype choose" back="true"/>
+		<on event="a" run="port host gametype choose" open="main_menu/multiplayer_type_select/host/round_screen"/>
+		<on event="start" run="port host gametype choose" open="main_menu/multiplayer_type_select/host/round_screen"/>
 		<on event="left_mouse" run="mouse emit accept event"/>
 		<child widget="main_menu/multiplayer_type_select/host/rows/list_item_text"/>
 	</widget>
 	<widget name="main_menu/multiplayer_type_select/host/gametype/list_item_3" width="240" height="26" bitmap="main_menu/multiplayer_type_select/host/row">
-		<on event="a" run="port host gametype choose" back="true"/>
-		<on event="start" run="port host gametype choose" back="true"/>
+		<on event="a" run="port host gametype choose" open="main_menu/multiplayer_type_select/host/round_screen"/>
+		<on event="start" run="port host gametype choose" open="main_menu/multiplayer_type_select/host/round_screen"/>
 		<on event="left_mouse" run="mouse emit accept event"/>
 		<child widget="main_menu/multiplayer_type_select/host/rows/list_item_text"/>
 	</widget>
 	<widget name="main_menu/multiplayer_type_select/host/gametype/list_item_4" width="240" height="26" bitmap="main_menu/multiplayer_type_select/host/row">
-		<on event="a" run="port host gametype choose" back="true"/>
-		<on event="start" run="port host gametype choose" back="true"/>
+		<on event="a" run="port host gametype choose" open="main_menu/multiplayer_type_select/host/round_screen"/>
+		<on event="start" run="port host gametype choose" open="main_menu/multiplayer_type_select/host/round_screen"/>
 		<on event="left_mouse" run="mouse emit accept event"/>
 		<child widget="main_menu/multiplayer_type_select/host/rows/list_item_text"/>
 	</widget>
 	<widget name="main_menu/multiplayer_type_select/host/gametype/list_item_5" width="240" height="26" bitmap="main_menu/multiplayer_type_select/host/row">
-		<on event="a" run="port host gametype choose" back="true"/>
-		<on event="start" run="port host gametype choose" back="true"/>
+		<on event="a" run="port host gametype choose" open="main_menu/multiplayer_type_select/host/round_screen"/>
+		<on event="start" run="port host gametype choose" open="main_menu/multiplayer_type_select/host/round_screen"/>
 		<on event="left_mouse" run="mouse emit accept event"/>
 		<child widget="main_menu/multiplayer_type_select/host/rows/list_item_text"/>
 	</widget>
 	<widget name="main_menu/multiplayer_type_select/host/gametype/list_item_6" width="240" height="26" bitmap="main_menu/multiplayer_type_select/host/row">
-		<on event="a" run="port host gametype choose" back="true"/>
-		<on event="start" run="port host gametype choose" back="true"/>
+		<on event="a" run="port host gametype choose" open="main_menu/multiplayer_type_select/host/round_screen"/>
+		<on event="start" run="port host gametype choose" open="main_menu/multiplayer_type_select/host/round_screen"/>
 		<on event="left_mouse" run="mouse emit accept event"/>
 		<child widget="main_menu/multiplayer_type_select/host/rows/list_item_text"/>
 	</widget>
 	<widget name="main_menu/multiplayer_type_select/host/gametype/list_item_7" width="240" height="26" bitmap="main_menu/multiplayer_type_select/host/row">
-		<on event="a" run="port host gametype choose" back="true"/>
-		<on event="start" run="port host gametype choose" back="true"/>
+		<on event="a" run="port host gametype choose" open="main_menu/multiplayer_type_select/host/round_screen"/>
+		<on event="start" run="port host gametype choose" open="main_menu/multiplayer_type_select/host/round_screen"/>
 		<on event="left_mouse" run="mouse emit accept event"/>
 		<child widget="main_menu/multiplayer_type_select/host/rows/list_item_text"/>
 	</widget>
 	<widget name="main_menu/multiplayer_type_select/host/gametype/list_item_8" width="240" height="26" bitmap="main_menu/multiplayer_type_select/host/row">
-		<on event="a" run="port host gametype choose" back="true"/>
-		<on event="start" run="port host gametype choose" back="true"/>
+		<on event="a" run="port host gametype choose" open="main_menu/multiplayer_type_select/host/round_screen"/>
+		<on event="start" run="port host gametype choose" open="main_menu/multiplayer_type_select/host/round_screen"/>
 		<on event="left_mouse" run="mouse emit accept event"/>
 		<child widget="main_menu/multiplayer_type_select/host/rows/list_item_text"/>
 	</widget>
 	<widget name="main_menu/multiplayer_type_select/host/gametype/list_item_9" width="240" height="26" bitmap="main_menu/multiplayer_type_select/host/row">
-		<on event="a" run="port host gametype choose" back="true"/>
-		<on event="start" run="port host gametype choose" back="true"/>
+		<on event="a" run="port host gametype choose" open="main_menu/multiplayer_type_select/host/round_screen"/>
+		<on event="start" run="port host gametype choose" open="main_menu/multiplayer_type_select/host/round_screen"/>
 		<on event="left_mouse" run="mouse emit accept event"/>
 		<child widget="main_menu/multiplayer_type_select/host/rows/list_item_text"/>
+	</widget>
+	<widget name="main_menu/multiplayer_type_select/host/round_screen" width="640" height="480" flags="pass_unhandled_to_focused_child" bitmap="bitmaps/gradient">
+		<on event="b" run="port host round back" back="true"/>
+		<on event="back" run="port host round back" back="true"/>
+		<on event="x" run="port host round add" back="true"/>
+		<child widget="main_menu/multiplayer_type_select/host/round/title"/>
+		<child widget="main_menu/multiplayer_type_select/host/round/options_tab"/>
+		<child widget="main_menu/multiplayer_type_select/host/round/options_panel"/>
+		<child widget="main_menu/multiplayer_type_select/host/round/status"/>
+		<child widget="main_menu/multiplayer_type_select/host/round/option_list"/>
+		<child widget="main_menu/multiplayer_type_select/host/round/hint_add"/>
+		<child widget="main_menu/multiplayer_type_select/host/round/hint_select"/>
+		<child widget="main_menu/multiplayer_type_select/host/round/hint_back"/>
+	</widget>
+	<widget name="main_menu/multiplayer_type_select/host/round/title" type="text" controller="1" left="0" top="20" width="640" height="32" text="ROUND OPTIONS" font="ui\large_ui" color="#2896ff" align="center" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/multiplayer_type_select/host/round/options_tab" type="text" controller="1" left="190" top="76" width="260" height="28" bitmap="main_menu/multiplayer_type_select/host/tab" font="ui\large_ui" color="#FFFFFFFF" align="center" text_y="4" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/multiplayer_type_select/host/round/options_panel" controller="1" left="190" top="108" width="260" height="292" bitmap="main_menu/multiplayer_type_select/host/panel">
+	</widget>
+	<widget name="main_menu/multiplayer_type_select/host/round/status" type="text" controller="1" left="40" top="50" width="560" height="18" font="ui\small_ui" color="#FFFFFFFF" align="center" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/multiplayer_type_select/host/round/hint_add" type="text" controller="1" left="352" top="418" width="100" height="24" text="%x-button =ADD ROUND" font="ui\small_ui" color="#FFFFFFFF" text_y="4" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/multiplayer_type_select/host/round/hint_select" type="text" controller="1" left="458" top="418" width="79" height="24" text="%a-button =SELECT" font="ui\small_ui" color="#FFFFFFFF" text_y="4" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/multiplayer_type_select/host/round/hint_back" type="text" controller="1" left="543" top="418" width="65" height="24" text="%b-button =BACK" font="ui\small_ui" color="#FFFFFFFF" text_y="4" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/multiplayer_type_select/host/round/option_list" type="column_list" width="640" height="480" flags="pass_unhandled_to_focused_child up_down_tabs_children">
+		<data input="port host round update"/>
+		<child widget="main_menu/multiplayer_type_select/host/round/op_player_options" x="200" y="118"/>
+		<child widget="main_menu/multiplayer_type_select/host/round/op_item_options" x="200" y="146"/>
+		<child widget="main_menu/multiplayer_type_select/host/round/op_vehicle_options" x="200" y="174"/>
+		<child widget="main_menu/multiplayer_type_select/host/round/op_indicator_options" x="200" y="202"/>
+		<child widget="main_menu/multiplayer_type_select/host/round/op_team_options" x="200" y="230"/>
+		<child widget="main_menu/multiplayer_type_select/host/round/button_add" x="262" y="366"/>
+	</widget>
+	<widget name="main_menu/multiplayer_type_select/host/round/op_player_options" type="text" width="240" height="26" bitmap="main_menu/multiplayer_type_select/host/row" text="PLAYER OPTIONS" font="ui\large_ui" color="#FF8CA8E8" text_x="22" text_y="4" text_flags="no_focus_test">
+		<on event="a" run="port host round edit" open="main_menu/settings_select/multiplayer_setup/player_options_edit/player_options_screen"/>
+		<on event="start" run="port host round edit" open="main_menu/settings_select/multiplayer_setup/player_options_edit/player_options_screen"/>
+		<on event="left_mouse" run="mouse emit accept event"/>
+	</widget>
+	<widget name="main_menu/multiplayer_type_select/host/round/op_item_options" type="text" width="240" height="26" bitmap="main_menu/multiplayer_type_select/host/row" text="ITEM OPTIONS" font="ui\large_ui" color="#FF8CA8E8" text_x="22" text_y="4" text_flags="no_focus_test">
+		<on event="a" run="port host round edit" open="main_menu/settings_select/multiplayer_setup/item_options_edit/item_options_screen"/>
+		<on event="start" run="port host round edit" open="main_menu/settings_select/multiplayer_setup/item_options_edit/item_options_screen"/>
+		<on event="left_mouse" run="mouse emit accept event"/>
+	</widget>
+	<widget name="main_menu/multiplayer_type_select/host/round/op_vehicle_options" type="text" width="240" height="26" bitmap="main_menu/multiplayer_type_select/host/row" text="VEHICLE OPTIONS" font="ui\large_ui" color="#FF8CA8E8" text_x="22" text_y="4" text_flags="no_focus_test">
+		<on event="a" run="port host round edit" open="main_menu/settings_select/multiplayer_setup/vehicle_options_edit/vehicle_options_screen"/>
+		<on event="start" run="port host round edit" open="main_menu/settings_select/multiplayer_setup/vehicle_options_edit/vehicle_options_screen"/>
+		<on event="left_mouse" run="mouse emit accept event"/>
+	</widget>
+	<widget name="main_menu/multiplayer_type_select/host/round/op_indicator_options" type="text" width="240" height="26" bitmap="main_menu/multiplayer_type_select/host/row" text="INDICATOR OPTIONS" font="ui\large_ui" color="#FF8CA8E8" text_x="22" text_y="4" text_flags="no_focus_test">
+		<on event="a" run="port host round edit" open="main_menu/settings_select/multiplayer_setup/indicator_options_edit/indicator_options_screen"/>
+		<on event="start" run="port host round edit" open="main_menu/settings_select/multiplayer_setup/indicator_options_edit/indicator_options_screen"/>
+		<on event="left_mouse" run="mouse emit accept event"/>
+	</widget>
+	<widget name="main_menu/multiplayer_type_select/host/round/op_team_options" type="text" width="240" height="26" bitmap="main_menu/multiplayer_type_select/host/row" text="TEAMPLAY OPTIONS" font="ui\large_ui" color="#FF8CA8E8" text_x="22" text_y="4" text_flags="no_focus_test">
+		<on event="a" run="port host round edit" open="main_menu/settings_select/multiplayer_setup/teamplay_options_edit/teamplay_options_screen"/>
+		<on event="start" run="port host round edit" open="main_menu/settings_select/multiplayer_setup/teamplay_options_edit/teamplay_options_screen"/>
+		<on event="left_mouse" run="mouse emit accept event"/>
+	</widget>
+	<widget name="main_menu/multiplayer_type_select/host/round/button_add" type="text" width="116" height="24" bitmap="main_menu/multiplayer_type_select/host/pill_116" text="ADD ROUND" font="ui\small_ui" color="#FFFFFFFF" align="center" text_y="4">
+		<on event="a" run="port host round add" back="true"/>
+		<on event="left_mouse" run="mouse emit accept event"/>
 	</widget>
 	<widget name="main_menu/multiplayer_type_select/host/settings/settings_screen" width="640" height="480" flags="pass_unhandled_to_focused_child pause_game" bitmap="bitmaps/gradient">
 		<on event="b" run="port host back" back="true"/>

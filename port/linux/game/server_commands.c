@@ -708,7 +708,7 @@ static boolean command_gametypes(char const *line, long count, char **words)
 	for (index = 0; (name = server_gametype_builtin_name(index)) != NULL; index++)
 		length += snprintf(text + length, sizeof(text) - (size_t)length, "%s%s", index ? ", " : "", name);
 	say("built in: %s", text);
-	say("and gametypes/<name>.toml files, and file=<name> for gametypes/<name>.gametype");
+	say("and gametypes/<name>.toml files, file=<name> for gametypes/<name>.gametype, and saved=<name> for Edit Gametypes'");
 	return TRUE;
 }
 

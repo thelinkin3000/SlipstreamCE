@@ -90,6 +90,27 @@ int posix_find_entry_case_insensitive(const char *directory, const char *name, c
 	return matched;
 }
 
+/* (posix.h's: whether a path is a folder, all custom_map_file asks) */
+enum
+{
+	_posix_file_is_directory = 1 << 0,
+};
+
+struct posix_file_information
+{
+	unsigned long flags;
+};
+
+int posix_stat(const char *path, struct posix_file_information *information)
+{
+	struct stat status;
+
+	if (stat(path, &status) != 0)
+		return -1;
+	information->flags = S_ISDIR(status.st_mode) ? _posix_file_is_directory : 0;
+	return 0;
+}
+
 #include "under_test.inc"
 
 static struct server_entry entry;
@@ -794,6 +815,40 @@ int main(int argc, char **argv)
 		CHECK(resolved("custom_maps\\ceonly"), "custom_maps\\ceonly: %s", entry.rejected);
 		snprintf(path, sizeof(path), "%s/maps/bloodgulch.map", data_root);
 		CHECK(!access(path, R_OK), "the maps were not written");
+		return 0;
+	}
+	/* a gametype in the game's saved games by its name: saved=<name>, its
+	case kept (the game's own), %XX for its other bytes; a bad escape, a
+	character outside the name's or no name rejected */
+	CASE("saved-gametypes")
+	{
+		CHECK(playable("bloodgulch:saved=My%20Slayer"), "saved=My%%20Slayer was rejected: %s", entry.rejected);
+		CHECK(!strcmp(entry.gametype, "saved=My%20Slayer"), "gametype %s", entry.gametype);
+		CHECK(playable("bloodgulch: saved=Caf%C3%A9_2 +score=5"), "an escaped name with a rule was rejected: %s",
+			entry.rejected);
+		CHECK(!strcmp(entry.gametype, "saved=Caf%C3%A9_2"), "gametype %s", entry.gametype);
+		CHECK(entry.rule_count == 1, "%d rules", (int)entry.rule_count);
+		CHECK(rejected_with("bloodgulch:saved=", "is not a gametype's name"), "saved= with no name was taken");
+		CHECK(rejected_with("bloodgulch:saved=My Slayer", "is not a gametype's name"), "a space was taken");
+		CHECK(rejected_with("bloodgulch:saved=a%2", "is not a gametype's name"), "a cut escape was taken");
+		CHECK(rejected_with("bloodgulch:saved=a%zz", "is not a gametype's name"), "a bad escape was taken");
+		CHECK(rejected_with("bloodgulch:saved=a/b", "is not a gametype's name"), "a slash was taken");
+		return 0;
+	}
+	/* a Custom Edition map in a subfolder of custom_maps (a set's folder, as
+	the menus list them) is found by its name */
+	CASE("resolve-subfolder")
+	{
+		make_root(argv[0], case_name);
+		write_maps();
+		make_folder("custom_maps/Set_One");
+		write_map("custom_maps/Set_One/inset.map", 609, 1, 0x800, "daeh", "toof");
+		CHECK(resolved("custom_maps\\inset:ctf"), "a map in a subfolder: %s", entry.rejected);
+		CHECK(entry.map_kind == _server_map_custom && !strcmp(entry.level, "custom_maps\\inset"),
+			"kind %d, level %s", entry.map_kind, entry.level);
+		CHECK(resolved("inset"), "a subfolder's map by its name alone: %s", entry.rejected);
+		CHECK(entry.map_kind == _server_map_custom, "kind %d", entry.map_kind);
+		CHECK(!resolved("custom_maps\\outset") && entry.map_missing, "a name of no file was found");
 		return 0;
 	}
 	/* a Custom Edition map whose file has capitals (cmt_Snow_Grove.map) is

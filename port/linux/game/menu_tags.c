@@ -435,6 +435,7 @@ static char const *const port_function_names[] =
 	"port host entry down", "port host name edit", "port host save", "port host back",
 	"port host edit server name", "port host edit server password", "port host edit motd",
 	"port host map kind", "port host entry grab", "port host reorder", "port host remove all",
+	"port host round edit", "port host round add", "port host round back",
 };
 
 /* the PC version's game data functions that the Xbox's have not, from
@@ -487,7 +488,7 @@ static char const *const port_game_data_input_names[] =
 	/* (Multiplayer's Host Server: its playlists, the builder's maps and
 	rounds, the gametypes, the settings' values typed) */
 	"port host playlists update", "port host maps update", "port host entries update",
-	"port host gametypes update", "port host settings update",
+	"port host gametypes update", "port host settings update", "port host round update",
 };
 
 static struct

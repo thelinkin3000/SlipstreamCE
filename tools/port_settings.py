@@ -2957,6 +2957,16 @@ HOST_SETTINGS = [
      "port host edit motd", "motd"),
 ]
 # B on a screen with a text field: the typing cancelled, else back
+# Round Options' rows: the gametype editor's screens, as Server Setup's
+# (SETUP_OPTION_SCREENS) but its gametype's row
+HOST_ROUND_OPTIONS = [
+    ("player_options", "PLAYER OPTIONS", "player_options_edit/player_options_screen"),
+    ("item_options", "ITEM OPTIONS", "item_options_edit/item_options_screen"),
+    ("vehicle_options", "VEHICLE OPTIONS", "vehicle_options_edit/vehicle_options_screen"),
+    ("indicator_options", "INDICATOR OPTIONS", "indicator_options_edit/indicator_options_screen"),
+    ("team_options", "TEAMPLAY OPTIONS", "teamplay_options_edit/teamplay_options_screen"),
+]
+
 HOST_BACK = ['<on event="b" run="port host back" back="true"/>', '<on event="back" run="port host back" back="true"/>']
 
 
@@ -3121,6 +3131,10 @@ def _host() -> list:
             lines += _widget(name, [("controller", 1), ("width", 14), ("height", 14), ("bitmap", f"hints/{picture}")],
                              [])
             kind_children.append(f'<child widget="{name}" x="{kind_x + 16 * index}" y="422" platform="{console}"/>')
+    # (Y removing the round the focus is on: its hint in the same place,
+    # while the focus is on a round, menu_functions.c's host_entries_update)
+    kind_children.append(f'<child widget="{builder}/hint_remove" x="{kind_x}" y="418"/>')
+    lines += _host_text(f"{builder}/hint_remove", 0, 0, 100, 24, "%y-button =REMOVE", "small", HOST_WHITE, text_y=4)
     lines += _host_text(f"{builder}/hint_kind", 0, 0, 120, 24, "MAP TYPE", "small", HOST_WHITE, text_y=4)
     lines += _host_text(f"{builder}/kind_label", 0, 0, HOST_ROW_WIDTH, HOST_ROW_HEIGHT, None, text_x=22, text_y=4)
     lines += _widget(f"{HOST}/builder_screen", [("width", 640), ("height", 480),
@@ -3193,7 +3207,8 @@ def _host() -> list:
     lines += _host_pill(f"{builder}/button_reorder", HOST_PILL_WIDTHS[0], "REORDER",
                         ['<on event="a" run="port host reorder"/>'])
 
-    # Select Gametype: the gametypes a round can play, A adding the round
+    # Select Gametype: the gametypes a round can play, A opening Round
+    # Options for the round
     gametype = f"{HOST}/gametype"
     x = (640 - HOST_COLUMN_WIDTH) // 2
     hints, hint_children = _host_hints(gametype, [("select", "%a-button =SELECT"), ("back", "%b-button =BACK")])
@@ -3215,9 +3230,50 @@ def _host() -> list:
                      ['<data input="port host gametypes update"/>', *rows])
     for index in range(HOST_GAMETYPE_ROWS):
         lines += _host_row(f"{gametype}/list_item_{index}", HOST_ROW_HEIGHT, f"{HOST}/row",
-                           ['<on event="a" run="port host gametype choose" back="true"/>',
-                            '<on event="start" run="port host gametype choose" back="true"/>'],
+                           [f'<on event="a" run="port host gametype choose" open="{HOST}/round_screen"/>',
+                            f'<on event="start" run="port host gametype choose" open="{HOST}/round_screen"/>'],
                            [f"{HOST}/rows/list_item_text"])
+
+    # Round Options: the round's own options, the gametype editor's screens
+    # (Server Setup's) editing a copy of its gametype, whose changes are the
+    # round's rules (menu_functions.c's host_round_add); ADD ROUND (X) adds
+    # it and goes back to the Builder, B back to Select Gametype
+    round_base = f"{HOST}/round"
+    hints, hint_children = _host_hints(round_base, [("add", "%x-button =ADD ROUND"), ("select", "%a-button =SELECT"),
+                                                    ("back", "%b-button =BACK")])
+    lines += _widget(f"{HOST}/round_screen", [("width", 640), ("height", 480),
+                                              ("flags", "pass_unhandled_to_focused_child"),
+                                              ("bitmap", "bitmaps/gradient")],
+                     ['<on event="b" run="port host round back" back="true"/>',
+                      '<on event="back" run="port host round back" back="true"/>',
+                      '<on event="x" run="port host round add" back="true"/>',
+                      f'<child widget="{round_base}/title"/>', f'<child widget="{round_base}/options_tab"/>',
+                      f'<child widget="{round_base}/options_panel"/>', f'<child widget="{round_base}/status"/>',
+                      f'<child widget="{round_base}/option_list"/>', *hint_children])
+    lines += _host_text(f"{round_base}/title", 0, 20, 640, 32, "ROUND OPTIONS", color=HOST_BLUE, align="center")
+    lines += _host_frame(round_base, "options", x, None, "panel", HOST_PANEL_Y)
+    lines += _host_text(f"{round_base}/status", HOST_LEFT_X, 50, HOST_RIGHT_X + HOST_COLUMN_WIDTH - HOST_LEFT_X, 18,
+                        None, "small", HOST_WHITE, align="center")
+    lines += hints
+    rows = [f'<child widget="{round_base}/op_{key}" x="{x + 10}" y="{HOST_PANEL_Y + 10 + 28 * index}"/>'
+            for index, (key, _, _) in enumerate(HOST_ROUND_OPTIONS)]
+    rows.append(f'<child widget="{round_base}/button_add" x="{x + (HOST_COLUMN_WIDTH - HOST_PILL_WIDTHS[0]) // 2}" '
+                f'y="{HOST_PANEL_BOTTOM - 34}"/>')
+    lines += _widget(f"{round_base}/option_list",
+                     [("type", "column_list"), ("width", 640), ("height", 480),
+                      ("flags", "pass_unhandled_to_focused_child up_down_tabs_children")],
+                     ['<data input="port host round update"/>', *rows])
+    for key, title, screen in HOST_ROUND_OPTIONS:
+        target = f"main_menu/settings_select/multiplayer_setup/{screen}"
+        lines += _widget(f"{round_base}/op_{key}", [("type", "text"), ("width", HOST_ROW_WIDTH),
+                                                    ("height", HOST_ROW_HEIGHT), ("bitmap", f"{HOST}/row"),
+                                                    ("text", title), ("font", "ui\\large_ui"), ("color", HOST_TEXT),
+                                                    ("text_x", 22), ("text_y", 4), ("text_flags", "no_focus_test")],
+                         [f'<on event="a" run="port host round edit" open="{target}"/>',
+                          f'<on event="start" run="port host round edit" open="{target}"/>',
+                          '<on event="left_mouse" run="mouse emit accept event"/>'])
+    lines += _host_pill(f"{round_base}/button_add", HOST_PILL_WIDTHS[0], "ADD ROUND",
+                        ['<on event="a" run="port host round add" back="true"/>'])
 
     # Server Settings, as a settings screen: spinners writing config.toml
     # at OK, the values typed at once
