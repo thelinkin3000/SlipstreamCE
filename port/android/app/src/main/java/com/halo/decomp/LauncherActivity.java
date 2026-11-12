@@ -437,6 +437,8 @@ public class LauncherActivity extends Activity {
                 : "adb push <folder with maps>/. " + (dataRoot != null ? dataRoot.getAbsolutePath() : "") + "/");
         LinearLayout layout = screen("SlipstreamCE needs its game data", text);
 
+        // (an MCC Workshop package imported into mcc_maps: MccImportActivity)
+        button(layout, "Import MCC maps", v -> startActivity(new Intent(this, MccImportActivity.class)));
         pick = button(layout, "Choose disc image", v -> {
             // (disc images have no MIME type of their own: any file, checked
             // when it is read)

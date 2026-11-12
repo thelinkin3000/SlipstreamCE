@@ -658,7 +658,7 @@ _hud_rows = [row for row in _network["rows"] if row[1] in _hud_settings]
 _network["rows"] = [row for row in _network["rows"] if row[1] not in _hud_settings]
 _network["categories"] = [
     ("MAP SHARING:", "network_setup/map_sharing",
-     "Downloading Custom Edition maps you do not have,\nand helping send them to other players.",
+     "Download CE maps or approved MCC packages.\nManage sharing and downloaded MCC copies.",
      "desktop android ps5"),
     ("MULTIPLAYER HUD:", "network_setup/multiplayer_hud",
      "Players' names above their heads, the\nscoreboard, the text chat and the match clock."),
@@ -671,15 +671,36 @@ _network["categories"] = [
 ]
 SCREENS["network_setup/map_sharing"] = {
     "screen": "map_sharing_settings_screen", "header": _network["header"], "spacing": 30,
+    "categories": [("MCC PACKAGES:", "network_setup/mcc_packages",
+                    "Installed MCC maps, campaign mission order and\noptional Workshop collection folders."),
+                   ("MCC DOWNLOADS:", "network_setup/mcc_downloads",
+                    "Storage and removal of copies received from hosts.\nOriginal packages and saves are kept.")],
     "rows": [
+        ("SHARE MCC PACKAGES:", "network.mcc_map_share", ON_OFF,
+         "Host only: offer explicitly approved MCC packages.\nOff by default; configure mcc_share.txt first.", None),
         ("DOWNLOAD MAPS:", "network.map_download", ON_OFF,
-         "Joining a game on a Custom Edition map you do not\nhave: download it from the players (if shared).",
+         "Allow shared map downloads. CE uses players; MCC\nuses the host and asks before downloading.",
          None),
         ("HELP SEND MAPS:", "network.map_seed", ON_OFF,
          "In another's game, send its map to players who\njoin without it, as a torrent's peers do.", None),
         ("UPLOAD LIMIT:", "network.map_seed_upload",
          [(f"{kb} KB/S" if kb < 1024 else f"{kb // 1024} MB/S", str(kb)) for kb in SEED_UPLOADS],
          "The most you send of maps to other players, so\nthat the game keeps the rest of your upload.", None),
+    ],
+}
+SCREENS["network_setup/mcc_downloads"] = {
+    "screen": "screen", "header": _network["header"], "title": "MCC DOWNLOADS", "rows": [],
+}
+
+SCREENS["network_setup/mcc_packages"] = {
+    "screen": "mcc_packages_screen", "header": _network["header"], "title": "MCC PACKAGES", "spacing": 30,
+    "rows": [
+        ("STEAM DISCOVERY:", "game.workshop_maps", ON_OFF,
+         "Find installed Halo CE Workshop maps on this PC.\nLocal MCC packages take precedence.", "desktop"),
+        ("CAMPAIGN MISSIONS:", "game.mcc_campaigns", ON_OFF,
+         "Use campaign metadata for mission order and\nprogression. Online, the host chooses the next map.", None),
+        ("COLLECTION FOLDERS:", "game.mcc_collections", ON_OFF,
+         "Group installed MCC packages using the bundled\ncollection list. Works without Steam.", None),
     ],
 }
 
@@ -1289,16 +1310,22 @@ def _layout_overlays() -> list:
     return lines
 
 
+
+
 def settings_files() -> dict:
     """the files of the port's screens, by their names in ce/"""
     files = {}
     for folder, spec in SCREENS.items():
+        if folder == "network_setup/mcc_downloads":
+            files[f"{PE}/{folder}".replace("/", ".") + ".xml"] = _mcc_downloads()
+            continue
         lines = _setting_screen(folder, spec)
         if folder == "gameplay":
             lines += _gameplay_profile_item()
         if folder == "gamepad_setup/layout":
             lines += _layout_overlays()
         files[f"{PE}/{folder}".replace("/", ".") + ".xml"] = lines
+    files[f"{PE}/network_setup/mcc_download".replace("/", ".") + ".xml"] = _mcc_download()
     files[f"{PE}/controls_setup".replace("/", ".") + ".xml"] = _controls_screen()
     return {name: ['<?xml version="1.0" encoding="UTF-8"?>',
                    "<!-- The port's settings screen, in the PC version's style (tools/port_settings.py) -->",
@@ -1575,11 +1602,6 @@ def _hint_widgets(base: str, hints: list, pictures: list = ()) -> list:
 
 
 WIDGET_PATCHES = {
-    # The host returns here after a round with no menu history. Back must
-    # reopen the main menu when it closes the last screen, as the lobby does.
-    f"{MT}/connected/connected_map_select_wrapper": {"set": {
-        "flags": "pass_unhandled_to_focused_child pause_game main_menu_if_no_history tag_controller_index force_handle_mouse",
-    }},
     # (the main menu's THEATER, after Multiplayer, and MODS, before Quit:
     # _theater, _mods)
     "main_menu/main_menu_select_list": {"insert_before": {
@@ -1665,6 +1687,8 @@ WIDGET_PATCHES = {
         '<on event="deleted" run="dispose sp level list"/>',
         '<on event="custom_activation" run="solo level set map" open="main_menu/difficulty_select/difficulty_select_list_screen"/>',
         '<on event="x" run="port map delete"/>',
+        '<on event="b" run="port mcc solo folder back"/>',
+        '<on event="back" run="port mcc solo folder back"/>',
     ]},
     # (their DELETE and IMPORT, Android's: MAP_DELETE, MAP_IMPORT)
     f"{MT}/mp_map_select/mp_map_select_button_bar": {"insert_before": {
@@ -1675,10 +1699,29 @@ WIDGET_PATCHES = {
         "main_menu/solo_level_select/solo_level_select_button_ok": [
             f'<child widget="{MAP_DELETE}" x="120" y="1" platform="android"/>',
             f'<child widget="{MAP_IMPORT}" x="250" y="1" platform="android"/>']}},
+    "main_menu/solo_level_select/solo_level_select_screen": {"handlers": [
+        '<on event="b" run="port mcc solo folder back"/>',
+        '<on event="back" run="port mcc solo folder back"/>',
+    ]},
+    f"{MT}/mp_map_select/mp_map_select_screen": {"handlers": [
+        '<on event="created" run="net server defer start"/>',
+        '<on event="b" run="port mcc host folder back"/>',
+        '<on event="back" run="port mcc host folder back"/>',
+    ]},
+    # The host returns here after a round with no menu history. Back must
+    # reopen the main menu when it closes the last screen, as the lobby does.
+    f"{MT}/connected/connected_map_select_wrapper": {"set": {
+        "flags": "pass_unhandled_to_focused_child pause_game main_menu_if_no_history tag_controller_index force_handle_mouse",
+    }, "handlers": [
+        '<on event="b" run="port mcc host folder back"/>',
+        '<on event="back" run="port mcc host folder back"/>',
+    ]},
     # (each description shows the other kind's maps too: a campaign level's
     # picture, name and words on the Map screen, a multiplayer map's on New
     # Game's)
     f"{MT}/mp_map_select/mp_map_right_item": {"children": [
+        '<child widget="main_menu/new_select/mcc_folder_name"/>',
+        '<child widget="main_menu/new_select/mcc_folder_help"/>',
         '<child widget="main_menu/solo_level_select/replay_level_right_name"/>',
         '<child widget="main_menu/solo_level_select/replay_level_right_pic"/>',
         '<child widget="main_menu/solo_level_select/replay_level_right_data"/>',
@@ -1686,6 +1729,8 @@ WIDGET_PATCHES = {
         f'<child widget="{MAP_DELETE_STATUS}"/>',
     ]},
     "main_menu/solo_level_select/replay_level_right_item": {"children": [
+        '<child widget="main_menu/new_select/mcc_folder_name"/>',
+        '<child widget="main_menu/new_select/mcc_folder_help"/>',
         f'<child widget="{MT}/mp_map_select/mp_map_right_name"/>',
         f'<child widget="{MT}/mp_map_select/mp_map_right_pic"/>',
         f'<child widget="{MT}/mp_map_select/mp_map_right_data"/>',
@@ -3320,7 +3365,12 @@ def _map_kind() -> list:
                       ("header_bounds", "7 -6 19 0"), ("footer_bounds", "7 238 19 244")],
                      ['<on event="left_mouse" run="mouse spinner 1wide click"/>'])
     lines += _strings("main_menu/new_select/var_map_kinds",
-                      ["SINGLEPLAYER", "MULTIPLAYER", "CUSTOM SINGLEPLAYER", "CUSTOM MULTIPLAYER"])
+                      ["SINGLEPLAYER", "MULTIPLAYER", "CUSTOM SINGLEPLAYER", "CUSTOM MULTIPLAYER", "MCC SINGLEPLAYER", "MCC MULTIPLAYER"])
+    for name, top, height in (("name", 204, 54), ("help", 270, 124)):
+        lines += _widget(f"main_menu/new_select/mcc_folder_{name}",
+                         [("type", "text"), ("controller", 1), ("left", 417), ("top", top),
+                          ("width", 146), ("height", height), ("font", "ui\\small_ui"),
+                          ("color", "#FF2896FF")], [])
     lines += _text_button(MAP_IMPORT, "IMPORT", ['<on event="a" run="port map import"/>'])
     # (DELETE alone: the west button's picture beside it does not fit the
     # button; the button is the list's X anyway)
@@ -3826,4 +3876,67 @@ def _theater() -> list:
                                                              '<on event="start" run="port theater export"/>'])
     lines += _text_button(f"{base}/button_back", "BACK", ['<on event="a" back="true"/>',
                                                          '<on event="start" back="true"/>'])
+    return lines
+
+
+def _mcc_download() -> list:
+    """MCC-owned nonblocking consent screen: network updates continue behind it."""
+    base = f"{PE}/network_setup/mcc_download"
+    lines = _widget(f"{base}/screen", [("type", "column_list"), ("width", 640), ("height", 480),
+                    ("bitmap", "bitmaps/gradient"),
+                    ("flags", "pass_unhandled_to_focused_child up_down_tabs_children")],
+                    ['<on event="b" run="port mcc share cancel"/>',
+                     '<on event="back" run="port mcc share cancel"/>',
+                     '<on event="deleted" run="port mcc share closed"/>',
+                     '<data input="port mcc share update"/>',
+                     f'<child widget="{base}/description" x="40" y="80"/>',
+                     f'<child widget="{base}/download" x="150" y="300"/>',
+                     f'<child widget="{base}/workshop" x="150" y="340"/>',
+                     f'<child widget="{base}/cancel" x="150" y="380"/>',
+                     f'<child widget="{base}/title" x="40" y="24"/>'])
+    lines += _widget(f"{base}/title", [("type", "text"), ("width", 560), ("height", 40),
+                     ("text", "MCC HOST DOWNLOAD"), ("font", "ui\\large_ui"), ("color", "#FF2896FF")], [])
+    lines += _widget(f"{base}/description", [("type", "text"), ("controller", 1),
+                     ("width", 560), ("height", 200), ("font", "ui\\small_ui"),
+                     ("color", "#FFFFFFFF")], ['<data input="port mcc share text"/>'])
+    for name, text, action in [("download", "DOWNLOAD FROM HOST", "download"),
+                               ("workshop", "VISIT WORKSHOP PAGE", "workshop"),
+                               ("cancel", "CANCEL", "cancel")]:
+        lines += _widget(f"{base}/{name}", [("type", "text"), ("width", 340), ("height", 32),
+                         ("text", text), ("font", "ui\\large_ui"), ("color", "#FF2896FF"),
+                         ("align", "center")],
+                         [f'<on event="a" run="port mcc share {action}"/>',
+                          f'<on event="start" run="port mcc share {action}"/>',
+                          '<on event="left_mouse" run="mouse emit accept event"/>'])
+    return lines
+
+
+def _mcc_downloads() -> list:
+    base = f"{PE}/network_setup/mcc_downloads"
+    lines = _widget(f"{base}/screen", [("type", "column_list"), ("width", 640), ("height", 480),
+                    ("bitmap", "bitmaps/gradient"),
+                    ("flags", "pass_unhandled_to_focused_child up_down_tabs_children")],
+                    ['<on event="created" run="port mcc downloads open"/>',
+                     '<on event="b" back="true"/>', '<on event="back" back="true"/>',
+                     '<data input="port mcc downloads update"/>',
+                     f'<child widget="{base}/description" x="40" y="80"/>',
+                     f'<child widget="{base}/previous" x="40" y="300"/>',
+                     f'<child widget="{base}/next" x="340" y="300"/>',
+                     f'<child widget="{base}/remove" x="195" y="340"/>',
+                     f'<child widget="{base}/back" x="195" y="390"/>',
+                     f'<child widget="{base}/title" x="40" y="24"/>'])
+    lines += _widget(f"{base}/title", [("type", "text"), ("width", 560), ("height", 40),
+                     ("text", "MCC DOWNLOADS"), ("font", "ui\\large_ui"), ("color", "#FF2896FF")], [])
+    lines += _widget(f"{base}/description", [("type", "text"), ("controller", 1),
+                     ("width", 560), ("height", 210), ("font", "ui\\small_ui"),
+                     ("color", "#FFFFFFFF")], ['<data input="port mcc downloads text"/>'])
+    for name, text in [("previous", "PREVIOUS"), ("next", "NEXT"), ("remove", "REMOVE SELECTED"), ("back", "BACK")]:
+        action = 'back="true"' if name == "back" else f'run="port mcc downloads {name}"'
+        # The parent supplies the removal/confirmation label. Static text would
+        # replace and shrink its owned buffer again in the renderer.
+        label = [] if name == "remove" else [("text", text)]
+        lines += _widget(f"{base}/{name}", [("type", "text"), ("width", 250), ("height", 32),
+                         *label, ("font", "ui\\large_ui"), ("color", "#FF2896FF"), ("align", "center")],
+                         [f'<on event="a" {action}/>', f'<on event="start" {action}/>',
+                          '<on event="left_mouse" run="mouse emit accept event"/>'])
     return lines

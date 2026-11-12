@@ -1529,3 +1529,21 @@ nothing to do at a frame's start */
 void host_memory_watch_begin_frame(void)
 {
 }
+
+/* MCC's tag window (port/linux/src/mcc_memory.c): Android's host holds it
+from before the Java runtime starts (port/android/host/host_mcc_memory.c);
+this guest maps it itself, as it does Custom Edition's tag cache, and never
+asks */
+long long host_mcc_memory_reserve(unsigned int address, unsigned int size)
+{
+	(void)address;
+	(void)size;
+	return -ENOSYS;
+}
+
+int host_mcc_memory_release(unsigned int address, unsigned int size)
+{
+	(void)address;
+	(void)size;
+	return -ENOSYS;
+}
