@@ -12,6 +12,7 @@ BOTS_NAV.C
 
 #include <math.h>
 #include <stdlib.h>
+#include <string.h>
 
 /* collision_surface's flags (collision_bsp.c's) */
 #define BOTS_NAV_TWO_SIDED_BIT 0
@@ -361,7 +362,11 @@ struct bots_nav_coarse *bots_nav_coarse_build(struct collision_bsp const *bsp, b
 	if (!bsp || count <= 0)
 		return NULL;
 	count = MIN(count, bsp->surfaces.count);
-	coarse = (struct bots_nav_coarse *)calloc(1, sizeof(*coarse));
+	/* (the game's malloc, which its free takes - cseries.h - not calloc, the
+	C library's, which the game's free asserts on) */
+	coarse = (struct bots_nav_coarse *)malloc(sizeof(*coarse));
+	if (coarse)
+		memset(coarse, 0, sizeof(*coarse));
 	hash_keys = (long *)malloc(BOTS_NAV_HASH_SIZE * sizeof(long));
 	hash_cells = (short *)malloc(BOTS_NAV_HASH_SIZE * sizeof(short));
 	if (coarse)
@@ -370,7 +375,9 @@ struct bots_nav_coarse *bots_nav_coarse_build(struct collision_bsp const *bsp, b
 		coarse->center = (real_point3d *)malloc(BOTS_NAV_MAXIMUM_CELLS * sizeof(real_point3d));
 		coarse->surface = (long *)malloc(BOTS_NAV_MAXIMUM_CELLS * sizeof(long));
 		coarse->links = (short *)malloc(BOTS_NAV_MAXIMUM_CELLS * BOTS_NAV_CELL_LINKS * sizeof(short));
-		coarse->link_count = (byte *)calloc(BOTS_NAV_MAXIMUM_CELLS, 1);
+		coarse->link_count = (byte *)malloc(BOTS_NAV_MAXIMUM_CELLS);
+		if (coarse->link_count)
+			memset(coarse->link_count, 0, BOTS_NAV_MAXIMUM_CELLS);
 		coarse->cell_of = (short *)malloc((size_t)count * sizeof(short));
 		coarse->cost = (real *)malloc(BOTS_NAV_MAXIMUM_CELLS * sizeof(real));
 		coarse->parent = (short *)malloc(BOTS_NAV_MAXIMUM_CELLS * sizeof(short));
