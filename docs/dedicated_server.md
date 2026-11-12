@@ -164,7 +164,7 @@ the game's console commands of those names.
 | `sv_masters`, `sv_publisher` | viewer | The master servers and how each answered; the publisher key's id and public key (never its seed) |
 | `say <text>` (`sv_say`) | moderator | A notice on every machine's screen |
 | `tell <player> <text>` | moderator | A notice on one player's machine |
-| `kick <player>` (`sv_kick`) | moderator | Drops the player's machine; it may join again (a bot: drops it, as `sv_bot_drop`) |
+| `kick <player>` (`sv_kick`) | moderator | Drops the player's machine; it may join again. A player still in the game whose machine has gone is taken out (a ban of one is refused: there is nothing to ban); a bot is dropped, as `sv_bot_drop` drops it |
 | `sv_bots` | viewer | The bots: each one's number, name, team, kind (`birchwood`, `provinggrounds`) and skill level (`default`: `bots.skill`'s) |
 | `sv_bot_add [<count>] [birchwood\|provinggrounds] [<level>\|default\|random\|normal[:<level>]] [red\|blue\|auto]` | admin | Adds bots, in the lobby or a game of Slayer, CTF, King of the Hill, Oddball or Race (Oddball and Race bots play as Proving Grounds, whatever the kind). The words come in any order: how many (1 to 63; as many as there is room for), their kind (`bots.kind`'s without one), their level (`recruit` to `legendary`; `default`, `bots.skill`'s), `random` (each any level) or `normal` (each about the level, a level's spread: a normal distribution; `bots.skill`'s level without one), their team in a team game (`auto`, the smaller one, by default). A server's bots are its owner's: `bots.count` adds none; they join each new lobby again as they were (their kind, level and team) until `sv_bot_drop` drops them, and sit out a game type bots do not play. In a server the server browser lists, a bot's name starts with `BOT-` (`BOT-Johnson`), and the listing's players and room count real players alone (the most less the bots) |
 | `sv_bot_drop <bot\|all>` | admin | Drops a bot (its number from `sv_bots`, or its name), or every bot |
@@ -233,7 +233,8 @@ these settings, which `sv_settings` and `GET /api/settings` list:
 `server.update_game_minutes`, `server.max_machines_per_address`,
 `server.afk_kick_minutes`, `server.afk_kick_when_full`,
 `server.afk_kick_full_minutes`, `server.coop_bsp_switch`,
-`server.coop_bsp_switch_cooldown_seconds`, `server.map_vote`,
+`server.coop_bsp_switch_cooldown_seconds`,
+`server.vehicle_riding_override_gametype`, `server.map_vote`,
 `server.map_vote_choices`, `server.map_vote_seconds`, and
 `network.text_chat`,
 `network.voice_lobby`, `network.voice_mode`, `network.voice_kbps`,
@@ -242,8 +243,8 @@ these settings, which `sv_settings` and `GET /api/settings` list:
 `network.votekick_ban_minutes`, `network.map_share`,
 `network.map_share_upload`, `network.public_address`,
 `network.coop_friendly_fire`, `network.coop_player_collisions`,
-`network.coop_ally_friendly_fire`, `network.coop_team_wipe`, `network.shield_effects` and
-`network.fire_origins`. Of them,
+`network.coop_ally_friendly_fire`, `network.coop_team_wipe`, `network.shield_effects`,
+`network.fire_origins` and `network.vehicle_riding`. Of them,
 `server.status_file`, `server.auto_update` and `server.log_addresses` need
 the owner role: from the web's admin, `sv_set` of one of them (`POST
 /api/command`) answers `403 forbidden`, and `PUT /api/settings` leaves it
@@ -292,6 +293,7 @@ in either case, and is kept as the table spells it:
 | `network.coop_friendly_fire` | `off`, `on`, `shields_only`, `explosives_only` |
 | `network.coop_team_wipe` | `auto`, `revert`, `respawn` (`auto`: a public server, `server.public` with internet play, only respawns the team) |
 | `network.shield_effects` | `stock`, `glow`, `light_show`, `overshield`, `glow_overshield`, `light_show_overshield`, `players` |
+| `network.vehicle_riding`, `server.vehicle_riding_override_gametype` | `true`, `false` (from the next map) |
 
 A dedicated server may also keep words out of its chat and its players'
 names (`server.chat_filter`, off by default): the words of streamer mode's
@@ -356,6 +358,25 @@ held. After a switch the zones wait `server.coop_bsp_switch_cooldown_seconds`
 (15) before another, the players told when they open; each switch is told
 to everyone, logged and a `coop_bsp_switch` event names who crossed.
 
+### Vehicle riding
+
+`network.vehicle_riding` is the base setting. In multiplayer the
+gametype's `vehicle_riding` rule ("Gametype files", below) overrides it:
+a gametype without the rule is off, whatever the base says. In co-op a
+rotation entry's own `riding` rule overrides it.
+`server.vehicle_riding_override_gametype = true` turns the gametype's
+override off, so multiplayer uses the base setting.
+Both settings default to `false`; changes through `sv_set` or the web
+page count from the next map. A map's own choice still wins.
+
+For example (a co-op entry's own rule and a map's choice still win):
+
+| `network.vehicle_riding` | `server.vehicle_riding_override_gametype` | Riding |
+| --- | --- | --- |
+| `true` | `false` | On in co-op; multiplayer follows each gametype |
+| `false` | `true` | Off in multiplayer (unless a map turns it on) |
+| `true` | `true` | On in co-op and multiplayer (unless a map turns it off) |
+
 ### Updates
 
 `server.auto_update` is `install` by default (the Docker image's, `check`:
@@ -387,7 +408,8 @@ once, and joins. `server.vpn_policy`, live:
 | `off` | joins |
 
 The server fetches the netlist of each master it publishes to (the masters
-of `server.masters_file`) every hour, keeps the newest of each on disk
+of `server.masters_file`, or every built-in official master when it names
+none) every hour, keeps the newest of each on disk
 (`netlist-<master key id>.bin` beside `bans.txt`) and checks the union of
 them. Until it holds one, `server.vpn_fail` decides: `open` (the default)
 lets every machine in, `closed` refuses those from the internet as
@@ -823,6 +845,10 @@ a rotation that long is saved whole and read back after a restart.
   value it takes; a rule of another game engine than the gametype's is
   refused. 48 rules at most; a rule given twice is the last.
 
+A co-op entry's `riding` rule (`a10:coop+riding=true` or `=false`)
+overrides `network.vehicle_riding` for that entry only. An entry without
+it uses the setting; a map's own choice still wins over both.
+
 An entry that cannot be played (a map that is not there, a bad gametype
 file, a rule out of range) is left out with a warning, at the start and at
 `sv_reload`; `sv_rotation_set` and `PUT /api/rotation` change nothing when
@@ -877,6 +903,12 @@ A gametype a player's game saved is played with `file=<name>`: copy the
 saved gametype, as `<name>.gametype`, into the same `gametypes` folder
 (beside `config.toml` if there is one, else the data root's).
 
+`vehicle_riding` under `[universal]` is a boolean: `true` lets players
+standing on a moving vehicle ride along with it; no rule means off.
+Stock gametypes and older saved ones have it off. In rotation entries its
+short name is `riding` (`bloodgulch:ctf+riding=true`). The dedicated
+override and a map's own choice take precedence ("Vehicle riding", above).
+
 ## The listing
 
 A public server (`server.public`, with `network.online` and
@@ -901,7 +933,7 @@ lists;
 | `gametypes/<name>.toml` | Gametype files: the `gametypes` folder beside `config.toml` if there is one, else the data root's |
 | `gametypes/<name>.gametype` | Gametypes saved by a player's game (`file=<name>` in the rotation): the same `gametypes` folder |
 | `publisher.key` | The publisher key for the master servers (beside `config.toml`). On Windows, a server's `config.toml` and `publisher.key` are given an access list of their owner alone (the entries inherited for Administrators and SYSTEM taken out) |
-| `masters.txt` | The master servers (`server.masters_file`: beside `config.toml`, else beside the executable); one that names none leaves the official master, built in |
+| `masters.txt` | The master servers (`server.masters_file`: beside `config.toml`, else beside the executable); one that names none leaves the official masters, built in: the server publishes to each, checks addresses against all their netlists and takes passes any of them signed (`docs/master_protocol.md`) |
 | `bans.txt`, `cheaters.txt`, `debug.txt` | In `paths.logs`, else the data root |
 | `vpn_allow.txt`, `vpn_block.txt`, `netlist-<master key id>.bin` | Beside `bans.txt`: ranges never refused as a VPN's, ranges refused besides, and the masters' netlists held ("VPNs and linked Discord accounts") |
 | `status.json` (`server.status_file`) | The status, written every 2 seconds |

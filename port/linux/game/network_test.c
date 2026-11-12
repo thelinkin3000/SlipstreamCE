@@ -79,7 +79,6 @@ Called from the main loop every frame (main.c).
 #include "scenario/scenario.h"
 #include "tag_files/tag_files.h"
 #include "camera/observer.h"
-#include "mcc_cache.h"
 #include "hs/hs.h"
 
 #include "../src/p2p.h" /* port: port/linux/src/p2p.c, p2p_lobby.c */
@@ -170,7 +169,6 @@ static struct
 	short chat_lines_said;
 	long score_to_win;
 	long logged_time;
-	long sample_time;
 	boolean public_game;
 	boolean browsing;
 	boolean browse_listed;
@@ -1172,22 +1170,10 @@ void network_test_update(
 	}
 	if (game_in_progress() && !main_menu_loaded)
 		network_test_run_cues();
-	/* Observe the first frame in each absolute simulation second. A late join
-	 * must not permanently offset the sample cadence; report the actual tick,
-	 * never backfill missed states. Scripted actions retain their old cadence. */
-	if (game_in_progress() && !main_menu_loaded)
-	{
-		if (game_time_get() < network_test.sample_time)
-			network_test.sample_time = 0;
-		if (game_time_get() / TICKS_PER_SECOND > network_test.sample_time / TICKS_PER_SECOND)
-		{
-			network_test.sample_time = game_time_get();
-			network_test_log_players();
-		}
-	}
 	if (game_in_progress() && !main_menu_loaded && game_time_get() - network_test.logged_time >= TICKS_PER_SECOND)
 	{
 		network_test.logged_time = game_time_get();
+		network_test_log_players();
 		if (network_test.shoot_interval > 0.0f &&
 			game_time_get() % MAX(1, (long)(network_test.shoot_interval * TICKS_PER_SECOND)) < TICKS_PER_SECOND)
 		{
@@ -1505,9 +1491,7 @@ void network_test_update(
 		}
 	}
 
-	/* The real menu waits for profile enumeration before accepting input.
-	Starting a lobby sooner can block its join on the profile mutex. */
-	if (!main_menu_loaded || filesystem_check_thread_is_active())
+	if (!main_menu_loaded)
 		return;
 	/* the intro movie skipped first, as a button press does: the movie
 	holds the texture cache's spare memory, which starting the map
@@ -1636,12 +1620,8 @@ void network_test_update(
 				{
 					/* (the Map screen's co-op: menu_functions.c) */
 					extern boolean ui_widget_port_cooperative_level_choose(char const *map_name, short difficulty);
-					extern boolean ui_widget_port_mcc_cooperative_level_choose(char const *map_name, short difficulty);
 
-					/* Exercise the same independent MCC route as its campaign menu. */
-					if (!(mcc_level_name(path) ?
-						ui_widget_port_mcc_cooperative_level_choose(path, _game_difficulty_level_normal) :
-						ui_widget_port_cooperative_level_choose(path, _game_difficulty_level_normal)))
+					if (!ui_widget_port_cooperative_level_choose(path, _game_difficulty_level_normal))
 						platform_log("network test: %s is not a campaign level, for co-op", path);
 					platform_log("network test: game %d, co-op", network_test.variant_index + 1);
 				}

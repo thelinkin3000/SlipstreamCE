@@ -94,7 +94,9 @@
             android:screenOrientation="sensorLandscape"
             android:configChanges="orientation|screenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode" />
 
-        <activity android:name=".MccImportActivity" android:exported="true"
+        <!-- the launcher's static shortcut (res/xml/mcc_shortcuts.xml) starts it
+             as this app, so other apps need not reach it -->
+        <activity android:name=".MccImportActivity" android:exported="false"
             android:launchMode="singleTask" android:label="@string/mcc_import_label"
             android:configChanges="orientation|screenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode" />
 

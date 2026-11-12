@@ -780,6 +780,33 @@ static void custom_edition_maps_tell_versions_apart(
 	}
 }
 
+/* port: Halo PC's own multiplayer maps come right after the Xbox's, in the
+order of the menus' names (stock_maps), then the rest as sorted */
+static void custom_edition_maps_stock_first(
+	struct custom_edition_maps_globals *globals)
+{
+	static struct custom_edition_map held;
+	short target = 0;
+	short stock_index;
+	short map_index;
+
+	for (stock_index = 0; stock_index < (short)NUMBEROF(stock_maps); stock_index++)
+	{
+		for (map_index = target; map_index < globals->map_count; map_index++)
+		{
+			if (!csstrcasecmp(globals->maps[map_index].name, stock_maps[stock_index].file))
+			{
+				held = globals->maps[map_index];
+				csmemmove(&globals->maps[target + 1], &globals->maps[target],
+					(map_index - target) * sizeof(held));
+				globals->maps[target] = held;
+				target++;
+				break;
+			}
+		}
+	}
+}
+
 /* port: the names in a maps folder, and with `inside` in its folders (one
 level of them, as the scan reads them), as one number: what a list opening
 asks to tell whether the scan it would make again would find anything new.
@@ -884,6 +911,7 @@ static void custom_edition_maps_look_for_into(
 	qsort(globals->campaigns, globals->campaign_count, sizeof(globals->campaigns[0]), custom_edition_map_compare);
 	custom_edition_maps_tell_versions_apart(globals->maps, globals->map_count);
 	custom_edition_maps_tell_versions_apart(globals->campaigns, globals->campaign_count);
+	custom_edition_maps_stock_first(globals);
 	error(_error_silent, "custom edition: %d multiplayer maps for the level list, %d campaign maps (%lu ms)",
 		globals->map_count, globals->campaign_count, GetTickCount() - started);
 
@@ -1480,10 +1508,12 @@ struct bitmap_data *custom_edition_maps_picture(
 {
 	struct custom_edition_map *map;
 	short level = campaign_level_get(*frame_index);
+	/* port: a tag with no name (the name is compared below) is not the pictures */
+	char const *name = bitmap_tag_index != NONE ? tag_get_name(bitmap_tag_index) : NULL;
 
 	if (level != NONE &&
-		bitmap_tag_index != NONE &&
-		!csstrcasecmp(tag_get_name(bitmap_tag_index), LEVEL_PICTURES_TAG_NAME))
+		name &&
+		!csstrcasecmp(name, LEVEL_PICTURES_TAG_NAME))
 	{
 		long pictures = tag_loaded('bitm', CAMPAIGN_LEVEL_PICTURES_TAG_NAME);
 
@@ -1491,8 +1521,8 @@ struct bitmap_data *custom_edition_maps_picture(
 		return pictures != NONE ? bitmap_group_get_bitmap_from_sequence(pictures, 0, level) : NULL;
 	}
 	if (*frame_index < FIRST_DISPLAY_INDEX ||
-		bitmap_tag_index == NONE ||
-		csstrcasecmp(tag_get_name(bitmap_tag_index), LEVEL_PICTURES_TAG_NAME))
+		!name ||
+		csstrcasecmp(name, LEVEL_PICTURES_TAG_NAME))
 	{
 		return NULL;
 	}

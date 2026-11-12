@@ -512,9 +512,7 @@ def latest_tick(path):
 # the copies running
 RUNNING = []
 # the signals the tool stops on, and the one that stopped it
-# Log parsing/judging is also used by Windows runners; the launcher below
-# still uses POSIX process groups. Windows has no SIGHUP.
-STOP_SIGNALS = (signal.SIGINT, signal.SIGTERM) + ((signal.SIGHUP,) if hasattr(signal, "SIGHUP") else ())
+STOP_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
 stopping = None
 
 

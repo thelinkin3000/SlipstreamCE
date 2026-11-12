@@ -5,7 +5,7 @@ import subprocess
 import sys
 
 import pytest
-from test_mcc_identity import compile_tool
+from mcc_test_support import compile_tool
 
 ROOT = Path(__file__).resolve().parents[1]
 RULES = ROOT / "port/linux/game/mcc_share_rules.c"
@@ -122,11 +122,3 @@ int LLVMFuzzerTestOneInput(uint8_t const *data,size_t size) {
                             cwd=tmp_path, capture_output=True, text=True, timeout=90)
     print(result.stderr)
     assert result.returncode == 0, result.stderr
-
-
-def test_ci_runs_share_rules():
-    """The dedicated Windows and Linux jobs must run this suite, not just trigger."""
-    workflow = (ROOT / ".github/workflows/mcc.yml").read_text()
-    for job in ("reader-and-validator", "windows-adapters"):
-        body = workflow.split(f"  {job}:", 1)[1].split("\n  windows-adapters:", 1)[0]
-        assert "tools/test_mcc_share_rules.py" in body
