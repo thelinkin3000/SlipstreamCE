@@ -38,6 +38,7 @@ NEGATIVE_CONTROLS = {
     "taste-ignored": ("\t\tscore += 1.0f;\n\tif (disliked", "\t\tscore += 0.0f;\n\tif (disliked", "weapon-classes"),
     "close-enemy-ignored": ("scores[_pgbots_goal_fight] = 10.0f;", "scores[_pgbots_goal_fight] += 0.0f;", "goals"),
     "no-commitment": ("\t\t\tscore += 0.2f;\n", "\t\t\tscore += 0.0f;\n", "goals"),
+    "camouflage-ignored": ("score = 1.05f - input->powerup_distance / 80.0f;", "score += 0.0f;", "goals"),
     "posture-backwards": ("0.5f - 1.5f * lead", "0.5f + 1.5f * lead", "posture"),
     "reverse-no-hysteresis": ("magnitude < 60.0f * DEGREES || input->reverse_seconds",
                               "magnitude < 100.0f * DEGREES || input->reverse_seconds", "drive"),

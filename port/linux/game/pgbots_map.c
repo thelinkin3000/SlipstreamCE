@@ -768,7 +768,7 @@ boolean pgbots_map_cover(struct pgbots_bot *bot, real_point3d const *position, r
 	cover->x += (real)cos(away) * MIN(12.0f, reach * 2.0f);
 	cover->y += (real)sin(away) * MIN(12.0f, reach * 2.0f);
 	*surface = pgbots_ground(cover, cover);
-	return *surface != NONE && reach >= 6.0f;
+	return *surface != NONE;
 }
 
 boolean pgbots_map_overlook(real_point3d const *point, long which, real_point3d *overlook, long *surface)

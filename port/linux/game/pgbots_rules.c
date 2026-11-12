@@ -583,6 +583,13 @@ void pgbots_rules_goal_scores(struct pgbots_goal_input const *input, struct pgbo
 		}
 		if (input->powerup_overshield)
 			score += 0.3f * (posture - 0.5f);
+		/* (camouflage and the overshield near: worth a detour at any level,
+		before a hunt or a loose order) */
+		if ((input->powerup_camouflage || input->powerup_overshield) && input->powerup_distance < 20.0f &&
+			score < 1.05f - input->powerup_distance / 80.0f)
+		{
+			score = 1.05f - input->powerup_distance / 80.0f;
+		}
 		scores[_pgbots_goal_powerup] = score;
 	}
 	if (input->dry)
@@ -606,7 +613,7 @@ void pgbots_rules_goal_scores(struct pgbots_goal_input const *input, struct pgbo
 			scores[_pgbots_goal_retreat] = retreat;
 	}
 	if (input->stalemate && input->target_distance > 6.0f && scores[_pgbots_goal_fight] > 0.0f)
-		scores[_pgbots_goal_fight] *= 0.25f;
+		scores[_pgbots_goal_fight] *= 0.5f;
 	if (input->target_visible && input->target_distance < 8.0f)
 		scores[_pgbots_goal_fight] = 10.0f;
 	if (input->race)
@@ -682,7 +689,7 @@ float pgbots_rules_cracked(float posture)
 
 float pgbots_rules_retreat_range(float tactics)
 {
-	return 6.0f * (0.5f + 0.5f * tactics);
+	return 8.0f + 6.0f * tactics;
 }
 
 float pgbots_rules_grenade_opener(float grenades, float tactics)

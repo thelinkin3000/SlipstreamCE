@@ -9187,6 +9187,11 @@ long bots_common_current_weapon(long unit_index)
 	return bots_current_weapon(unit_get(unit_index));
 }
 
+real bots_common_weapon_range(long weapon_index)
+{
+	return bots_weapon_range(weapon_index);
+}
+
 boolean bots_common_weapon_empty(long weapon_index)
 {
 	return bots_weapon_empty(weapon_index);

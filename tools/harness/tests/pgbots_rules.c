@@ -438,7 +438,7 @@ int main(int argc, char **argv)
 		in.outnumbered = 0;
 		in.stalemate = 1;
 		pgbots_rules_goal_scores(&in, &rusher, _pgbots_personality_rusher, scores);
-		CHECK(NEAR(scores[_pgbots_goal_fight], (1.5f + 0.4f * 0.9f) * 0.25f), "no stalemate breaker");
+		CHECK(NEAR(scores[_pgbots_goal_fight], (1.5f + 0.4f * 0.9f) * 0.5f), "no stalemate breaker");
 		in.stalemate = 0;
 		in.race = 1;
 		pgbots_rules_goal_scores(&in, &rusher, _pgbots_personality_rusher, scores);
@@ -463,6 +463,23 @@ int main(int argc, char **argv)
 		in.hurt = 0.2f;
 		pgbots_rules_goal_scores(&in, &rusher, _pgbots_personality_rusher, scores);
 		CHECK(scores[_pgbots_goal_health] < 0.0f, "a health pack for a scratch");
+		/* (camouflage near: before a hunt, at the lowest level too) */
+		{
+			struct pgbots_profile recruit = profile_of(_bots_skill_easy, _pgbots_personality_rusher);
+
+			memset(&in, 0, sizeof(in));
+			in.posture = 0.5f;
+			in.health_distance = -1.0f;
+			in.hunt_belief = 1;
+			in.hunt_distance = 10.0f;
+			in.powerup_distance = 8.0f;
+			in.powerup_value = 0.7f;
+			in.powerup_camouflage = 1;
+			pgbots_rules_goal_scores(&in, &recruit, _pgbots_personality_rusher, scores);
+			CHECK(NEAR(scores[_pgbots_goal_powerup], 1.05f - 8.0f / 80.0f), "camouflage near is not worth a detour");
+			CHECK(pgbots_rules_goal_pick(scores, _pgbots_goal_roam, zero) == _pgbots_goal_powerup,
+				"a fresh hunt before camouflage 8 units away");
+		}
 		return 0;
 	}
 
@@ -472,7 +489,7 @@ int main(int argc, char **argv)
 
 		CHECK(NEAR(pgbots_rules_cracked(0.5f), 0.25f) && NEAR(pgbots_rules_cracked(0.0f), 0.45f) &&
 			NEAR(pgbots_rules_cracked(1.0f), 0.05f), "the cracked shield by posture");
-		CHECK(NEAR(pgbots_rules_retreat_range(0.0f), 3.0f) && NEAR(pgbots_rules_retreat_range(1.0f), 6.0f), "the retreat's reach");
+		CHECK(NEAR(pgbots_rules_retreat_range(0.0f), 8.0f) && NEAR(pgbots_rules_retreat_range(1.0f), 14.0f), "the retreat's reach");
 		CHECK(NEAR(pgbots_rules_grenade_opener(0.5f, 0.0f), 0.4f) && pgbots_rules_grenade_opener(0.95f, 1.0f) == 1.0f,
 			"the opener's chance");
 		pgbots_rules_keep_range(10.0f, 0.5f, 0.5f, &near, &far);

@@ -1233,7 +1233,9 @@ boolean pgbots_aim_and_fire(struct pgbots_bot *bot, struct player_datum *player,
 	fire.loose_early = hands->loose_early;
 	fire.distance = distance;
 	fire.weapon_class = info->weapon_class;
-	fire.band_high = info->high > 0.5f ? info->high : 6.0f;
+	/* (fired at whatever distance it sees the target, as Birchwood's bots
+	fire: the class's band chooses the weapon, not whether it fires) */
+	fire.band_high = 1000.0f;
 	fire.blast_radius = info->blast;
 	if (now >= bot->next_deterrent_tick && now - bot->hit_tick < SECONDS(0.5f))
 	{
@@ -1682,7 +1684,8 @@ static void pgbots_items(struct pgbots_bot *bot, real_point3d const *position, l
 			}
 			continue;
 		}
-		if (distance < reach)
+		/* (camouflage and the overshield looked for within 20 u at least) */
+		if (distance < (kind == 2 || kind == 3 ? MAX(reach, 20.0f) : reach))
 		{
 			real value = pgbots_map_item_power(object_index);
 			real score = value - distance / 120.0f;
@@ -1951,8 +1954,8 @@ static void pgbots_decide(struct pgbots_bot *bot, struct player_datum *player, s
 	input.vehicle = vehicle_score;
 	input.outnumbered = pgbots_outnumbered(bot, player, position, now);
 	input.just_hit = now - bot->hit_tick < SECONDS(1.0f);
-	input.stalemate = input.target_visible && now - bot->fight_start_tick > SECONDS(6.0f) &&
-		now - bot->hit_tick > SECONDS(6.0f) && now - bot->last_damage_dealt_tick > SECONDS(6.0f);
+	input.stalemate = input.target_visible && now - bot->fight_start_tick > SECONDS(10.0f) &&
+		now - bot->hit_tick > SECONDS(10.0f) && now - bot->last_damage_dealt_tick > SECONDS(10.0f);
 	input.race = game_engine_get_variant()->game_engine_index == game_engine_race;
 	for (goal = 0; goal < NUMBER_OF_PGBOTS_GOALS; goal++)
 	{
@@ -2266,10 +2269,10 @@ static void pgbots_fight_moves(struct pgbots_bot *bot, struct player_datum *play
 			bot->pause_until_tick = now + pgbots_random_ticks(bot, 0.2f, 0.4f);
 	}
 	side = now < bot->pause_until_tick ? 0.0f : bot->strafe_sign;
-	/* the range: within 0.6-1.0 of the band's high end (aggression nearer,
-	caution further) */
-	pgbots_rules_keep_range(info && info->high > 0.5f ? info->high : 6.0f, bot->profile.traits[_pgbots_trait_aggression],
-		bot->profile.traits[_pgbots_trait_caution], &near, &far);
+	/* the range: Birchwood's distance for the weapon, kept between 0.8 and
+	1.3 of it (aggression nearer, caution further) */
+	pgbots_rules_keep_range(1.3f * bots_common_weapon_range(bots_common_current_weapon(bot->unit_index)),
+		bot->profile.traits[_pgbots_trait_aggression], bot->profile.traits[_pgbots_trait_caution], &near, &far);
 	if (distance > far)
 		forward = 1.0f;
 	else if (distance < near && (!info || info->weapon_class != _pgbots_class_close))

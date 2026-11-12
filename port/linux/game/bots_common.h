@@ -115,6 +115,9 @@ short bots_common_seat_kind(long vehicle_index, short seat_index);
 long bots_common_current_weapon(long unit_index);
 boolean bots_common_weapon_empty(long weapon_index);
 real bots_common_weapon_loaded(long weapon_index);
+/* the distance Birchwood's bots keep from an enemy with the weapon (NONE:
+none held) */
+real bots_common_weapon_range(long weapon_index);
 /* the weapon's projectile speed, world units a tick (0: hits at once) */
 real bots_common_projectile_speed(long weapon_index);
 
