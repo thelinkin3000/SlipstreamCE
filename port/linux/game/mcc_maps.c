@@ -235,12 +235,14 @@ static void mcc_maps_campaign_metadata(void)
 static void mcc_maps_menu_metadata(void)
 {
 	/* (both families' for the call alone, from the heap: 0.8 MB the guest
-	images have no room for as static data) */
-	struct mcc_menu_metadata *metadata = calloc(2, sizeof(*metadata));
+	images have no room for as static data; the game's malloc, which its free
+	takes - cseries.h - not calloc, the C library's, which it asserts on) */
+	struct mcc_menu_metadata *metadata = malloc(2 * sizeof(*metadata));
 	char previous[64] = "", package[64], root[1024];
 	boolean loaded[2] = { FALSE, FALSE };
 	short index;
 	if (!metadata) return;
+	memset(metadata, 0, 2 * sizeof(*metadata));
 	for (index = 0; index < mcc_menu_catalog.count; index++)
 	{
 		struct mcc_menu_map *map = &mcc_menu_catalog.maps[index];
