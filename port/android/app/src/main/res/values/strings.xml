@@ -1,5 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- app_name: build.gradle, by which app this is -->
-    <string name="mcc_import_label">Import MCC maps</string>
 </resources>

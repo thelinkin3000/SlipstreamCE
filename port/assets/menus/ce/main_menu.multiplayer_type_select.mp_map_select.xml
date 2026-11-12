@@ -43,6 +43,7 @@
 		<on event="b" run="port map list back"/>
 		<on event="back" run="port map list back"/>
 		<on event="x" run="port map delete"/>
+		<on event="y" run="port map import"/>
 		<data input="mp map list update"/>
 		<child widget="main_menu/new_select/list_item_0_map_kind" x="82" y="73"/>
 		<child widget="main_menu/new_select/list_item_1" x="20" y="103"/>

@@ -372,6 +372,8 @@ static char const *const port_function_names[] =
 	"port mcc solo folder back", "port mcc host folder back",
 	"port mcc share download", "port mcc share workshop", "port mcc share cancel", "port mcc share closed",
 	"port mcc downloads open", "port mcc downloads previous", "port mcc downloads next", "port mcc downloads remove",
+	"port mcc import replace", "port mcc import keep", "port mcc import closed",
+	"port map import page closed",
 	"port pause end game", "port coop friendly fire",
 	"port coop begin", "port coop player 2 list initialize", "port coop player 2",
 	"port lobby open", "port lobby add player", "port lobby join", "port lobby leave",
@@ -458,6 +460,10 @@ static char const *const port_game_data_input_names[] =
 	"port mods update",
 	"port mcc share update", "port mcc share text",
 	"port mcc downloads update", "port mcc downloads text",
+	/* (the map lists' IMPORT's question: port/linux/src/mcc_import.c) */
+	"port mcc import update", "port mcc import text",
+	/* (the consoles' IMPORT's upload page: map_import_page.c) */
+	"port map import page update", "port map import page text",
 	/* (network co-op's pause menu's FRIENDLY FIRE: its text, ON or OFF) */
 	"port coop friendly fire text",
 	/* (the gametype editor's description, with OPENCE OPTIONS' row) */

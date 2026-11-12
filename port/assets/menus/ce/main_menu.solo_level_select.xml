@@ -46,6 +46,7 @@
 		<on event="deleted" run="dispose sp level list"/>
 		<on event="custom_activation" run="solo level set map" open="main_menu/difficulty_select/difficulty_select_list_screen"/>
 		<on event="x" run="port map delete"/>
+		<on event="y" run="port map import"/>
 		<on event="b" run="port mcc solo folder back"/>
 		<on event="back" run="port mcc solo folder back"/>
 		<data input="solo map list update"/>

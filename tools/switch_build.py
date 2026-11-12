@@ -699,6 +699,8 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
         TOML_DIR / "tomlc17.c",
         # a replay's records in the host's memory, as Android's and the PS5's
         ANDROID_PORT_DIR / "host" / "host_replay.c",
+        # the map lists' IMPORT, as Android's and the PS5's, and its JSON reader
+        ANDROID_PORT_DIR / "host" / "host_mcc_import.c", LINUX_DIR / "src" / "server_json.c",
     ]
     # the port's zlib (inflate only, its names z_), for the high-res HUD's
     # PNGs, which the host decodes as a map loads (host_dk_hud.c)
@@ -738,7 +740,8 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
             cflags = " ".join([host_cflags, f"-I{ZLIB_DIR}", *ZLIB_DEFINES])
         if source in upnp_sources:
             cflags = upnp_cflags + (" -w" if source.name != "posix_upnp.c" else "")
-        if source.name == "host_dk_hud.c":
+        # (the port's zlib: the high-res HUD's PNGs, and the map lists' IMPORT's .zip files)
+        if source.name in ("host_dk_hud.c", "host_mcc_import.c"):
             cflags = f"{host_cflags} -I{ZLIB_DIR}"
         n.build(outputs=obj, rule="switch_host_cc", inputs=source, variables={"cflags": cflags},
                 implicit=[syscall_h])

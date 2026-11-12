@@ -17,57 +17,47 @@ Physical mice use the same control bindings. During play, F12 toggles mouse
 capture; captured mode hides Android's pointer and uses relative movement for
 continuous aiming, while releasing capture restores normal pointer behavior.
 
-## Importing MCC packages
+## Importing maps
 
-Quit the game, then long-press its launcher icon and choose **Import MCC maps**.
-The first-run game-data screen also has an import button. Copy a complete Halo 1
-Workshop package from your computer to a selectable folder (for example Downloads)
-or a ZIP on the phone. Select **Workshop package**, then **Choose folder** or
-**Choose ZIP**. Keep `ModInfo.json`, `CampaignInfo.json`, the mission JSON files
-and maps together. Steam is not needed on Android.
+The map lists' **IMPORT** (New Game's and the Map screen's button, or the north
+face button on either list) takes Custom Edition maps and MCC content alike.
+On Android it opens the system's file picker, which copies the files chosen
+into the import folder (`import`, in the game's data folder). The Switch and
+the PS5 have no file picker: there IMPORT opens a screen with an upload page's
+address and QR code, served by the game on the local network while the screen
+is up (`port/linux/game/map_import_page.c`).
 
-Keep the supplied PNG previews too, including `assets` when present. Folder
-and ZIP imports preserve these images and their relative metadata paths.
-MCC level panels automatically use `Images.Large`, falling back to
-`Images.Thumbnail` or the question-mark picture. The image fits inside the
-existing thumbnail box in each menu style. Supported PNGs are 8-bit RGB/RGBA,
-non-interlaced, at most 2048 by 2048 pixels and 8 MiB per file; other encodings
-keep the placeholder. See [MCC previews](../../docs/reading/mcc_level_previews.md).
+The game's host takes in what lands there (`port/android/host/host_mcc_import.c`, on a
+thread of its own, its files read natively):
 
-The importer defaults to the Workshop ID as its destination folder; an optional
-name can use letters, digits, spaces, underscores and hyphens. It checks package
-paths, metadata, campaign completeness and MCC cache headers before offering
-installation. It copies the package's maps into `mcc_maps/<package>`, retaining
-metadata subfolders and writing `workshop_id.txt`. Folder and ZIP inputs share
-the same importer. Android document URIs are read as streams through the system
-picker, with no broad storage permission.
+- a `.map`: a Custom Edition map, into `custom_maps`. An MCC map is refused on
+  its own: import its package's `.zip`.
+- a `.zip` of Custom Edition maps: its maps, and a `.txt` of a map's name, its
+  description; more than one map goes in a folder named like the `.zip`.
+- a `.zip` with MCC content, which is told apart by its files: a Halo 1 Workshop
+  package (a `ModInfo.json`; several in one `.zip` are several packages) goes to
+  `mcc_maps/<Workshop ID>`, with its JSON metadata and PNG previews; MCC's own
+  resource sets, zipped from an MCC installation so that their `halo1/maps`
+  folders are kept (`halo1/maps/bitmaps.map` for singleplayer,
+  `halo1/maps/custom_edition/bitmaps.map` and `sounds.map` for multiplayer), go
+  to `mcc_maps/_shared/singleplayer` or `multiplayer`; MCC maps with no
+  `ModInfo.json` become a package named like the `.zip`.
 
-Use the shared-resource modes separately: singleplayer requires `bitmaps.map`;
-multiplayer requires `bitmaps.map` and `sounds.map`. Select one resource set at a
-time. These are installed under `mcc_maps/_shared/singleplayer` or `multiplayer`.
-The engine performs its normal full map/resource validation when loading; an
-importer's header check does not establish full gameplay compatibility.
+Every package is checked and staged (in `mcc_staging`) before anything is
+installed: its maps' headers and names, and a campaign's metadata as the game
+reads it (hub and flashback missions are refused). Then, for each package
+already in `mcc_maps`, the game asks: **REPLACE** it, or **KEEP VERSION ON
+DISK** (B). A replacement keeps the old package until the new one is in place,
+and an import cut short is put right by the next. A Custom Edition map of a
+name already there is kept. The game says what was imported, and why anything
+was not (a toast on Android; the screen and the upload page on the consoles).
 
-An existing destination requires explicit replacement confirmation. New files
-are staged outside `mcc_maps`; a failed publish restores the old package. An
-interrupted replacement is recovered at the next import. Cancellation removes
-staged files, and installed Xbox/CE maps and game saves are preserved. Imports
-are serialized and the activity refuses to import while the game process runs.
-Limits are 4,096 files, 16 GiB total, less than 2 GiB per map, 256 KiB per JSON
-file and 64 declared campaign missions. Hub/flashback mission kinds are refused.
-
-Start the game after importing. Enable **CAMPAIGN MISSIONS** in Settings >
-Network Setup > Map Sharing > MCC Packages for mission ordering and progression;
-it is off by default. **COLLECTION FOLDERS** can group identified imported
-packages without Steam. See [MCC packages](../../docs/mcc_maps.md) for desktop
-discovery, resource rules and compatibility limits.
-
-The archived [Android importer test](https://github.com/chestahh/GulchCE/blob/1db929c5e34101a45f644436e031016b5584c7bf/tools/test_mcc_android_importer.py)
-compiles and runs the actual Java core with
-JDK 17+, including failure rollback, cancellation, malformed metadata, path
-traversal and legacy/save preservation. These checks do not exercise an Android
-document provider or establish on-device rendering compatibility. This wider
-test is not included in the focused upstream regression subset.
+Limits: 4,096 files and 16 GB a `.zip`, less than 2 GB a map, 256 KB a JSON file,
+64 campaign missions. Enable **CAMPAIGN MISSIONS** in Settings > Network Setup >
+Map Sharing > MCC Packages for mission ordering and progression; it is off by
+default. See [MCC packages](../../docs/mcc_maps.md) for resource rules and
+compatibility limits. `tools/test_mcc_import.py` runs the importer natively over
+`.map` and `.zip` files made for it.
 
 ## Requirements
 

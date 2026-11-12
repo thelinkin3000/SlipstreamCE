@@ -1072,7 +1072,7 @@ def _setting_screen(folder: str, spec: dict) -> list:
     for index, (label, category_folder, _, *category_platform) in enumerate(spec.get("categories", ())):
         key = category_folder.rsplit("/", 1)[-1]
         row = f"{base}/op_{key}"
-        target = f"{PE}/{category_folder}/{SCREENS[category_folder]['screen']}"
+        target = f"{PE}/{category_folder}/{(SCREENS.get(category_folder) or CUSTOM_SCREENS[category_folder])['screen']}"
         platform = category_platform[0] if category_platform else None
         if spec.get("platform_places"):
             members = platform.split() if platform else list(places)
@@ -1327,6 +1327,8 @@ def settings_files() -> dict:
             lines += _layout_overlays()
         files[f"{PE}/{folder}".replace("/", ".") + ".xml"] = lines
     files[f"{PE}/network_setup/mcc_download".replace("/", ".") + ".xml"] = _mcc_download()
+    files[f"{PE}/network_setup/mcc_import".replace("/", ".") + ".xml"] = _mcc_import()
+    files[f"{PE}/network_setup/map_import_page".replace("/", ".") + ".xml"] = _map_import_page()
     files[f"{PE}/controls_setup".replace("/", ".") + ".xml"] = _controls_screen()
     return {name: ['<?xml version="1.0" encoding="UTF-8"?>',
                    "<!-- The port's settings screen, in the PC version's style (tools/port_settings.py) -->",
@@ -1516,9 +1518,11 @@ STRING_OVERRIDES.update({
 # CUSTOM MULTIPLAYER maps (_map_kind)
 MAP_KIND_CHOOSER = "main_menu/new_select/list_item_0_map_kind"
 # the map lists' IMPORT (Android's: New Game's and the Map screen's button
-# bars, left of OK): the app's file picker, which copies .map files, and the
-# maps in .zip files, into custom_maps (menu_functions.c's map_import_start,
-# HaloActivity.importMaps)
+# bars, left of OK; the lists' north face button on every platform): on
+# Android the app's file picker, which copies the files chosen into the import
+# inbox (HaloActivity.importMaps); on the consoles the upload page's screen
+# (_map_import_page). The game takes the inbox's files in
+# (port/android/host/host_mcc_import.c: menu_functions.c's map_import_start)
 MAP_IMPORT = "main_menu/new_select/button_map_import"
 # the map lists' DELETE (Android's, left of IMPORT; the west face button on the
 # list too, which the other platforms pass over): the custom map or the folder
@@ -1684,8 +1688,9 @@ WIDGET_PATCHES = {
         f'<on event="custom_activation" run="mp level select" open="{MT}/connected/gametype_select_screen_wrapper"/>',
         '<on event="b" run="port map list back"/>',
         '<on event="back" run="port map list back"/>',
-        # (the west face button: DELETE's, MAP_DELETE)
+        # (the west face button: DELETE's, MAP_DELETE; the north: IMPORT's, MAP_IMPORT, the consoles' way to it)
         '<on event="x" run="port map delete"/>',
+        '<on event="y" run="port map import"/>',
     ]},
     "main_menu/solo_level_select/solo_level_select_list": {"swap": {"main_menu/new_select/list_item_0": MAP_KIND_CHOOSER},
                                                            "handlers": [
@@ -1693,6 +1698,7 @@ WIDGET_PATCHES = {
         '<on event="deleted" run="dispose sp level list"/>',
         '<on event="custom_activation" run="solo level set map" open="main_menu/difficulty_select/difficulty_select_list_screen"/>',
         '<on event="x" run="port map delete"/>',
+        '<on event="y" run="port map import"/>',
         '<on event="b" run="port mcc solo folder back"/>',
         '<on event="back" run="port mcc solo folder back"/>',
     ]},
@@ -3948,6 +3954,74 @@ def _mcc_download() -> list:
                          [f'<on event="a" run="port mcc share {action}"/>',
                           f'<on event="start" run="port mcc share {action}"/>',
                           '<on event="left_mouse" run="mouse emit accept event"/>'])
+    return lines
+
+
+def _mcc_import() -> list:
+    """the map lists' IMPORT's own screen (port/android/host/host_mcc_import.c), opened when a package being imported is on
+    disk already: REPLACE it, or KEEP VERSION ON DISK (B too); it stays up while the packages install, and then
+    says what was imported, with OK"""
+    base = f"{PE}/network_setup/mcc_import"
+    lines = _widget(f"{base}/screen", [("type", "column_list"), ("width", 640), ("height", 480),
+                    ("bitmap", "bitmaps/gradient"),
+                    ("flags", "pass_unhandled_to_focused_child up_down_tabs_children")],
+                    ['<on event="b" run="port mcc import keep"/>',
+                     '<on event="back" run="port mcc import keep"/>',
+                     '<on event="deleted" run="port mcc import closed"/>',
+                     '<data input="port mcc import update"/>',
+                     f'<child widget="{base}/description" x="40" y="80"/>',
+                     f'<child widget="{base}/replace" x="150" y="340"/>',
+                     f'<child widget="{base}/keep" x="150" y="380"/>',
+                     f'<child widget="{base}/title" x="40" y="24"/>'])
+    lines += _widget(f"{base}/title", [("type", "text"), ("width", 560), ("height", 40),
+                     ("text", "IMPORT"), ("font", "ui\\large_ui"), ("color", "#FF2896FF")], [])
+    lines += _widget(f"{base}/description", [("type", "text"), ("controller", 1),
+                     ("width", 560), ("height", 240), ("font", "ui\\small_ui"),
+                     ("color", "#FFFFFFFF")], ['<data input="port mcc import text"/>'])
+    # (their labels are the screen's to set: KEEP VERSION ON DISK becomes OK once it is done)
+    for name, action in [("replace", "replace"), ("keep", "keep")]:
+        lines += _widget(f"{base}/{name}", [("type", "text"), ("width", 340), ("height", 32),
+                         ("font", "ui\\large_ui"), ("color", "#FF2896FF"), ("align", "center")],
+                         [f'<on event="a" run="port mcc import {action}"/>',
+                          f'<on event="start" run="port mcc import {action}"/>',
+                          '<on event="left_mouse" run="mouse emit accept event"/>'])
+    return lines
+
+
+# the screens of a category that are no settings screen (_setting_screen),
+# made by a function of their own
+# sign-in, the hub, MCC's shared files, the Halo 1 Workshop's items), a row
+# each with its name and state; on the right, in the lobby's frame, the row
+# chosen's details and, while signing in, the QR code to scan, else the
+def _map_import_page() -> list:
+    """the consoles' IMPORT (map_import_page.c): the upload page's address and QR code, what to upload there, and how
+    the import is going; B closes it"""
+    base = f"{PE}/network_setup/map_import_page"
+    lines = _widget(f"{base}/screen", [("type", "column_list"), ("width", 640), ("height", 480),
+                    ("bitmap", "bitmaps/gradient"),
+                    ("flags", "pass_unhandled_to_focused_child up_down_tabs_children")],
+                    ['<on event="b" back="true"/>', '<on event="back" back="true"/>',
+                     '<on event="deleted" run="port map import page closed"/>',
+                     '<data input="port map import page update"/>',
+                     f'<child widget="{base}/back" x="195" y="430"/>',
+                     f'<child widget="{base}/description" x="40" y="70"/>',
+                     f'<child widget="{base}/map_import_qr_text"/>',
+                     f'<child widget="{base}/title" x="40" y="24"/>'])
+    lines += _widget(f"{base}/title", [("type", "text"), ("width", 560), ("height", 40),
+                     ("text", "IMPORT MAPS"), ("font", "ui\\large_ui"), ("color", "#FF2896FF")], [])
+    lines += _widget(f"{base}/description", [("type", "text"), ("controller", 1),
+                     ("width", 560), ("height", 170), ("font", "ui\\small_ui"),
+                     ("color", "#FFFFFFFF"), ("text_flags", "no_focus_test")],
+                     ['<data input="port map import page text"/>'])
+    # (its QR code drawn above it, from y 252 to 378: menu_functions_text_box_drawn)
+    lines += _widget(f"{base}/map_import_qr_text",
+                     [("type", "text"), ("controller", 1), ("left", 125), ("top", 392), ("width", 390), ("height", 18),
+                      ("text", "Scan it to upload maps."), ("font", "ui\\small_ui"),
+                      ("color", "#FFFFFFFF"), ("align", "center"), ("text_flags", "no_focus_test")], [])
+    lines += _widget(f"{base}/back", [("type", "text"), ("width", 250), ("height", 32), ("text", "BACK"),
+                     ("font", "ui\\large_ui"), ("color", "#FF2896FF"), ("align", "center")],
+                     ['<on event="a" back="true"/>', '<on event="start" back="true"/>',
+                      '<on event="left_mouse" run="mouse emit accept event"/>'])
     return lines
 
 

@@ -230,5 +230,14 @@ many */
 unsigned int host_replay_store_read(unsigned int offset, unsigned int destination, unsigned int size);
 /* the kept replay let go */
 void host_replay_store_free(void);
+/* the map lists' IMPORT, done by the host (port/android/host/host_mcc_import.c, which
+says what each does; the guest's wrappers are port/linux/src/mcc_import.c's) */
+int host_mcc_import_start(unsigned int root, unsigned int custom_maps);
+int host_mcc_import_state(void);
+void host_mcc_import_progress(unsigned int text, unsigned int size);
+int host_mcc_import_question(unsigned int title, unsigned int title_size, unsigned int destination,
+	unsigned int destination_size);
+void host_mcc_import_answer(int question, int replace);
+int host_mcc_import_finish(unsigned int report, unsigned int size);
 
 #endif

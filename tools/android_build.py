@@ -915,6 +915,8 @@ def generate_android_build(n: Writer, sln: Any) -> None:
         LINUX_DIR / "src" / "posix_files.c", LINUX_DIR / "src" / "posix_net.c",
         LINUX_DIR / "src" / "posix_mcc_preview.c",
         LINUX_DIR / "src" / "posix_mcc_share.c",
+        # the map lists' IMPORT's JSON reader (host_mcc_import.c)
+        LINUX_DIR / "src" / "server_json.c",
         # the app reads debug.sample_seconds from config.toml (host_main.c)
         TOML_DIR / "tomlc17.c",
     ]

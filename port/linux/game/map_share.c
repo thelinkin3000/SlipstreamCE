@@ -3526,6 +3526,8 @@ void map_share_handle_message(
 
 /* ---------- every frame */
 
+void map_import_update(void);
+
 void map_share_update(
 	void)
 {
@@ -3536,6 +3538,8 @@ void map_share_update(
 
 	/* (MCC package sharing, a map of mcc_maps: mcc_share.c, whatever the Custom Edition maps do) */
 	mcc_share_game_update();
+	/* (the map lists' IMPORT: menu_functions.c, mcc_import.c) */
+	map_import_update();
 	map_share_files_update();
 	/* (internet play: a player that shares answers the others, who reach it
 	by its key hash) */

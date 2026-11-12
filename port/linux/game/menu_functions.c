@@ -115,6 +115,7 @@ their handlers open opens.
 #include "../src/player_link.h" /* port: port/linux/src/player_link.c */
 #include "../src/server_master.h"
 #include "../src/server_json.h"
+#include "../src/mcc_import.h" /* port: port/linux/src/mcc_import.c */
 #include "../src/server_rotation.h" /* port: Host Server's maps and rotations */
 #include "server_director.h" /* port: Host Server (server_director.c, server_status.c) */
 #include "server_gametypes.h"
@@ -1515,7 +1516,30 @@ static struct
 	boolean importing;
 	long maps;
 	unsigned long looked;
+	/* when the import inbox was last looked at (mcc_import.c) */
+	unsigned long inbox_looked;
+	/* the import's screen (tools/port_settings.py's _mcc_import), up while
+	a package on disk is asked about and until its report is read; the
+	question shown, and the last answered */
+	struct widget_instance *screen;
+	int question, answered;
+	char title[96], destination[64];
+	/* the import's report, once it is done (shown on the screen, with OK) */
+	boolean done;
+	char report[MCC_IMPORT_TEXT_SIZE];
+	/* raised each time mcc_maps changed: an MCC list that sees a new one
+	opens its folder again */
+	long mcc_generation;
+	/* the consoles' upload page's screen (_map_import_page), while it is up */
+	struct widget_instance *page_screen;
 } map_import;
+
+#define MAP_IMPORT_PAGE_SCREEN \
+	"pc\\main_menu\\settings_select\\player_setup\\player_profile_edit\\network_setup\\map_import_page\\screen"
+/* map_import_page.c's */
+void map_import_page_wanted(void);
+void map_import_page_update(void);
+char const *map_import_page_address(void);
 
 #if defined(HALO_ANDROID) && !defined(HALO_SWITCH)
 /* the .map files of a folder, and with `inside`, those of its folders too
@@ -1579,11 +1603,25 @@ imported would never be seen, so the player is told why instead) */
 			"debug.txt and halo.log say why.", 1, -1, 0, 0);
 		return TRUE;
 	}
-	platform_translate_path(CUSTOM_EDITION_MAP_DIRECTORY, folder, sizeof(folder));
+	/* (the files chosen copied into the import inbox, and taken in from
+	there by mcc_import.c: map_import_update) */
+	if (!mcc_import_inbox(folder, sizeof(folder)))
+	{
+		SDL_ShowAndroidToast("The import folder can't be made.", 1, -1, 0, 0);
+		return TRUE;
+	}
 	map_import.importing = TRUE;
 	map_import.maps = map_import_count();
 	map_import.looked = system_milliseconds();
 	host_android_import_maps(folder);
+	return TRUE;
+#elif defined(HALO_SWITCH) || defined(HALO_PS5)
+	/* (the upload page's screen: map_import_page.c serves it while it is up) */
+	map_import.importing = TRUE;
+	map_import.maps = map_import_count();
+	map_import.looked = system_milliseconds();
+	if (!map_import.page_screen)
+		map_import.page_screen = ui_widget_load_by_name_or_tag(MAP_IMPORT_PAGE_SCREEN, NONE, NULL, 0, NONE, NONE, NONE);
 	return TRUE;
 #else
 	return FALSE;
@@ -1609,6 +1647,212 @@ static boolean map_import_look(void)
 	map_browse_forget();
 	platform_log("maps: custom_maps has %ld maps now", maps);
 	return TRUE;
+}
+
+#define MAP_IMPORT_SCREEN \
+	"pc\\main_menu\\settings_select\\player_setup\\player_profile_edit\\network_setup\\mcc_import\\screen"
+/* how often the import inbox is looked at while maps are awaited, and else */
+#define MAP_IMPORT_INBOX_MILLISECONDS 500
+#define MAP_IMPORT_IDLE_MILLISECONDS 5000
+
+/* the report of an import whose screen was never up: a toast on Android
+(as the import's own were), else the import's screen, with OK */
+static void map_import_tell(void)
+{
+#if defined(HALO_ANDROID) && !defined(HALO_SWITCH)
+	SDL_ShowAndroidToast(map_import.report, 1, -1, 0, 0);
+	map_import.done = FALSE;
+#endif
+}
+
+/* every frame (map_share_update): the inbox's files taken in once they
+come (mcc_import.c), the import's screen opened when it asks about a
+package on disk, and its report taken when it is done (the lists' MCC
+maps scanned again, and Custom Edition's) */
+void map_import_update(void)
+{
+	enum mcc_import_state state = mcc_import_state();
+	unsigned long now = system_milliseconds();
+
+	map_import_page_update();
+	if (state == MCC_IMPORT_IDLE)
+	{
+		char folder[1024];
+
+		/* (looked at less often when no IMPORT is awaited: files a copy or an
+		upload finished after its list or its screen closed) */
+		if (now - map_import.inbox_looked < (map_import.importing ? MAP_IMPORT_INBOX_MILLISECONDS : MAP_IMPORT_IDLE_MILLISECONDS))
+			return;
+		map_import.inbox_looked = now;
+		if (!mcc_import_inbox_ready())
+			return;
+		platform_translate_path(CUSTOM_EDITION_MAP_DIRECTORY, folder, sizeof(folder));
+		if (mcc_import_start(folder))
+			platform_log("maps: importing what the import folder has");
+		return;
+	}
+	if (state == MCC_IMPORT_DONE)
+	{
+		int mcc_changed, maps_changed;
+
+		mcc_import_finish(map_import.report, sizeof(map_import.report), &mcc_changed, &maps_changed);
+		if (mcc_changed)
+		{
+			mcc_maps_rescan();
+			map_import.mcc_generation++;
+		}
+		if (maps_changed)
+		{
+			custom_edition_maps_look_again();
+			map_browse_forget();
+		}
+		map_import.done = TRUE;
+		/* (the upload page's screen says it, and the page) */
+		if (map_import.page_screen)
+			map_import.done = FALSE;
+		else if (!map_import.screen)
+			map_import_tell();
+	}
+	/* (its screen: while it asks, and for a report no toast gave) */
+	if (!map_import.screen && main_menu_is_active() &&
+		(state == MCC_IMPORT_ASKING || (map_import.done && state == MCC_IMPORT_IDLE && !map_import.page_screen)))
+	{
+		map_import.screen = ui_widget_load_by_name_or_tag(MAP_IMPORT_SCREEN, NONE, NULL, 0, NONE, NONE, NONE);
+	}
+}
+
+/* how the import is going, for the upload page (GET /status) and its screen: what it is doing, the package it asks
+about, or what the last one imported */
+void map_import_status(char *text, unsigned long size)
+{
+	enum mcc_import_state state = mcc_import_state();
+
+	if (state == MCC_IMPORT_ASKING)
+	{
+		char title[96], destination[64];
+
+		mcc_import_question(title, sizeof(title), destination, sizeof(destination));
+		snprintf(text, size, "%s is already installed: replace it, or keep the version on disk? (on the console)", title);
+	}
+	else if (state == MCC_IMPORT_WORKING)
+	{
+		char progress[256];
+
+		mcc_import_progress(progress, sizeof(progress));
+		snprintf(text, size, "%s...", progress[0] ? progress : "Importing");
+	}
+	else
+		snprintf(text, size, "%s", map_import.report);
+}
+
+/* "port map import page text": where to upload, and how the import is going */
+static void map_import_page_text(struct widget_instance *widget)
+{
+	char ascii[MCC_IMPORT_TEXT_SIZE + 512], status[MCC_IMPORT_TEXT_SIZE];
+	wchar_t text[1024];
+	size_t index;
+
+	map_import_status(status, sizeof(status));
+	if (map_import_page_address()[0])
+		snprintf(ascii, sizeof(ascii), "On a phone or a computer on this network, open %s and upload Custom Edition "
+			"maps (.map files, or .zip files of them) or MCC packages (.zip files).\n\n%s", map_import_page_address(), status);
+	else
+		snprintf(ascii, sizeof(ascii), "The upload page needs the console on a network (and Direct Link's page on: "
+			"network.link_page).\n\n%s", status);
+	for (index = 0; index + 1 < NUMBEROF(text) && ascii[index]; index++)
+		text[index] = (wchar_t)(unsigned char)ascii[index];
+	text[index] = 0;
+	text_set_length(widget, text, NUMBEROF(text));
+}
+
+/* ascii's text, as the screen's (lines kept) */
+static void map_import_wide(char const *ascii, wchar_t *text, size_t size)
+{
+	size_t index;
+
+	for (index = 0; index + 1 < size && ascii[index]; index++)
+		text[index] = (wchar_t)(unsigned char)ascii[index];
+	text[index] = 0;
+}
+
+/* "port mcc import text": the question, what it is doing, or the report */
+static void map_import_text(struct widget_instance *widget)
+{
+	char ascii[MCC_IMPORT_TEXT_SIZE + 256];
+	wchar_t text[1024];
+	enum mcc_import_state state = mcc_import_state();
+
+	if (map_import.done)
+		snprintf(ascii, sizeof(ascii), "%s", map_import.report);
+	else if (state == MCC_IMPORT_ASKING)
+	{
+		map_import.question = mcc_import_question(map_import.title, sizeof(map_import.title),
+			map_import.destination, sizeof(map_import.destination));
+		if (map_import.question == map_import.answered)
+			snprintf(ascii, sizeof(ascii), "Importing...");
+		else
+			snprintf(ascii, sizeof(ascii), "%s is already installed (mcc_maps/%s).\n\n"
+				"Replace it with the one being imported, or keep the version on disk?",
+				map_import.title, map_import.destination);
+	}
+	else
+	{
+		char progress[256];
+
+		mcc_import_progress(progress, sizeof(progress));
+		snprintf(ascii, sizeof(ascii), "%s...", progress[0] ? progress : "Importing");
+	}
+	map_import_wide(ascii, text, NUMBEROF(text));
+	text_set_length(widget, text, NUMBEROF(text));
+}
+
+/* "port mcc import update": its buttons, REPLACE and KEEP VERSION ON DISK
+while it asks, OK once it is done, none meanwhile */
+static void map_import_screen_update(struct widget_instance *screen)
+{
+	struct widget_instance *replace = named(screen, "replace", 0), *keep = named(screen, "keep", 0);
+	boolean asking = !map_import.done && mcc_import_state() == MCC_IMPORT_ASKING &&
+		map_import.question != map_import.answered;
+
+	map_import.screen = screen;
+	if (replace)
+	{
+		replace->visible = asking;
+		text_set(replace, L"REPLACE");
+	}
+	if (keep)
+	{
+		keep->visible = asking || map_import.done;
+		text_set(keep, map_import.done ? L"OK" : L"KEEP VERSION ON DISK");
+	}
+	/* (the focus on a button shown: KEEP, the safe one, unless REPLACE was chosen) */
+	if (screen->parameters.list.selected_index != 1 || !asking)
+		screen->parameters.list.selected_index = 2;
+}
+
+/* "port mcc import replace" and "port mcc import keep" (B too): the
+answer, or (OK) the report read; TRUE when the screen went */
+static boolean map_import_choice(boolean replace)
+{
+	if (map_import.done)
+	{
+		if (replace)
+			return FALSE;
+		map_import.done = FALSE;
+		if (map_import.screen)
+		{
+			ui_widget_delete(map_import.screen);
+			map_import.screen = NULL;
+			return TRUE;
+		}
+		return FALSE;
+	}
+	if (mcc_import_state() == MCC_IMPORT_ASKING && map_import.question != map_import.answered)
+	{
+		mcc_import_answer(map_import.question, replace);
+		map_import.answered = map_import.question;
+	}
+	return FALSE;
 }
 
 /* a list's first entry shown and the one chosen kept to count entries,
@@ -2177,6 +2421,15 @@ static void level_list_update(struct widget_instance *list)
 	}
 	if (map_kind_mcc(kind))
 	{
+		static long seen_generation;
+
+		/* (mcc_maps changed by an import: its folder opened again) */
+		if (seen_generation != map_import.mcc_generation)
+		{
+			seen_generation = map_import.mcc_generation;
+			mcc_map_browser_open(&mcc_solo_browsers[mcc_solo_list.campaign], mcc_solo_list.campaign);
+			map_import_clamp(&mcc_solo_list.first, &mcc_solo_list.chosen, mcc_solo_browsers[mcc_solo_list.campaign].count);
+		}
 		mcc_solo_list_update(list);
 		return;
 	}
@@ -5632,6 +5885,15 @@ static void map_list_update(struct widget_instance *list)
 	}
 	if (map_kind_mcc(kind))
 	{
+		static long seen_generation;
+
+		/* (mcc_maps changed by an import: its folder opened again) */
+		if (seen_generation != map_import.mcc_generation)
+		{
+			seen_generation = map_import.mcc_generation;
+			mcc_map_browser_open(&mcc_host_browsers[mcc_host_list.campaign], mcc_host_list.campaign);
+			map_import_clamp(&mcc_host_list.first, &mcc_host_list.chosen, mcc_host_browsers[mcc_host_list.campaign].count);
+		}
 		mcc_host_list_update(list);
 		return;
 	}
@@ -9063,6 +9325,8 @@ enum
 	_link_qr_invite,
 	/* (the Theater's, of its replay page's address: network_replay_page.c) */
 	_link_qr_replays,
+	/* (the consoles' IMPORT's, of its upload page's address: map_import_page.c) */
+	_link_qr_maps,
 	NUMBER_OF_LINK_QRS
 };
 
@@ -9648,6 +9912,14 @@ void menu_functions_text_box_drawn(struct widget_instance *widget, rectangle2d c
 		real scale = (real)(bounds->x1 - bounds->x0) / 390.0f;
 
 		link_qr_draw_at(_link_qr_replays, network_replay_page_address(), (short)(bounds->x0 + 195 * scale),
+			(short)(bounds->y0 - (392 - (258 + 388) / 2) * scale), (short)(126 * scale));
+	}
+	/* (the consoles' IMPORT's upload page, over its line, as the Theater's) */
+	if (widget->name && !strcmp(widget->name, "map_import_qr_text"))
+	{
+		real scale = (real)(bounds->x1 - bounds->x0) / 390.0f;
+
+		link_qr_draw_at(_link_qr_maps, map_import_page_address(), (short)(bounds->x0 + 195 * scale),
 			(short)(bounds->y0 - (392 - (258 + 388) / 2) * scale), (short)(126 * scale));
 	}
 #endif
@@ -13081,6 +13353,18 @@ boolean pc_menu_event_function_invoke(
 		}
         else if (!strcmp(name,"port mcc share closed"))
             mcc_share_game_prompt_closed();
+        else if (!strcmp(name,"port mcc import replace") || !strcmp(name,"port mcc import keep"))
+        {
+            if (map_import_choice(!strcmp(name,"port mcc import replace")))
+            {
+                *widget_deleted=TRUE;
+                return TRUE;
+            }
+        }
+        else if (!strcmp(name,"port mcc import closed"))
+            map_import.screen=NULL;
+        else if (!strcmp(name,"port map import page closed"))
+            map_import.page_screen=NULL;
         else if (!strcmp(name,"port mcc downloads open")) mcc_share_menu_open();
         else if (!strcmp(name,"port mcc downloads previous")) mcc_share_menu_step(-1);
         else if (!strcmp(name,"port mcc downloads next")) mcc_share_menu_step(1);
@@ -13443,6 +13727,18 @@ void pc_menu_game_data_function_invoke(
         mcc_share_game_prompt_text(text);
         text_set_length(widget,text,512);
     }
+    else if (!strcmp(name,"port mcc import text"))
+        map_import_text(widget);
+    else if (!strcmp(name,"port mcc import update"))
+        map_import_screen_update(widget);
+    else if (!strcmp(name,"port map import page update"))
+    {
+        map_import.page_screen=widget;
+        map_import.importing=TRUE;
+        map_import_page_wanted();
+    }
+    else if (!strcmp(name,"port map import page text"))
+        map_import_page_text(widget);
     else if (!strcmp(name,"port mcc downloads text")) {
         wchar_t text[512];
         mcc_share_menu_text(text);

@@ -95,9 +95,9 @@ TOMLC17_DIR = Path("port/third_party/tomlc17")
 # (port/ps5/PS5.md, phase 2); the rest are replaced by port/ps5/host's
 # (and the server browser's requests to the master servers, host_https.c, on
 # posix_update.c's HTTPS as Android's; and a replay's records in the host's
-# memory, host_replay.c)
+# memory, host_replay.c; and the map lists' IMPORT, host_mcc_import.c)
 SHARED_HOST_FILES = ("host_arch.c", "host_common.c", "host_loader.c", "host_thread.c", "host_watch_hash.c",
-                     "host_https.c", "host_replay.c")
+                     "host_https.c", "host_replay.c", "host_mcc_import.c")
 # and the Vulkan renderer's host half (port/ps5/PS5.md, phase 4), less
 # host_vk_driver.c (port/ps5/host/host_vk_driver_ps5.c is the console's) and
 # the probe, host_vk_probe.c
@@ -701,6 +701,8 @@ def _generate(n: Writer, sln: Any, config_path: Path) -> None:
     host_sources = [*sorted((root / PORT_DIR / "host").glob("*.c")),
                     *(root / ANDROID_DIR / "host" / name for name in SHARED_HOST_FILES + SHARED_RENDERER_FILES),
                     *(root / LINUX_DIR / "src" / name for name in POSIX_FILES), root / TOMLC17_DIR / "tomlc17.c",
+                    # (the map lists' IMPORT's JSON reader: host_mcc_import.c)
+                    root / LINUX_DIR / "src" / "server_json.c",
                     guest["host_table_c"], import_stubs]
     for source in host_sources:
         obj = obj_dir / (source.name + ".o")
