@@ -274,6 +274,8 @@ struct pgbots_bot
 	long path_tick;
 	real_point3d path_goal;
 	boolean path_reached;
+	/* (its end a waypoint of a long drive's, the goal further on) */
+	boolean path_waypoint;
 	short path_failures;
 	boolean detour_rolled;
 	boolean detouring;
@@ -295,6 +297,8 @@ struct pgbots_bot
 	long portal_climb_tick;
 	long portal_top_tick;
 	long portal_jump_tick;
+	/* (the last tick its walk on foot looked at it) */
+	long portal_walk_tick;
 	boolean portal_near;
 
 	/* stuck: where it was and when, the tries, the move to unstick */

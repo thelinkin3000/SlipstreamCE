@@ -664,6 +664,12 @@ long bots_team_crew_call(long player_index, short *seat_index)
 		{
 			if (crew_call->crew[seat] == player_index)
 			{
+				/* (a vehicle gone since the calls were last looked at: no call) */
+				if (!object_try_and_get_and_verify_type(crew_call->vehicle_index, _object_mask_vehicle))
+				{
+					crew_call->vehicle_index = NONE;
+					return NONE;
+				}
 				*seat_index = crew_call->seats[seat];
 				return crew_call->vehicle_index;
 			}

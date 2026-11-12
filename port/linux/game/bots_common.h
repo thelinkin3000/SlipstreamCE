@@ -136,8 +136,10 @@ slot asked (NONE: none free, ask again later) */
 long bots_common_search_ask(long requester, long unit_index, real radius, long target_object_index,
 	real_point3d const *start, long start_surface_index, real_point3d const *goal, long goal_surface_index);
 /* the answer: 0 not yet, 1 a path (*reached: to the goal itself, not as near
-as it came), -1 none; the slot is free again once answered */
-long bots_common_search_take(long slot, long requester, struct path_result *path, boolean *reached);
+as it came; *waypoint: to a waypoint of a long drive's on the way to the
+goal, the next search from its end), -1 none; the slot is free again once
+answered */
+long bots_common_search_take(long slot, long requester, struct path_result *path, boolean *reached, boolean *waypoint);
 void bots_common_search_drop(long slot);
 
 /* the action, as a player's: the facing, the throttle from where it walks

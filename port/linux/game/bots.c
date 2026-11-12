@@ -1031,6 +1031,7 @@ attackers walked on fighting (bots_squad_*) */
 	{
 		boolean forward_found;
 		unsigned long forward_generation;
+		long forward_serial;
 		real_point3d forward;
 		long forward_surface_index;
 		long push_until_tick;
@@ -1123,6 +1124,9 @@ static struct
 	boolean vehicle_coarse_dirty;
 	long vehicle_coarse_tick;
 	long coarse_waypoints;
+	/* port: (the times the bipeds' was built: the squads' forward line found
+	again on each) */
+	long coarse_serial;
 } bots_paths;
 
 /* the helper thread */
@@ -2438,6 +2442,7 @@ static void bots_paths_components_refresh(void)
 	bots_nav_coarse_free(bots_paths.coarse);
 	bots_paths.coarse = bots_nav_coarse_build(bsp, bots_paths.walkable, bots_paths.structure.pathfinding_surfaces.count,
 		BOTS_PATHFINDING_WALKABLE_BIT);
+	bots_paths.coarse_serial++;
 	bots_paths.components_dirty = FALSE;
 	bots_paths.components_tick = game_time_get();
 }
@@ -2461,8 +2466,11 @@ static boolean bots_paths_copy(void)
 	bots_paths.vehicle_walkable = (byte *)malloc((size_t)count);
 	if (!bots_paths.walkable || !bots_paths.vehicle_walkable)
 	{
-		free(bots_paths.walkable);
-		free(bots_paths.vehicle_walkable);
+		/* (the game's free asserts on NULL: debug_memory.c) */
+		if (bots_paths.walkable)
+			free(bots_paths.walkable);
+		if (bots_paths.vehicle_walkable)
+			free(bots_paths.vehicle_walkable);
 		bots_paths.walkable = bots_paths.vehicle_walkable = NULL;
 		return FALSE;
 	}
@@ -2487,6 +2495,7 @@ static boolean bots_paths_copy(void)
 			BOTS_PATHFINDING_WALKABLE_BIT);
 		bots_nav_coarse_free(bots_paths.coarse);
 		bots_paths.coarse = bots_nav_coarse_build(bsp, bots_paths.walkable, count, BOTS_PATHFINDING_WALKABLE_BIT);
+		bots_paths.coarse_serial++;
 		bots_paths.vehicle_coarse_dirty = FALSE;
 		bots_paths.vehicle_coarse_tick = game_time_get();
 		bots_paths.prepare_us = bots_time_us() - started;
@@ -3550,7 +3559,9 @@ static long bots_portal_route(long start_surface_index, real_point3d const *star
 		if (bots_globals.teleporters[index].ladder)
 		{
 			portals[index].exit_surface_index = bots_globals.teleporters[index].landing_surface_index;
-			portals[index].usable = bots_globals.teleporters[index].failures < 3 || bots_globals.teleporters[index].climbs > 0;
+			/* (three failures more than three times its climbs: left out) */
+			portals[index].usable = bots_globals.teleporters[index].failures <
+				3 * (bots_globals.teleporters[index].climbs + 1);
 		}
 		else
 		{
@@ -5373,16 +5384,24 @@ static void bots_squad_update(void)
 
 		if (!bots_globals.ctf.present[team] || !bots_globals.ctf.present[1 - team])
 			continue;
+		/* (found again when the bipeds' coarse map is built again: the ground
+		closed under walls since - bots_paths_scan - joined rooms the way
+		between the stands does not go through) */
 		if (!bots_globals.squads[team].forward_found ||
-			bots_globals.squads[team].forward_generation != bots_map_generation)
+			bots_globals.squads[team].forward_generation != bots_map_generation ||
+			bots_globals.squads[team].forward_serial != bots_paths.coarse_serial)
 		{
 			real_point3d ground_home, ground_theirs, middle;
 			long home_surface = bots_surface_below(&bots_globals.ctf.home[team], &ground_home);
 			long their_surface = bots_surface_below(&bots_globals.ctf.home[1 - team], &ground_theirs);
 			real length = 0.0f;
+			boolean first = !bots_globals.squads[team].forward_found ||
+				bots_globals.squads[team].forward_generation != bots_map_generation;
+			real_point3d before = bots_globals.squads[team].forward;
 
 			bots_globals.squads[team].forward_found = TRUE;
 			bots_globals.squads[team].forward_generation = bots_map_generation;
+			bots_globals.squads[team].forward_serial = bots_paths.coarse_serial;
 			bots_globals.squads[team].forward = bots_globals.ctf.home[team];
 			bots_globals.squads[team].forward_surface_index = home_surface;
 			if (home_surface != NONE && their_surface != NONE && bots_paths.coarse &&
@@ -5402,9 +5421,12 @@ static void bots_squad_update(void)
 					bots_globals.squads[team].forward_surface_index = index;
 				}
 			}
-			platform_log("bots: team %ld's forward line at (%.1f %.1f %.1f), the way between the stands %.0f units", team,
-				bots_globals.squads[team].forward.x, bots_globals.squads[team].forward.y,
-				bots_globals.squads[team].forward.z, (double)length);
+			if (first || bots_distance3d(&before, &bots_globals.squads[team].forward) > 2.0f)
+			{
+				platform_log("bots: team %ld's forward line at (%.1f %.1f %.1f), the way between the stands %.0f units", team,
+					bots_globals.squads[team].forward.x, bots_globals.squads[team].forward.y,
+					bots_globals.squads[team].forward.z, (double)length);
+			}
 		}
 		if (bots_squad_pushing(team))
 			continue;
@@ -5414,7 +5436,9 @@ static void bots_squad_update(void)
 			if (player->team_index == 1 - team)
 			{
 				enemies++;
-				if (player->unit_index == NONE)
+				/* (dead: died and yet to spawn again, not one yet to spawn
+				at all - everyone as the game starts) */
+				if (player->unit_index == NONE && player->dead_unit_index != NONE)
 					dead++;
 			}
 		}
@@ -7311,8 +7335,10 @@ static void bots_bot_weapons(struct bots_bot *bot, struct bots_tick *tick)
 	}
 	/* (a charge held while the aim strays off the target, let go for a
 	target lost a while or another weapon in hand) */
-	if (bot->charge_tick && (tick->now - bot->charge_tick > TICKS_PER_SECOND * 2 || tick->weapon_index == NONE ||
-		bots_weapon_charge_seconds(tick->weapon_index) <= 0.0f || tick->object->object.parent_object_index != NONE))
+	if (bot->charge_tick && (tick->weapon_index == NONE || bots_weapon_charge_seconds(tick->weapon_index) <= 0.0f ||
+		tick->object->object.parent_object_index != NONE ||
+		tick->now - bot->charge_tick > MAX(TICKS_PER_SECOND * 2,
+			(long)(bots_weapon_charge_seconds(tick->weapon_index) * TICKS_PER_SECOND) + TICKS_PER_SECOND / 2)))
 	{
 		bot->charge_tick = 0;
 	}
@@ -7479,11 +7505,14 @@ static void bots_vehicle_consider(struct bots_bot *bot, struct bots_tick *tick)
 	/* port: called to a Warthog's crew (bots_team.h: a teammate in its
 	driver's seat, the bot near, seeing it and free): whatever it was doing,
 	to the seat; a passenger's only on a long way of its own */
-	if (bots_vehicles_enabled() && !tick->fighting)
+	if (!tick->fighting)
 	{
 		short seat_index;
 		long called = bots_team_crew_call(bot->player_index, &seat_index);
 
+		/* (the setting looked at for a called bot alone: a configuration lookup) */
+		if (called != NONE && !bots_vehicles_enabled())
+			called = NONE;
 		if (called != NONE && bots_seat_kind(called, seat_index) == _bots_seat_passenger &&
 			(bot->goal_kind == _bots_goal_none || bots_distance2d(&bot->goal_point, &tick->position) < 25.0f))
 		{
@@ -9356,7 +9385,7 @@ long bots_common_search_ask(long requester, long unit_index, real radius, long t
 	return (long)(search - bots_globals.search_slots);
 }
 
-long bots_common_search_take(long slot, long requester, struct path_result *path, boolean *reached)
+long bots_common_search_take(long slot, long requester, struct path_result *path, boolean *reached, boolean *waypoint)
 {
 	struct bots_search *search;
 	struct path_state *state;
@@ -9373,6 +9402,7 @@ long bots_common_search_take(long slot, long requester, struct path_result *path
 	state = &search->state_memory;
 	*reached = search->found && state->node_count > 0 &&
 		path_node_from_hash_table(state, search->goal_surface_index) != NONE;
+	*waypoint = search->waypoint;
 	csmemset(path, 0, sizeof(*path));
 	if (search->found && state->node_count > 0)
 	{

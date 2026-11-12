@@ -1476,6 +1476,18 @@ static boolean pgbots_portal_walk(struct pgbots_bot *bot, long unit_index, real_
 	return TRUE;
 }
 
+/* the way through a ladder or teleporter let go (dead, in a vehicle, a
+tick with no walk on foot): no climb goes on, none counted failed */
+static void pgbots_portal_forget(struct pgbots_bot *bot)
+{
+	bot->portal_index = NONE;
+	bot->portal_climb_tick = 0;
+	bot->portal_top_tick = 0;
+	bot->portal_jump_tick = 0;
+	bot->portal_near = FALSE;
+	bot->portal_route_tick = game_time_get() - SECONDS(2.0f);
+}
+
 boolean pgbots_walk(struct pgbots_bot *bot, long unit_index, real_point3d const *position, real_point3d const *goal,
 	long goal_surface, real radius, long search_unit, long target_object, real reached, real *direction)
 {
@@ -1487,6 +1499,11 @@ boolean pgbots_walk(struct pgbots_bot *bot, long unit_index, real_point3d const 
 	/* (on foot: a ladder or teleporter on the way to other ground) */
 	if (search_unit == NONE && radius <= 0.5f)
 	{
+		/* (a climb its walk left a tick or more ago - a vehicle, another
+		goal: let go, not gone on with) */
+		if ((bot->portal_climb_tick || bot->portal_top_tick) && now - bot->portal_walk_tick > 1)
+			pgbots_portal_forget(bot);
+		bot->portal_walk_tick = now;
 		if (pgbots_portal_walk(bot, unit_index, position, goal, goal_surface, direction))
 			return TRUE;
 		if (bot->portal_index != NONE)
@@ -1507,8 +1524,8 @@ boolean pgbots_walk(struct pgbots_bot *bot, long unit_index, real_point3d const 
 	if (bot->search_slot != NONE)
 	{
 		struct path_result path;
-		boolean found_reached = FALSE;
-		long answer = bots_common_search_take(bot->search_slot, bot_index, &path, &found_reached);
+		boolean found_reached = FALSE, found_waypoint = FALSE;
+		long answer = bots_common_search_take(bot->search_slot, bot_index, &path, &found_reached, &found_waypoint);
 
 		if (answer != 0)
 		{
@@ -1519,6 +1536,7 @@ boolean pgbots_walk(struct pgbots_bot *bot, long unit_index, real_point3d const 
 				bot->path = path;
 				bot->path.step_index = 0;
 				bot->path_reached = found_reached;
+				bot->path_waypoint = found_waypoint;
 				bot->path_failures = 0;
 			}
 			else
@@ -1557,6 +1575,14 @@ boolean pgbots_walk(struct pgbots_bot *bot, long unit_index, real_point3d const 
 		if (bot->path.step_index < bot->path.step_count)
 		{
 			*direction = pgbots_yaw_to(position, &bot->path.steps[(long)bot->path.step_index].point);
+			return TRUE;
+		}
+		/* (its end a waypoint on a long drive: on about it for the next
+		search's answer, asked above, not straight on to the goal - the far
+		side of a canyon's wall) */
+		if (bot->path_waypoint && bot->path.step_count > 0)
+		{
+			*direction = pgbots_yaw_to(position, &bot->path.steps[bot->path.step_count - 1].point);
 			return TRUE;
 		}
 		/* (its end as near as the paths come, the goal beyond: a dead end,
@@ -2127,6 +2153,7 @@ static void pgbots_choose_weapon(struct pgbots_bot *bot, struct unit_datum *unit
 	long current = bots_common_current_weapon(bot->unit_index);
 	real current_score = -10.0f, best_score = -10.0f;
 	boolean dry = current == NONE || bots_common_weapon_empty(current);
+	boolean best_precision = FALSE;
 
 	for (slot = 0; slot < MAXIMUM_WEAPONS_PER_UNIT; slot++)
 	{
@@ -2148,10 +2175,11 @@ static void pgbots_choose_weapon(struct pgbots_bot *bot, struct unit_datum *unit
 		{
 			best_score = score;
 			best_slot = slot;
+			best_precision = info->weapon_class == _pgbots_class_precision;
 		}
 	}
 	if (best_slot != NONE && best_slot != current_slot &&
-		(dry || (bot->combo_until_tick > now && fighting) ||
+		(dry || (bot->combo_until_tick > now && fighting && best_precision) ||
 			(now >= bot->weapon_switch_tick && pgbots_rules_weapon_switch(current_score, best_score))))
 	{
 		action->desired_weapon_index = (short)best_slot;
@@ -2531,6 +2559,7 @@ void pgbots_bot_update(long bot_index, long player_index, struct player_action *
 			for (index = 0; index < PGBOTS_BELIEFS; index++)
 				bot->beliefs[index].player_index = NONE;
 			pgbots_path_forget(bot);
+			pgbots_portal_forget(bot);
 			bot->unit_index = NONE;
 			bot->target_player_index = NONE;
 			bot->goal = _pgbots_goal_none;
@@ -2831,6 +2860,10 @@ void pgbots_bot_update(long bot_index, long player_index, struct player_action *
 			flags |= FLAG(_unit_control_crouch_modifier_bit);
 		pgbots_choose_weapon(bot, unit, target_distance, visible, action, &flags, now);
 		pgbots_profile_part(_pgbots_part_fight, &started);
+		/* (a climb its walk left this tick - another goal, a fight that
+		stands: let go) */
+		if ((bot->portal_climb_tick || bot->portal_top_tick) && bot->portal_walk_tick != now)
+			pgbots_portal_forget(bot);
 		/* (climbing a ladder: facing it, a jump now and then) */
 		if (bot->portal_climb_tick)
 		{
