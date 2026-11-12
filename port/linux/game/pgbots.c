@@ -516,6 +516,8 @@ static void pgbots_bot_reset(struct pgbots_bot *bot, long bot_index, long player
 	bot->role = _pgbots_role_free;
 	bot->order_surface = NONE;
 	bot->roam_area = NONE;
+	bot->portal_index = NONE;
+	bot->portal_route_tick = -TICKS_PER_SECOND * 60;
 	bot->upgrade_object = NONE;
 	bot->cover_tick = -TICKS_PER_SECOND;
 	bot->upgrade_tick = -TICKS_PER_SECOND;
@@ -1384,6 +1386,94 @@ void pgbots_path_forget(struct pgbots_bot *bot)
 	bot->path_tick = game_time_get() - TICKS_PER_SECOND;
 }
 
+/* on foot, a goal on another piece of the ground (an upper floor a ladder
+or a teleporter alone leads to: bots_nav.h): the first of them on the way
+gone to, looked for every 2 s and for a new goal; at a ladder's foot,
+climbed facing it with a jump now and then up to its top, then onto its
+landing; onto a teleporter's entrance. TRUE when this steers the walk now
+(*direction); else the walk goes to the entrance (bot->portal_index set) or
+the goal */
+static boolean pgbots_portal_walk(struct pgbots_bot *bot, long unit_index, real_point3d const *position,
+	real_point3d const *goal, long goal_surface, real *direction)
+{
+	long now = game_time_get();
+	boolean near;
+
+	/* (the ladder's top reached: onto its landing a moment) */
+	if (bot->portal_top_tick)
+	{
+		if (now - bot->portal_top_tick < SECONDS(1.5f) && pgbots_distance2d(position, &bot->portal_exit) > 0.4f)
+		{
+			*direction = pgbots_yaw_to(position, &bot->portal_exit);
+			return TRUE;
+		}
+		bot->portal_top_tick = 0;
+		bot->portal_index = NONE;
+		bot->portal_route_tick = now - SECONDS(2.0f);
+	}
+	if (bot->portal_climb_tick)
+	{
+		if (position->z >= bot->portal_top_z - 0.25f)
+		{
+			bots_common_ladder_result(bot->portal_index, TRUE);
+			bot->portal_climb_tick = 0;
+			bot->portal_top_tick = now;
+			*direction = pgbots_yaw_to(position, &bot->portal_exit);
+			return TRUE;
+		}
+		if (now - bot->portal_climb_tick > SECONDS(8.0f))
+		{
+			bots_common_ladder_result(bot->portal_index, FALSE);
+			bot->portal_climb_tick = 0;
+			bot->portal_index = NONE;
+			bot->portal_route_tick = now;
+			return FALSE;
+		}
+		*direction = bot->portal_climb_direction;
+		if (((now - bot->portal_climb_tick) % 15) == 0)
+			bot->portal_jump_tick = now;
+		return TRUE;
+	}
+	if (pgbots_distance(&bot->portal_goal, goal) > 1.5f || now - bot->portal_route_tick >= SECONDS(2.0f))
+	{
+		real_point3d start;
+		long start_surface = bots_common_unit_surface(unit_index, &start);
+		long surface = goal_surface != NONE ? goal_surface : pgbots_ground(goal, NULL);
+
+		bot->portal_goal = *goal;
+		bot->portal_route_tick = now;
+		bot->portal_near = FALSE;
+		bot->portal_index = start_surface != NONE && surface != NONE ? bots_common_portal_route(start_surface, &start,
+			surface, goal, &bot->portal_entrance, &bot->portal_surface, &bot->portal_ladder, &bot->portal_climb_direction,
+			&bot->portal_top_z, &bot->portal_exit) : NONE;
+		if (bot->portal_index != NONE)
+			pgbots_globals.counts[_pgbots_count_portals]++;
+	}
+	if (bot->portal_index == NONE)
+		return FALSE;
+	near = pgbots_distance2d(position, &bot->portal_entrance) < 0.7f && fabs(position->z - bot->portal_entrance.z) < 1.5f;
+	/* (through the teleporter: somewhere else now, the way looked for again) */
+	if (!near && bot->portal_near && !bot->portal_ladder && pgbots_distance(position, &bot->portal_entrance) > 4.0f)
+	{
+		bot->portal_index = NONE;
+		bot->portal_near = FALSE;
+		bot->portal_route_tick = now - SECONDS(2.0f);
+		return FALSE;
+	}
+	bot->portal_near = near;
+	if (!near)
+		return FALSE;
+	if (bot->portal_ladder)
+	{
+		bot->portal_climb_tick = now;
+		bot->portal_jump_tick = now;
+		*direction = bot->portal_climb_direction;
+		return TRUE;
+	}
+	*direction = pgbots_yaw_to(position, &bot->portal_entrance);
+	return TRUE;
+}
+
 boolean pgbots_walk(struct pgbots_bot *bot, long unit_index, real_point3d const *position, real_point3d const *goal,
 	long goal_surface, real radius, long search_unit, long target_object, real reached, real *direction)
 {
@@ -1392,6 +1482,18 @@ boolean pgbots_walk(struct pgbots_bot *bot, long unit_index, real_point3d const 
 
 	if (pgbots_distance2d(position, goal) < reached && fabs(position->z - goal->z) < 1.5f)
 		return FALSE;
+	/* (on foot: a ladder or teleporter on the way to other ground) */
+	if (search_unit == NONE && radius <= 0.5f)
+	{
+		if (pgbots_portal_walk(bot, unit_index, position, goal, goal_surface, direction))
+			return TRUE;
+		if (bot->portal_index != NONE)
+		{
+			goal = &bot->portal_entrance;
+			goal_surface = bot->portal_surface;
+			reached = 0.3f;
+		}
+	}
 	/* (another goal: the path let go) */
 	if (pgbots_distance(&bot->path_goal, goal) > 1.5f)
 	{
@@ -2699,8 +2801,17 @@ void pgbots_bot_update(long bot_index, long player_index, struct player_action *
 			flags |= FLAG(_unit_control_crouch_modifier_bit);
 		pgbots_choose_weapon(bot, unit, target_distance, visible, action, &flags, now);
 		pgbots_profile_part(_pgbots_part_fight, &started);
+		/* (climbing a ladder: facing it, a jump now and then) */
+		if (bot->portal_climb_tick)
+		{
+			if (!visible)
+				pgbots_turn(bot, bot->portal_climb_direction, 0.0f, FALSE, now);
+			if (bot->portal_jump_tick == now)
+				flags |= FLAG(_unit_control_jump_bit);
+		}
 		pgbots_edge_guard(bot, unit, &position, &moving, &direction, &flags, now);
-		pgbots_unstick(bot, &position, &moving, &direction, &flags, now);
+		if (!bot->portal_climb_tick)
+			pgbots_unstick(bot, &position, &moving, &direction, &flags, now);
 	}
 	if (bots_common_peaceful())
 		flags &= ~(FLAG(_unit_control_weapon_primary_trigger_bit) | FLAG(_unit_control_throw_grenade_bit) |
@@ -2765,14 +2876,14 @@ void pgbots_report(long now, unsigned long long us, long bot_ticks)
 	}
 	platform_log("pgbots: tick %ld, %ld bots, %.1f us a bot; beliefs eyes %ld hit %ld radar %ld heard %ld callout %ld, "
 		"posts %ld; grenades %ld, flicks %ld (overshot %ld), head aims %ld, switches %ld, detours %ld, retreats %ld, "
-		"bans %ld (%ld out of reach), boardings %ld, rams %ld; rays %.2f a bot tick", now, bots,
+		"bans %ld (%ld out of reach), boardings %ld, rams %ld, portals %ld; rays %.2f a bot tick", now, bots,
 		bot_ticks ? (double)us / (double)bot_ticks : 0.0, counts[_pgbots_count_beliefs_eyes],
 		counts[_pgbots_count_beliefs_hit], counts[_pgbots_count_beliefs_radar], counts[_pgbots_count_beliefs_heard],
 		counts[_pgbots_count_beliefs_callout], counts[_pgbots_count_posts], counts[_pgbots_count_grenades],
 		counts[_pgbots_count_flicks], counts[_pgbots_count_overshoots], counts[_pgbots_count_head_aims],
 		counts[_pgbots_count_switches], counts[_pgbots_count_detours], counts[_pgbots_count_retreats],
 		counts[_pgbots_count_bans], counts[_pgbots_count_unreachable], counts[_pgbots_count_boards],
-		counts[_pgbots_count_rams],
+		counts[_pgbots_count_rams], counts[_pgbots_count_portals],
 		bot_ticks ? (double)pgbots_globals.rays / (double)bot_ticks : 0.0);
 	/* (the personalities dealt: the debug trace only, they are hidden) */
 	if (bots_trace_enabled())

@@ -86,6 +86,15 @@ long bots_common_surface_neighbours(long surface_index, long *neighbours, long m
 /* the scenery and machines about a stuck walk learnt to be in the way (the
 searches go round them from now on); how many were */
 long bots_common_paths_learn(real_point3d const *position, real_point3d const *goal);
+/* port: the first ladder or teleporter (Birchwood's, found once a map) on
+the way from a surface to a goal on another piece of the ground (bots_nav.h),
+its index, NONE for none: where it is entered, whether a ladder (climbed
+facing the direction, up to the height), where it comes out; and a ladder's
+climb or failure told (three failures and no climb: left out) */
+long bots_common_portal_route(long start_surface_index, real_point3d const *start, long goal_surface_index,
+	real_point3d const *goal, real_point3d *entrance, long *entrance_surface_index, boolean *ladder,
+	real *climb_direction, real *top_z, real_point3d *exit);
+void bots_common_ladder_result(long index, boolean climbed);
 
 /* vehicles */
 real bots_common_vehicle_path_radius(long vehicle_index);

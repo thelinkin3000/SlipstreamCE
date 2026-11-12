@@ -207,6 +207,7 @@ debug.bot_trace logs each bot's state.
 #include "objects/objects.h"
 #include "units/units.h"
 #include "units/bipeds.h"
+#include "units/biped_definitions.h"
 #include "units/unit_definitions.h"
 #include "units/vehicles.h"
 #include "units/vehicle_definitions.h"
@@ -235,6 +236,7 @@ debug.bot_trace logs each bot's state.
 #include "bots_combat.h"
 #include "bots_tactics.h"
 #include "bots_team.h"
+#include "bots_nav.h"
 #include "game_modes.h"
 #include "infection.h"
 #include "game/player_queues_new.h"
@@ -618,6 +620,9 @@ what for (_bots_search_for_path ...) */
 	long asked_tick;
 	long goal_serial;
 	short purpose;
+	/* port: to a ladder's foot or a teleporter's entrance on the way to a
+	goal on another piece of the ground (bots_nav.h), its index; NONE */
+	long portal_index;
 	/* the answer */
 	boolean found;
 	struct path_state state_memory;
@@ -872,6 +877,8 @@ static struct
 		short channel;
 		real_point3d exit_ground;
 		long exit_surface_index;
+		/* port: a ladder's landing's surface (bots_nav.h's portals) */
+		long landing_surface_index;
 		long rest_until_tick;
 		long through[NUMBER_OF_BOTS_THROUGH];
 	} teleporters[BOTS_MAXIMUM_TELEPORTERS];
@@ -952,6 +959,8 @@ static struct
 	/* port: the ladders made of them, and the times a bot climbed one */
 	long ladder_count;
 	long ladder_tries;
+	/* port: searches sent to a ladder or teleporter on the way to another piece of the ground (bots_nav.h) */
+	long portal_routes;
 	long ladder_climbs;
 	/* port: the teleporters as shortcuts (bots_shortcut_weigh): the map's
 	teleporters (not the ladders), the walks from an exit measured, the
@@ -1049,6 +1058,17 @@ static struct
 	long roofed_count;
 	unsigned long long scan_us;
 	long scan_ticks;
+	/* port: the surfaces opened that a biped walks (bots_nav.h: ramps,
+	the invisible ramps over stairs), the vehicles' of them, the ground's
+	pieces (a surface's, NONE: not walkable) worked out again a while after
+	surfaces close, and what that took (halo.log) */
+	long ramps_opened;
+	long vehicle_ramps_opened;
+	short *component;
+	long component_count;
+	boolean components_dirty;
+	long components_tick;
+	unsigned long long prepare_us;
 } bots_paths;
 
 /* the helper thread */
@@ -2194,6 +2214,11 @@ static void bots_paths_release(void)
 		free(bots_paths.vehicle_walkable);
 	bots_paths.vehicle_walkable = NULL;
 	bots_paths.vehicle_closed_count = 0;
+	free(bots_paths.component);
+	bots_paths.component = NULL;
+	bots_paths.component_count = 0;
+	bots_paths.components_dirty = FALSE;
+	bots_paths.ramps_opened = bots_paths.vehicle_ramps_opened = 0;
 }
 
 /* the surface's corners (at most BOTS_SURFACE_CORNERS), from its ring of
@@ -2276,6 +2301,53 @@ static boolean bots_surface_blocked(long object_index, real_point3d const *corne
 	return FALSE;
 }
 
+/* port: the least upward part of the ground's normal a biped stands on (its
+slope limit: bipeds.c's minimum normal k), the first player's biped's; 0.65
+(about 50 degrees) without one */
+static real bots_biped_minimum_k(void)
+{
+	struct data_iterator iterator;
+	struct player_datum *player;
+
+	data_iterator_new(&iterator, player_data);
+	while ((player = (struct player_datum *)data_iterator_next(&iterator)) != NULL)
+	{
+		struct object_datum *object = player->unit_index != NONE ?
+			object_try_and_get_and_verify_type(player->unit_index, _object_mask_biped) : NULL;
+
+		if (object)
+		{
+			real k = biped_definition_get(object->definition_index)->biped.runtime_minimum_normal_k;
+
+			if (k > 0.2f && k < 0.98f)
+				return k;
+		}
+	}
+	return 0.65f;
+}
+
+/* port: a vehicle's ground no steeper than this (about 35 degrees: the
+banks a Warthog climbs) */
+#define BOTS_VEHICLE_MINIMUM_K 0.82f
+
+/* port: the ground's pieces worked out again, a couple of seconds after
+surfaces closed (bots_nav.h) */
+static void bots_paths_components_refresh(void)
+{
+	struct collision_bsp const *bsp;
+
+	if (!bots_paths.components_dirty || !bots_paths.component || !bots_paths.walkable ||
+		game_time_get() - bots_paths.components_tick < TICKS_PER_SECOND * 2)
+	{
+		return;
+	}
+	bsp = TAG_BLOCK_GET_ELEMENT(&bots_paths.structure.collision_bsp, 0, struct collision_bsp);
+	bots_paths.component_count = bots_nav_components(bsp, bots_paths.walkable,
+		bots_paths.structure.pathfinding_surfaces.count, BOTS_PATHFINDING_WALKABLE_BIT, bots_paths.component);
+	bots_paths.components_dirty = FALSE;
+	bots_paths.components_tick = game_time_get();
+}
+
 /* the bots' copy of the structure's walkable surfaces, made (the searches
 on the helper thread take it from then on); FALSE without one */
 static boolean bots_paths_copy(void)
@@ -2302,6 +2374,25 @@ static boolean bots_paths_copy(void)
 	}
 	csmemcpy(bots_paths.walkable, structure->pathfinding_surfaces.address, (size_t)count);
 	csmemcpy(bots_paths.vehicle_walkable, structure->pathfinding_surfaces.address, (size_t)count);
+	/* port: the ground a biped walks that the walkable surfaces leave out
+	opened, and the ground's pieces numbered (bots_nav.h) */
+	{
+		unsigned long long started = bots_time_us();
+		struct collision_bsp const *bsp = TAG_BLOCK_GET_ELEMENT(&structure->collision_bsp, 0, struct collision_bsp);
+		real minimum_k = bots_biped_minimum_k();
+
+		bots_paths.ramps_opened = bots_nav_open_ramps(bsp, bots_paths.walkable, bots_paths.vehicle_walkable, count,
+			BOTS_PATHFINDING_WALKABLE_BIT, minimum_k + 0.03f, BOTS_VEHICLE_MINIMUM_K, &bots_paths.vehicle_ramps_opened);
+		bots_paths.component = (short *)malloc((size_t)count * sizeof(short));
+		bots_paths.component_count = bots_paths.component ?
+			bots_nav_components(bsp, bots_paths.walkable, count, BOTS_PATHFINDING_WALKABLE_BIT, bots_paths.component) : 0;
+		bots_paths.components_dirty = FALSE;
+		bots_paths.components_tick = game_time_get();
+		bots_paths.prepare_us = bots_time_us() - started;
+		platform_log("bots: map ground: %ld surfaces, %ld opened a biped walks (slope k %.2f), %ld of them for vehicles, "
+			"%ld pieces (%.1f ms)", count, bots_paths.ramps_opened, minimum_k, bots_paths.vehicle_ramps_opened,
+			bots_paths.component_count, (double)bots_paths.prepare_us / 1000.0);
+	}
 	bots_paths.structure = *structure;
 	bots_paths.structure.pathfinding_surfaces.address = bots_paths.walkable;
 	/* (path.c: the helper's cache of surfaces' edges made again) */
@@ -2374,6 +2465,8 @@ static void bots_paths_close_object(long object_index, char const *why)
 	}
 	bots_paths.closed_count += closed;
 	if (closed)
+		bots_paths.components_dirty = TRUE;
+	if (closed)
 	platform_log("bots: %s %s at (%.1f %.1f %.1f): %ld walkable surfaces closed (%.1f ms)", why,
 		tag_get_name(object->definition_index), object->object.bounding_sphere_center.x,
 		object->object.bounding_sphere_center.y, object->object.bounding_sphere_center.z, closed,
@@ -2444,6 +2537,7 @@ static void bots_paths_scan(void)
 	long scanned;
 	unsigned long long started;
 
+	bots_paths_components_refresh();
 	if (bots_paths.scan_done || !bots_paths_copy())
 		return;
 	started = bots_time_us();
@@ -2499,6 +2593,7 @@ static void bots_paths_scan(void)
 			bots_paths.walkable[surface_index] &= (byte)~FLAG(BOTS_PATHFINDING_WALKABLE_BIT);
 			bots_paths.vehicle_walkable[surface_index] &= (byte)~FLAG(BOTS_PATHFINDING_WALKABLE_BIT);
 			bots_paths.roofed_count++;
+			bots_paths.components_dirty = TRUE;
 		}
 	}
 	bots_paths.scan_us += bots_time_us() - started;
@@ -2808,6 +2903,7 @@ static void bots_prepare_ladders(struct collision_bsp const *bsp)
 		bots_globals.teleporters[teleporter].entrance = foot;
 		bots_globals.teleporters[teleporter].entrance_surface_index = foot_surface;
 		bots_globals.teleporters[teleporter].exit = landing;
+		bots_globals.teleporters[teleporter].landing_surface_index = landing_surface;
 		bots_globals.teleporters[teleporter].ladder = TRUE;
 		/* (facing it from its foot) */
 		bots_globals.teleporters[teleporter].climb_direction =
@@ -3083,6 +3179,7 @@ void bots_initialize_for_new_map(void)
 	bots_globals.ladder_count = 0;
 	bots_globals.ladder_climbs = 0;
 	bots_globals.ladder_tries = 0;
+	bots_globals.portal_routes = 0;
 	bots_globals.teleporter_shortcuts = 0;
 	bots_globals.shortcut_measures = 0;
 	bots_globals.shortcut_takes = 0;
@@ -3239,6 +3336,66 @@ static void bots_helper_start(void)
 static boolean bots_shortcut_same_goal(struct bots_bot *bot, real_point3d const *position);
 static void bots_shortcut_drop(struct bots_bot *bot, char const *why);
 
+/* port: the first ladder or teleporter on the way from a surface to a goal
+on another piece of the ground (bots_nav.h), NONE (the same piece, or none
+leads there); a ladder no bot got up three times left out */
+static long bots_portal_route(long start_surface_index, real_point3d const *start, long goal_surface_index,
+	real_point3d const *goal)
+{
+	struct bots_nav_portal portals[BOTS_MAXIMUM_TELEPORTERS];
+	long index;
+
+	if (!bots_paths.component || bots_globals.teleporter_count <= 0)
+		return NONE;
+	for (index = 0; index < bots_globals.teleporter_count; index++)
+	{
+		portals[index].entrance_surface_index = bots_globals.teleporters[index].entrance_surface_index;
+		portals[index].entrance = bots_globals.teleporters[index].entrance;
+		portals[index].exit = bots_globals.teleporters[index].exit;
+		if (bots_globals.teleporters[index].ladder)
+		{
+			portals[index].exit_surface_index = bots_globals.teleporters[index].landing_surface_index;
+			portals[index].usable = bots_globals.teleporters[index].failures < 3 || bots_globals.teleporters[index].climbs > 0;
+		}
+		else
+		{
+			portals[index].exit_surface_index = bots_globals.teleporters[index].exit_surface_index;
+			portals[index].usable = TRUE;
+		}
+	}
+	return bots_nav_route(bots_paths.component, bots_paths.structure.pathfinding_surfaces.count, portals,
+		bots_globals.teleporter_count, start_surface_index, start, goal_surface_index, goal);
+}
+
+/* port: (the bots of the other kind, bots_common.h) */
+long bots_common_portal_route(long start_surface_index, real_point3d const *start, long goal_surface_index,
+	real_point3d const *goal, real_point3d *entrance, long *entrance_surface_index, boolean *ladder,
+	real *climb_direction, real *top_z, real_point3d *exit)
+{
+	long index = bots_portal_route(start_surface_index, start, goal_surface_index, goal);
+
+	if (index == NONE)
+		return NONE;
+	*entrance = bots_globals.teleporters[index].entrance;
+	*entrance_surface_index = bots_globals.teleporters[index].entrance_surface_index;
+	*ladder = bots_globals.teleporters[index].ladder;
+	*climb_direction = bots_globals.teleporters[index].climb_direction;
+	*top_z = bots_globals.teleporters[index].top_z;
+	*exit = bots_globals.teleporters[index].exit;
+	return index;
+}
+
+/* port: a ladder's climb counted, or its failure (the other kind's) */
+void bots_common_ladder_result(long index, boolean climbed)
+{
+	if (index < 0 || index >= bots_globals.teleporter_count || !bots_globals.teleporters[index].ladder)
+		return;
+	if (climbed)
+		bots_globals.teleporters[index].climbs++;
+	else
+		bots_globals.teleporters[index].failures++;
+}
+
 /* asks for a path from where the bot's unit is to its goal */
 static void bots_search_ask(struct bots_bot *bot, long unit_index)
 {
@@ -3285,6 +3442,7 @@ static void bots_search_ask(struct bots_bot *bot, long unit_index)
 	search->goal_point = bot->goal_point;
 	search->goal_surface_index = bot->goal_surface_index;
 	search->purpose = _bots_search_for_path;
+	search->portal_index = NONE;
 	/* port: a teleporter as a shortcut (bots_shortcut_weigh), for this goal
 	on foot alone: the walk from its exit to the goal measured (the bot
 	walks its path meanwhile), then the bot's path to its entrance */
@@ -3304,6 +3462,17 @@ static void bots_search_ask(struct bots_bot *bot, long unit_index)
 		search->purpose = _bots_search_for_entrance;
 		search->goal_point = bots_globals.teleporters[bot->shortcut_index].entrance;
 		search->goal_surface_index = bots_globals.teleporters[bot->shortcut_index].entrance_surface_index;
+	}
+	/* port: on foot, a goal on another piece of the ground (an upper floor
+	a ladder or a teleporter alone leads to): the first of them on the way
+	gone to (bots_nav.h), not a search that runs out of surfaces first */
+	else if (vehicle_index == NONE && !bot->via_teleporter &&
+		(search->portal_index = bots_portal_route(start_surface_index, &start, bot->goal_surface_index,
+			&bot->goal_point)) != NONE)
+	{
+		search->goal_point = bots_globals.teleporters[search->portal_index].entrance;
+		search->goal_surface_index = bots_globals.teleporters[search->portal_index].entrance_surface_index;
+		bots_globals.portal_routes++;
 	}
 	/* port: Bot routes Lanes or Mixed (bots_routes.c): on foot, to the
 	waypoint of the bot's lane on its way */
@@ -4137,12 +4306,25 @@ static void bots_search_take(struct bots_bot *bot, boolean alive)
 				bot->via_climb_tick = 0;
 				bot->via_top_tick = 0;
 			}
+			/* port: (to the ladder or teleporter on the way to another piece
+			of the ground: through it at the path's end, as the last way's) */
+			else if (search->portal_index != NONE && reached)
+			{
+				bot->via_teleporter = TRUE;
+				bot->via_point = search->goal_point;
+				bot->via_tick = game_time_get();
+				bot->via_index = search->portal_index;
+				bot->via_climb_tick = 0;
+				bot->via_top_tick = 0;
+				if (bots_globals.teleporters[search->portal_index].ladder)
+					bots_globals.ladder_tries++;
+			}
 			bot->path = path;
 			bot->path.step_index = 0;
 			bot->path_failures = 0;
 			/* (port: towards a teleporter's entrance it has yet to come to,
 			no climbing on to the goal: the next search from nearer) */
-			bot->path_short = !reached && !bot->via_teleporter && !entrance;
+			bot->path_short = !reached && !bot->via_teleporter && !entrance && search->portal_index == NONE;
 			if (!bot->path_short)
 				bot->climb_until_tick = 0;
 		}
@@ -4430,7 +4612,7 @@ static short bots_roam_higher(struct bots_bot *bot, real_point3d const *position
 		short other = (short)(bots_random(bot) % (unsigned long)bots_globals.roam_point_count);
 		real credit;
 
-		if (bots_distance2d(&bots_globals.roam_points[other], position) < 6.0f)
+		if (bots_distance3d(&bots_globals.roam_points[other], position) < 6.0f)
 			continue;
 		credit = bots_combat_high_ground(bots_globals.skill, bots_globals.roam_points[other].z - position->z);
 		if (credit > best_credit)
@@ -4478,14 +4660,14 @@ static void bots_pick_roam_goal(struct bots_bot *bot, real_point3d const *positi
 
 			for (index = 0; index < bots_globals.roam_point_count; index++)
 			{
-				real distance = bots_distance2d(&bots_globals.roam_points[index], &enemy->object.position) +
+				real distance = bots_distance3d(&bots_globals.roam_points[index], &enemy->object.position) +
 					bots_random_real(bot) * 6.0f;
 
 				/* (a place above the enemy counts as nearer, from veteran) */
 				distance -= bots_combat_high_ground(bots_globals.skill,
 					bots_globals.roam_points[index].z - enemy->object.position.z);
 
-				if (distance < nearest_distance && bots_distance2d(&bots_globals.roam_points[index], position) > 4.0f)
+				if (distance < nearest_distance && bots_distance3d(&bots_globals.roam_points[index], position) > 4.0f)
 				{
 					nearest_distance = distance;
 					nearest = index;
@@ -4505,7 +4687,7 @@ static void bots_pick_roam_goal(struct bots_bot *bot, real_point3d const *positi
 		short index = (short)(bots_random(bot) % (unsigned long)bots_globals.roam_point_count);
 
 		/* (not where it is) */
-		if (bots_distance2d(&bots_globals.roam_points[index], position) < 6.0f && tries < 5)
+		if (bots_distance3d(&bots_globals.roam_points[index], position) < 6.0f && tries < 5)
 			continue;
 		index = bots_roam_higher(bot, position, index);
 		bot->roam_index = index;
@@ -8115,7 +8297,7 @@ static void bots_report(void)
 	platform_log("bots: moves at tick %ld: stuck %ld (a low wall %ld, a tall one %ld, nothing %ld), goals given up %ld; "
 		"powerups gone for/taken: health %ld/%ld, overshield %ld/%ld, camouflage %ld/%ld; bodies restored %ld; "
 		"ladders %ld, gone to %ld, climbed %ld; teleporters %ld (shortcuts: weighed %ld, taken %ld, through %ld, "
-		"failed %ld, dropped %ld; through as the last way %ld, by chance %ld)",
+		"failed %ld, dropped %ld; through as the last way %ld, by chance %ld); routed through them to other ground %ld",
 		now, bots_globals.stuck_events, bots_globals.stuck_low, bots_globals.stuck_tall, bots_globals.stuck_clear,
 		bots_globals.stuck_giveups, bots_globals.powerups_sought[_bots_powerup_health],
 		bots_globals.powerups_taken[_bots_powerup_health], bots_globals.powerups_sought[_bots_powerup_overshield],
@@ -8124,7 +8306,7 @@ static void bots_report(void)
 		bots_globals.ladder_tries, bots_globals.ladder_climbs, bots_globals.teleporter_count - bots_globals.ladder_count,
 		bots_globals.shortcut_measures, bots_globals.shortcut_takes, bots_globals.shortcut_through[_bots_through_shortcut],
 		bots_globals.shortcut_failures, bots_globals.shortcut_drops, bots_globals.shortcut_through[_bots_through_last_way],
-		bots_globals.shortcut_through[_bots_through_by_chance]);
+		bots_globals.shortcut_through[_bots_through_by_chance], bots_globals.portal_routes);
 	/* port: (each teleporter's bots sent, by how they came to it, and its
 	failures as a shortcut: the map's teleporters' census; a line more for
 	every ten or so - Chiron TL34's thirty) */

@@ -20,7 +20,7 @@ code. */
 /* a team's blackboard entries */
 #define PGBOTS_BOARD 16
 /* the map's areas (8 units on a side), power positions, role slots */
-#define PGBOTS_AREAS 768
+#define PGBOTS_AREAS 1536
 #define PGBOTS_AREA_SIZE 8.0f
 #define PGBOTS_POWER 8
 #define PGBOTS_SLOTS 16
@@ -277,6 +277,23 @@ struct pgbots_bot
 	boolean detouring;
 	real_point3d detour_point;
 	long detour_surface;
+	/* a goal on another piece of the ground (bots_nav.h): the ladder or
+	teleporter on the way (Birchwood's index, NONE), for which goal, when
+	looked for, where it is entered and comes out; a ladder's climb begun,
+	its jump this tick; near the entrance last tick */
+	long portal_index;
+	real_point3d portal_goal;
+	long portal_route_tick;
+	real_point3d portal_entrance;
+	long portal_surface;
+	real_point3d portal_exit;
+	boolean portal_ladder;
+	real portal_climb_direction;
+	real portal_top_z;
+	long portal_climb_tick;
+	long portal_top_tick;
+	long portal_jump_tick;
+	boolean portal_near;
 
 	/* stuck: where it was and when, the tries, the move to unstick */
 	real_point3d stuck_position;
@@ -411,6 +428,7 @@ enum
 	_pgbots_count_switches,
 	_pgbots_count_unreachable,
 	_pgbots_count_stuck,
+	_pgbots_count_portals,
 };
 
 /* (HALO_TICK_PROFILE) buckets */
