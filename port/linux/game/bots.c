@@ -2281,7 +2281,9 @@ static void bots_paths_release(void)
 		free(bots_paths.vehicle_walkable);
 	bots_paths.vehicle_walkable = NULL;
 	bots_paths.vehicle_closed_count = 0;
-	free(bots_paths.component);
+	/* (the game's free asserts on NULL: debug_memory.c) */
+	if (bots_paths.component)
+		free(bots_paths.component);
 	bots_paths.component = NULL;
 	bots_nav_coarse_free(bots_paths.vehicle_coarse);
 	bots_paths.vehicle_coarse = NULL;

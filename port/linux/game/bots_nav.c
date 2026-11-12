@@ -19,6 +19,8 @@ BOTS_NAV.C
 #define BOTS_NAV_CLIMBABLE_BIT 2
 #define BOTS_NAV_BREAKABLE_BIT 3
 #define BOTS_NAV_MAXIMUM_NEIGHBOURS 16
+/* (the game's free asserts on NULL: debug_memory.c) */
+#define BOTS_NAV_FREE(pointer) do { if (pointer) free(pointer); } while (0)
 
 /* the surfaces across a surface's edges */
 static long bots_nav_neighbours(struct collision_bsp const *bsp, long surface_index, long *neighbours)
@@ -112,7 +114,7 @@ long bots_nav_open_ramps(struct collision_bsp const *bsp, byte *walkable, byte *
 				queue[tail++] = other;
 		}
 	}
-	free(queue);
+	BOTS_NAV_FREE(queue);
 	return opened;
 }
 
@@ -157,7 +159,7 @@ long bots_nav_components(struct collision_bsp const *bsp, byte const *walkable, 
 		}
 		pieces++;
 	}
-	free(queue);
+	BOTS_NAV_FREE(queue);
 	return pieces;
 }
 
@@ -333,17 +335,17 @@ void bots_nav_coarse_free(struct bots_nav_coarse *coarse)
 {
 	if (!coarse)
 		return;
-	free(coarse->center);
-	free(coarse->surface);
-	free(coarse->links);
-	free(coarse->link_count);
-	free(coarse->cell_of);
-	free(coarse->cost);
-	free(coarse->parent);
-	free(coarse->closed);
-	free(coarse->heap);
-	free(coarse->heap_cost);
-	free(coarse);
+	BOTS_NAV_FREE(coarse->center);
+	BOTS_NAV_FREE(coarse->surface);
+	BOTS_NAV_FREE(coarse->links);
+	BOTS_NAV_FREE(coarse->link_count);
+	BOTS_NAV_FREE(coarse->cell_of);
+	BOTS_NAV_FREE(coarse->cost);
+	BOTS_NAV_FREE(coarse->parent);
+	BOTS_NAV_FREE(coarse->closed);
+	BOTS_NAV_FREE(coarse->heap);
+	BOTS_NAV_FREE(coarse->heap_cost);
+	BOTS_NAV_FREE(coarse);
 }
 
 long bots_nav_coarse_cells(struct bots_nav_coarse const *coarse)
@@ -389,8 +391,8 @@ struct bots_nav_coarse *bots_nav_coarse_build(struct collision_bsp const *bsp, b
 		!coarse->link_count || !coarse->cell_of || !coarse->cost || !coarse->parent || !coarse->closed || !coarse->heap ||
 		!coarse->heap_cost)
 	{
-		free(hash_keys);
-		free(hash_cells);
+		BOTS_NAV_FREE(hash_keys);
+		BOTS_NAV_FREE(hash_cells);
 		bots_nav_coarse_free(coarse);
 		return NULL;
 	}
@@ -429,8 +431,8 @@ struct bots_nav_coarse *bots_nav_coarse_build(struct collision_bsp const *bsp, b
 		}
 		coarse->cell_of[surface_index] = hash_cells[slot];
 	}
-	free(hash_keys);
-	free(hash_cells);
+	BOTS_NAV_FREE(hash_keys);
+	BOTS_NAV_FREE(hash_cells);
 	/* the cells joined where their surfaces meet */
 	for (surface_index = 0; surface_index < count; surface_index++)
 	{
