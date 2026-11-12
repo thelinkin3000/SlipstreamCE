@@ -57,10 +57,23 @@ boolean bots_team_ctf_flag_left(long player_index);
 /* whether player `player_index` guards its team's hiding carrier, and where */
 boolean bots_team_ctf_escort(long player_index, real_point3d *point);
 
-/* crews: the Warthog whose crew bot player `player_index` should join and the
-seat (the gunner's first), or NONE; a bot's yes (boarding) or its no */
+/* what each kind tells of its bots each tick, for the crews' calls: a bot
+fighting (an enemy close and seen), or one not to be called (the flag's
+carrier, a defender, a bot on its way to a powerup) */
+enum
+{
+	_bots_team_state_fighting = 1 << 0,
+	_bots_team_state_exempt = 1 << 1,
+};
+void bots_team_bot_state(long player_index, unsigned long state);
+
+/* crews: the Warthog whose crew bot player `player_index` is called to and
+the seat (the gunner's, then a passenger's), or NONE; a passenger's seat is
+the bot's to refuse (bots_team_crew_refuse: not its way) */
 long bots_team_crew_call(long player_index, short *seat_index);
-/* whether a bot driving vehicle `vehicle_index` waits for its crew still */
+void bots_team_crew_refuse(long player_index);
+/* whether a bot driving vehicle `vehicle_index` waits for its crew still
+(called and on its way, 6 s at most from the call) */
 boolean bots_team_crew_wait(long vehicle_index);
 
 #endif

@@ -11,6 +11,7 @@ capture the flag's carrier, and a Warthog's crew.
 #include "game/players.h"
 #include "objects/objects.h"
 #include "units/units.h"
+#include "units/unit_definitions.h"
 #include "items/weapons.h"
 #include "scenario/scenario.h"
 
@@ -43,10 +44,38 @@ struct bots_team_ctf
 	unsigned long hide_generation;
 };
 
+/* crews: the Warthogs a team's driver sits in, followed (a call each, its
+seats' called bots) */
+#define BOTS_TEAM_MAXIMUM_CALLS 8
+#define BOTS_TEAM_CREW_SEATS 4
+/* (a called bot's way to its seat; the driver's wait from the call) */
+#define BOTS_TEAM_CREW_SECONDS 8
+#define BOTS_TEAM_CREW_WAIT_SECONDS 6
+#define BOTS_TEAM_CREW_REACH 20.0f
+
+struct bots_team_call
+{
+	long vehicle_index;
+	long team_index;
+	long tick;
+	/* each seat called: its seat, the bot (player), refused by it */
+	short seat_count;
+	short seats[BOTS_TEAM_CREW_SEATS];
+	long crew[BOTS_TEAM_CREW_SEATS];
+	boolean bot_driver;
+};
+
 static struct
 {
 	long tick;
 	boolean ctf;
+	/* each player's state (by absolute index), the tick it was told */
+	unsigned long state[HALO_PORT_MAXIMUM_NETWORK_PLAYERS];
+	long state_tick[HALO_PORT_MAXIMUM_NETWORK_PLAYERS];
+	/* a player who refused a call, until when */
+	long refused_until_tick[HALO_PORT_MAXIMUM_NETWORK_PLAYERS];
+	struct bots_team_call calls[BOTS_TEAM_MAXIMUM_CALLS];
+	long call_tick;
 	boolean home_to_score;
 	/* each flag's state (by its team) */
 	boolean present[2];
@@ -254,6 +283,8 @@ void bots_team_reset(void)
 
 	csmemset(&bots_team_globals, 0, sizeof(bots_team_globals));
 	bots_team_globals.tick = NONE;
+	for (team_index = 0; team_index < BOTS_TEAM_MAXIMUM_CALLS; team_index++)
+		bots_team_globals.calls[team_index].vehicle_index = NONE;
 	for (team_index = 0; team_index < 2; team_index++)
 	{
 		bots_team_globals.teams[team_index].carrier = NONE;
@@ -263,6 +294,8 @@ void bots_team_reset(void)
 	}
 }
 
+static void bots_team_crew_update(void);
+
 void bots_team_update(void)
 {
 	long now = game_time_get();
@@ -270,6 +303,12 @@ void bots_team_update(void)
 	if (bots_team_globals.tick == now)
 		return;
 	bots_team_globals.tick = now;
+	/* (the crews' calls, four times a second) */
+	if (now - bots_team_globals.call_tick >= TICKS_PER_SECOND / 4 || now < bots_team_globals.call_tick)
+	{
+		bots_team_globals.call_tick = now;
+		bots_team_crew_update();
+	}
 	bots_team_globals.ctf = game_engine_running() &&
 		game_engine_get_variant()->game_engine_index == game_engine_ctf;
 	if (bots_team_globals.ctf)
@@ -383,4 +422,293 @@ boolean bots_team_ctf_escort(long player_index, real_point3d *point)
 	else
 		*point = team->hide;
 	return TRUE;
+}
+
+/* ---------- crews */
+
+static long bots_team_absolute(long player_index)
+{
+	long absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(player_index);
+
+	return absolute >= 0 && absolute < HALO_PORT_MAXIMUM_NETWORK_PLAYERS ? absolute : NONE;
+}
+
+void bots_team_bot_state(long player_index, unsigned long state)
+{
+	long absolute = player_index != NONE ? bots_team_absolute(player_index) : NONE;
+
+	if (absolute == NONE)
+		return;
+	bots_team_globals.state[absolute] = state;
+	bots_team_globals.state_tick[absolute] = game_time_get();
+}
+
+/* the unit's vehicle and seat, NONE */
+static long bots_team_unit_vehicle(long unit_index, short *seat_index)
+{
+	struct object_datum *object = object_try_and_get(unit_index);
+
+	if (!object || object->object.parent_object_index == NONE ||
+		!object_try_and_get_and_verify_type(object->object.parent_object_index, _object_mask_vehicle))
+	{
+		return NONE;
+	}
+	*seat_index = unit_get(unit_index)->unit.parent_seat_index;
+	return object->object.parent_object_index;
+}
+
+/* a bot free for a call to that vehicle: on foot, alive, its kind's word
+that it neither fights nor is exempt (told this second), not refusing, near
+the vehicle and seeing it */
+static boolean bots_team_crew_free(long player_index, long team_index, long vehicle_index, real *distance)
+{
+	long absolute = bots_team_absolute(player_index);
+	struct player_datum *player = player_try_and_get(player_index);
+	struct object_datum *vehicle = object_get(vehicle_index);
+	real_point3d position, eye, center;
+	short seat;
+	long now = game_time_get();
+
+	if (absolute == NONE || !player || !bots_team_player_is_bot(player_index) ||
+		!bots_team_player_position(player_index, team_index, &position) ||
+		bots_team_unit_vehicle(player->unit_index, &seat) != NONE ||
+		now - bots_team_globals.state_tick[absolute] > TICKS_PER_SECOND ||
+		bots_team_globals.state[absolute] != 0 || now < bots_team_globals.refused_until_tick[absolute])
+	{
+		return FALSE;
+	}
+	*distance = bots_team_distance(&position, &vehicle->object.position);
+	if (*distance > BOTS_TEAM_CREW_REACH)
+		return FALSE;
+	unit_get_head_position(player->unit_index, &eye);
+	center = vehicle->object.bounding_sphere_center;
+	return bots_common_line_of_sight(player->unit_index, &eye, &center, vehicle_index) ||
+		*distance < 4.0f;
+}
+
+static boolean bots_team_called(long player_index)
+{
+	long call, seat;
+
+	for (call = 0; call < BOTS_TEAM_MAXIMUM_CALLS; call++)
+	{
+		for (seat = 0; bots_team_globals.calls[call].vehicle_index != NONE &&
+			seat < bots_team_globals.calls[call].seat_count; seat++)
+		{
+			if (bots_team_globals.calls[call].crew[seat] == player_index)
+				return TRUE;
+		}
+	}
+	return FALSE;
+}
+
+static void bots_team_crew_update(void)
+{
+	struct data_iterator iterator;
+	struct player_datum *player;
+	long now = game_time_get();
+	long call;
+
+	/* the calls kept: the driver still in its seat; a called bot that sat
+	down, got busy, refused, died or was too long on its way let go */
+	for (call = 0; call < BOTS_TEAM_MAXIMUM_CALLS; call++)
+	{
+		struct bots_team_call *crew_call = &bots_team_globals.calls[call];
+		struct unit_datum *vehicle;
+		long seat;
+
+		if (crew_call->vehicle_index == NONE)
+			continue;
+		vehicle = (struct unit_datum *)object_try_and_get_and_verify_type(crew_call->vehicle_index, _object_mask_vehicle);
+		if (!vehicle || vehicle->unit.driver_object_index == NONE ||
+			TEST_FLAG(vehicle->object.damage_flags, _object_dead_bit))
+		{
+			crew_call->vehicle_index = NONE;
+			continue;
+		}
+		for (seat = 0; seat < crew_call->seat_count; seat++)
+		{
+			long member = crew_call->crew[seat];
+			long absolute = member != NONE ? bots_team_absolute(member) : NONE;
+			struct player_datum *crew = member != NONE ? player_try_and_get(member) : NULL;
+			short sat = NONE;
+
+			if (member == NONE)
+				continue;
+			if (!crew || absolute == NONE || crew->unit_index == NONE ||
+				bots_team_unit_vehicle(crew->unit_index, &sat) == crew_call->vehicle_index ||
+				now - crew_call->tick > BOTS_TEAM_CREW_SECONDS * TICKS_PER_SECOND ||
+				(bots_team_globals.state[absolute] & _bots_team_state_fighting) ||
+				now < bots_team_globals.refused_until_tick[absolute] ||
+				bots_common_seat_occupant(crew_call->vehicle_index, crew_call->seats[seat]) != NONE)
+			{
+				crew_call->crew[seat] = NONE;
+			}
+		}
+	}
+	/* new calls: a team's driver in a Warthog (vehicle type jeep) with an
+	empty gunner's or passenger's seat */
+	data_iterator_new(&iterator, player_data);
+	while ((player = (struct player_datum *)data_iterator_next(&iterator)) != NULL)
+	{
+		struct bots_team_call *crew_call = NULL;
+		struct unit_definition *definition;
+		long vehicle_index, free_call = NONE;
+		short seat, seat_index;
+
+		if (player->unit_index == NONE || player->team_index == NONE ||
+			(vehicle_index = bots_team_unit_vehicle(player->unit_index, &seat)) == NONE ||
+			bots_common_seat_kind(vehicle_index, seat) != 0 || bots_common_vehicle_type(vehicle_index) != 1)
+		{
+			continue;
+		}
+		for (call = 0; call < BOTS_TEAM_MAXIMUM_CALLS; call++)
+		{
+			if (bots_team_globals.calls[call].vehicle_index == vehicle_index)
+				crew_call = &bots_team_globals.calls[call];
+			else if (bots_team_globals.calls[call].vehicle_index == NONE && free_call == NONE)
+				free_call = call;
+		}
+		if (!crew_call)
+		{
+			if (free_call == NONE)
+				continue;
+			crew_call = &bots_team_globals.calls[free_call];
+			csmemset(crew_call, 0, sizeof(*crew_call));
+			crew_call->vehicle_index = vehicle_index;
+			crew_call->team_index = player->team_index;
+			crew_call->tick = now;
+			crew_call->bot_driver = bots_team_player_is_bot(iterator.datum_index);
+			/* (the gunner's seats first, then the passengers') */
+			definition = unit_definition_get(object_get(vehicle_index)->definition_index);
+			for (seat_index = 0; seat_index < definition->unit.seats.count &&
+				crew_call->seat_count < BOTS_TEAM_CREW_SEATS; seat_index++)
+			{
+				if (bots_common_seat_kind(vehicle_index, seat_index) == 1)
+				{
+					crew_call->seats[crew_call->seat_count] = seat_index;
+					crew_call->crew[crew_call->seat_count++] = NONE;
+				}
+			}
+			for (seat_index = 0; seat_index < definition->unit.seats.count &&
+				crew_call->seat_count < BOTS_TEAM_CREW_SEATS; seat_index++)
+			{
+				if (bots_common_seat_kind(vehicle_index, seat_index) == 2)
+				{
+					crew_call->seats[crew_call->seat_count] = seat_index;
+					crew_call->crew[crew_call->seat_count++] = NONE;
+				}
+			}
+		}
+		/* (one or two called in all, the gunner first: the nearest free bot
+		to each empty seat not yet called for, while the call is young) */
+		if (now - crew_call->tick > BOTS_TEAM_CREW_SECONDS * TICKS_PER_SECOND)
+			continue;
+		{
+			long called = 0, index;
+
+			for (index = 0; index < crew_call->seat_count; index++)
+			{
+				if (crew_call->crew[index] != NONE ||
+					bots_common_seat_occupant(vehicle_index, crew_call->seats[index]) != NONE)
+				{
+					called++;
+				}
+			}
+			for (index = 0; index < crew_call->seat_count && called < 2; index++)
+			{
+				struct data_iterator candidates;
+				struct player_datum *candidate;
+				long best = NONE;
+				real best_distance = 1e30f;
+
+				if (crew_call->crew[index] != NONE ||
+					bots_common_seat_occupant(vehicle_index, crew_call->seats[index]) != NONE)
+				{
+					continue;
+				}
+				data_iterator_new(&candidates, player_data);
+				while ((candidate = (struct player_datum *)data_iterator_next(&candidates)) != NULL)
+				{
+					real distance;
+
+					if (candidate->team_index != crew_call->team_index || bots_team_called(candidates.datum_index) ||
+						!bots_team_crew_free(candidates.datum_index, crew_call->team_index, vehicle_index, &distance))
+					{
+						continue;
+					}
+					if (distance < best_distance)
+					{
+						best_distance = distance;
+						best = candidates.datum_index;
+					}
+				}
+				if (best == NONE)
+					break;
+				crew_call->crew[index] = best;
+				called++;
+			}
+		}
+	}
+}
+
+long bots_team_crew_call(long player_index, short *seat_index)
+{
+	long call, seat;
+
+	for (call = 0; call < BOTS_TEAM_MAXIMUM_CALLS; call++)
+	{
+		struct bots_team_call *crew_call = &bots_team_globals.calls[call];
+
+		for (seat = 0; crew_call->vehicle_index != NONE && seat < crew_call->seat_count; seat++)
+		{
+			if (crew_call->crew[seat] == player_index)
+			{
+				*seat_index = crew_call->seats[seat];
+				return crew_call->vehicle_index;
+			}
+		}
+	}
+	return NONE;
+}
+
+void bots_team_crew_refuse(long player_index)
+{
+	long absolute = bots_team_absolute(player_index);
+	long call, seat;
+
+	if (absolute == NONE)
+		return;
+	bots_team_globals.refused_until_tick[absolute] = game_time_get() + TICKS_PER_SECOND * 5;
+	for (call = 0; call < BOTS_TEAM_MAXIMUM_CALLS; call++)
+	{
+		for (seat = 0; bots_team_globals.calls[call].vehicle_index != NONE &&
+			seat < bots_team_globals.calls[call].seat_count; seat++)
+		{
+			if (bots_team_globals.calls[call].crew[seat] == player_index)
+				bots_team_globals.calls[call].crew[seat] = NONE;
+		}
+	}
+}
+
+boolean bots_team_crew_wait(long vehicle_index)
+{
+	long call, seat;
+
+	for (call = 0; call < BOTS_TEAM_MAXIMUM_CALLS; call++)
+	{
+		struct bots_team_call *crew_call = &bots_team_globals.calls[call];
+
+		if (crew_call->vehicle_index != vehicle_index || !crew_call->bot_driver ||
+			game_time_get() - crew_call->tick > BOTS_TEAM_CREW_WAIT_SECONDS * TICKS_PER_SECOND)
+		{
+			continue;
+		}
+		for (seat = 0; seat < crew_call->seat_count; seat++)
+		{
+			if (crew_call->crew[seat] != NONE)
+				return TRUE;
+		}
+	}
+	return FALSE;
 }

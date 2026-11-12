@@ -1962,6 +1962,29 @@ static void pgbots_decide(struct pgbots_bot *bot, struct player_datum *player, s
 	}
 	pgbots_rules_goal_scores(&input, &bot->profile, bot->profile.personality, scores);
 	goal = pgbots_rules_goal_pick(scores, bot->goal, randoms);
+	/* (called to a Warthog's crew - bots_team.h: a teammate in its driver's
+	seat, the bot near, seeing it and free - whatever it would do: to the
+	seat; a passenger's only on a long way of its own) */
+	if (bots_common_vehicles_enabled() && !input.target_visible && !carrying)
+	{
+		short called_seat = NONE;
+		long called = bots_team_crew_call(bot->player_index, &called_seat);
+
+		if (called != NONE && bots_common_seat_kind(called, called_seat) == 2 &&
+			(!objective || pgbots_distance(position, &objective_point) < 25.0f))
+		{
+			bots_team_crew_refuse(bot->player_index);
+			called = NONE;
+		}
+		if (called != NONE && bots_common_seat_occupant(called, called_seat) == NONE)
+		{
+			vehicle = called;
+			seat = called_seat;
+			goal = _pgbots_goal_vehicle;
+			bot->ride.board_vehicle = NONE;
+			pgbots_globals.counts[_pgbots_count_crew]++;
+		}
+	}
 	bot->recharging = goal == _pgbots_goal_recharge;
 	bot->goal = goal;
 	bot->goal_object = NONE;
@@ -2582,6 +2605,10 @@ void pgbots_bot_update(long bot_index, long player_index, struct player_action *
 			pgbots_headway(bot, &position, now);
 		}
 		carrying = info && info->weapon_class == _pgbots_class_objective;
+		/* (what the team's crews' calls know of it: bots_team.h) */
+		bots_team_bot_state(bot->player_index, (visible && target_distance < 25.0f ? _bots_team_state_fighting : 0) |
+			(carrying || bot->role == _pgbots_role_defender || bot->goal == _pgbots_goal_powerup ||
+				bot->goal == _pgbots_goal_health || bot->goal == _pgbots_goal_weapon ? _bots_team_state_exempt : 0));
 		/* (hiding with the flag, an enemy in sight: the flag let go to fire,
 		a press of the trigger dropping it - players.c - taken again once the
 		fight is done or before it goes home: bots_team.h) */
@@ -2876,14 +2903,14 @@ void pgbots_report(long now, unsigned long long us, long bot_ticks)
 	}
 	platform_log("pgbots: tick %ld, %ld bots, %.1f us a bot; beliefs eyes %ld hit %ld radar %ld heard %ld callout %ld, "
 		"posts %ld; grenades %ld, flicks %ld (overshot %ld), head aims %ld, switches %ld, detours %ld, retreats %ld, "
-		"bans %ld (%ld out of reach), boardings %ld, rams %ld, portals %ld; rays %.2f a bot tick", now, bots,
+		"bans %ld (%ld out of reach), boardings %ld, rams %ld, portals %ld, crew calls %ld; rays %.2f a bot tick", now, bots,
 		bot_ticks ? (double)us / (double)bot_ticks : 0.0, counts[_pgbots_count_beliefs_eyes],
 		counts[_pgbots_count_beliefs_hit], counts[_pgbots_count_beliefs_radar], counts[_pgbots_count_beliefs_heard],
 		counts[_pgbots_count_beliefs_callout], counts[_pgbots_count_posts], counts[_pgbots_count_grenades],
 		counts[_pgbots_count_flicks], counts[_pgbots_count_overshoots], counts[_pgbots_count_head_aims],
 		counts[_pgbots_count_switches], counts[_pgbots_count_detours], counts[_pgbots_count_retreats],
 		counts[_pgbots_count_bans], counts[_pgbots_count_unreachable], counts[_pgbots_count_boards],
-		counts[_pgbots_count_rams], counts[_pgbots_count_portals],
+		counts[_pgbots_count_rams], counts[_pgbots_count_portals], counts[_pgbots_count_crew],
 		bot_ticks ? (double)pgbots_globals.rays / (double)bot_ticks : 0.0);
 	/* (the personalities dealt: the debug trace only, they are hidden) */
 	if (bots_trace_enabled())

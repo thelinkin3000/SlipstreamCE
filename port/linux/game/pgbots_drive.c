@@ -48,6 +48,7 @@ Clean room: none of Project Proving Grounds' code.
 #include "bots_common.h"
 #include "bots_combat.h"
 #include "pgbots.h"
+#include "bots_team.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -173,6 +174,10 @@ static short drive_seat(struct pgbots_bot *bot, long vehicle_index)
 				claimed = TRUE;
 			}
 		}
+		/* (the driver's seat another bot is on its way to: driven, for the
+		gun's and the passengers') */
+		if (claimed && bots_common_seat_kind(vehicle_index, seat_index) == 0)
+			has_driver = TRUE;
 		if (claimed)
 			continue;
 		switch (bots_common_seat_kind(vehicle_index, seat_index))
@@ -551,7 +556,7 @@ void pgbots_drive_update(struct pgbots_bot *bot, struct player_datum *player, lo
 		exit = TRUE;
 	if (!driver && vehicle->unit.driver_object_index == NONE && type != _type_turret && now - ride->since_tick > SECONDS(4.0f))
 		exit = TRUE;
-	if (!driver && fabs(speed) < 0.5f && now - ride->since_tick > SECONDS(4.0f))
+	if (!driver && fabs(speed) < 0.5f && now - ride->since_tick > SECONDS(4.0f) && !bots_team_crew_wait(vehicle_index))
 	{
 		if (!ride->parked_tick)
 			ride->parked_tick = now;
@@ -590,6 +595,14 @@ void pgbots_drive_update(struct pgbots_bot *bot, struct player_datum *player, lo
 	if (!driver)
 	{
 		drive_gun(bot, player, weapon_index, flags, &eye, now);
+		return;
+	}
+	/* (its crew called and on its way: waiting, a few seconds at most -
+	bots_team.h) */
+	if (!fighting && bots_team_crew_wait(vehicle_index))
+	{
+		action->throttle.i = 0.0f;
+		action->throttle.j = 0.0f;
 		return;
 	}
 

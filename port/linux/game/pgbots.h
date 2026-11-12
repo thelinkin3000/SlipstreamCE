@@ -431,6 +431,7 @@ enum
 	_pgbots_count_unreachable,
 	_pgbots_count_stuck,
 	_pgbots_count_portals,
+	_pgbots_count_crew,
 };
 
 /* (HALO_TICK_PROFILE) buckets */

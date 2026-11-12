@@ -961,6 +961,8 @@ static struct
 	/* port: the ladders made of them, and the times a bot climbed one */
 	long ladder_count;
 	long ladder_tries;
+	/* port: the Warthog crews' calls answered (bots_team.h) */
+	long crew_answers;
 	/* port: searches sent to a ladder or teleporter on the way to another piece of the ground (bots_nav.h) */
 	long portal_routes;
 	long ladder_climbs;
@@ -3310,6 +3312,7 @@ void bots_initialize_for_new_map(void)
 	bots_globals.ladder_climbs = 0;
 	bots_globals.ladder_tries = 0;
 	bots_globals.portal_routes = 0;
+	bots_globals.crew_answers = 0;
 	bots_globals.teleporter_shortcuts = 0;
 	bots_globals.shortcut_measures = 0;
 	bots_globals.shortcut_takes = 0;
@@ -7040,7 +7043,49 @@ static void bots_vehicle_consider(struct bots_bot *bot, struct bots_tick *tick)
 	struct bots_bot *best_claimer = NULL;
 	boolean fresh;
 
-	if (bot->vehicle_index != NONE || now < bot->vehicle_check_tick || now < bot->vehicle_rest_until_tick)
+	if (bot->vehicle_index != NONE)
+		return;
+	/* port: called to a Warthog's crew (bots_team.h: a teammate in its
+	driver's seat, the bot near, seeing it and free): whatever it was doing,
+	to the seat; a passenger's only on a long way of its own */
+	if (bots_vehicles_enabled() && !tick->fighting)
+	{
+		short seat_index;
+		long called = bots_team_crew_call(bot->player_index, &seat_index);
+
+		if (called != NONE && bots_seat_kind(called, seat_index) == _bots_seat_passenger &&
+			(bot->goal_kind == _bots_goal_none || bots_distance2d(&bot->goal_point, &tick->position) < 25.0f))
+		{
+			bots_team_crew_refuse(bot->player_index);
+			called = NONE;
+		}
+		if (called != NONE)
+		{
+			struct bots_bot *claimer = bots_seat_claimer(called, seat_index, bot);
+
+			if (bots_seat_occupant(called, seat_index) != NONE ||
+				!unit_has_animation_to_enter_seat(unit_index, called, seat_index) ||
+				!unit_can_enter_seat(unit_index, called, seat_index, NULL) ||
+				(claimer && claimer->vehicle_index == called))
+			{
+				bots_team_crew_refuse(bot->player_index);
+			}
+			else
+			{
+				bot->vehicle_index = called;
+				bot->vehicle_seat_index = seat_index;
+				bot->vehicle_flip = FALSE;
+				bot->vehicle_tick = now;
+				bot->vehicle_deadline_tick = now + TICKS_PER_SECOND * 12;
+				bot->vehicle_presses = 0;
+				bot->vehicle_press_tick = 0;
+				bots_globals.crew_answers++;
+				bots_vehicle_goal(bot, unit_index);
+				return;
+			}
+		}
+	}
+	if (now < bot->vehicle_check_tick || now < bot->vehicle_rest_until_tick)
 		return;
 	bot->vehicle_check_tick = now + TICKS_PER_SECOND;
 	/* (the setting looked at once a second: a configuration lookup) */
@@ -7362,7 +7407,7 @@ static boolean bots_vehicle_boarding(struct bots_bot *bot, long vehicle_index)
 
 		if (other == bot || other->player_index == NONE || other->unit_index == NONE ||
 			other->vehicle_index != vehicle_index || other->vehicle_flip ||
-			game_time_get() - other->vehicle_tick > TICKS_PER_SECOND * 12)
+			game_time_get() - other->vehicle_tick > TICKS_PER_SECOND * 6)
 		{
 			continue;
 		}
@@ -8320,6 +8365,13 @@ static void bots_bot_update(struct bots_bot *bot, long bot_index, struct player_
 		{
 			bots_powerup_goal(bot, tick.unit, &tick.position, TRUE);
 		}
+		/* port: what the team's crews' calls know of the bot (bots_team.h):
+		fighting close, or exempt - the flag's carrier, a defender, on its way
+		to an item */
+		bots_team_bot_state(bot->player_index,
+			(tick.fighting && tick.target_distance < 25.0f ? _bots_team_state_fighting : 0) |
+			(carrying || bot->held_objective || bot->goal_kind == _bots_goal_item || bots_quake_defender(bot_index) ?
+				_bots_team_state_exempt : 0));
 		/* (Infection's zombies have no vehicles: infection.c takes them out) */
 		if (!bots_zombie(tick.player))
 		{
@@ -8459,7 +8511,7 @@ static void bots_report(void)
 	platform_log("bots: moves at tick %ld: stuck %ld (a low wall %ld, a tall one %ld, nothing %ld), goals given up %ld; "
 		"powerups gone for/taken: health %ld/%ld, overshield %ld/%ld, camouflage %ld/%ld; bodies restored %ld; "
 		"ladders %ld, gone to %ld, climbed %ld; teleporters %ld (shortcuts: weighed %ld, taken %ld, through %ld, "
-		"failed %ld, dropped %ld; through as the last way %ld, by chance %ld); routed through them to other ground %ld",
+		"failed %ld, dropped %ld; through as the last way %ld, by chance %ld); routed through them to other ground %ld; crew calls answered %ld",
 		now, bots_globals.stuck_events, bots_globals.stuck_low, bots_globals.stuck_tall, bots_globals.stuck_clear,
 		bots_globals.stuck_giveups, bots_globals.powerups_sought[_bots_powerup_health],
 		bots_globals.powerups_taken[_bots_powerup_health], bots_globals.powerups_sought[_bots_powerup_overshield],
@@ -8468,7 +8520,7 @@ static void bots_report(void)
 		bots_globals.ladder_tries, bots_globals.ladder_climbs, bots_globals.teleporter_count - bots_globals.ladder_count,
 		bots_globals.shortcut_measures, bots_globals.shortcut_takes, bots_globals.shortcut_through[_bots_through_shortcut],
 		bots_globals.shortcut_failures, bots_globals.shortcut_drops, bots_globals.shortcut_through[_bots_through_last_way],
-		bots_globals.shortcut_through[_bots_through_by_chance], bots_globals.portal_routes);
+		bots_globals.shortcut_through[_bots_through_by_chance], bots_globals.portal_routes, bots_globals.crew_answers);
 	/* port: (each teleporter's bots sent, by how they came to it, and its
 	failures as a shortcut: the map's teleporters' census; a line more for
 	every ten or so - Chiron TL34's thirty) */
