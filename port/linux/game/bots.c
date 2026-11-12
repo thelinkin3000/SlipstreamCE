@@ -374,6 +374,7 @@ enum
 	_bots_combat_count_prenades,
 	_bots_combat_count_high_ground,
 	_bots_combat_count_out_of_view,
+	_bots_combat_count_overcharges,
 	NUMBER_OF_BOTS_COMBAT_COUNTS,
 };
 
@@ -835,6 +836,10 @@ struct bots_bot
 	line yet since it spawned, when it came there, the attacker it keeps by
 	(its wingman's lead: NONE) and when that was looked at */
 	short squad_role;
+	/* port: the plasma pistol's charge held since (0: none), and the
+	precision weapon taken at once after it let go, until (bots_bot_fight) */
+	long charge_tick;
+	long combo_until_tick;
 	boolean staged;
 	long staged_since_tick;
 	long wingman_lead;
@@ -2037,6 +2042,19 @@ static real bots_projectile_speed(long weapon_index)
 static short bots_weapon_tap_ticks(long weapon_index)
 {
 	return bots_weapon_kind(weapon_get(weapon_index)->definition_index)->tap_ticks;
+}
+
+/* port: how long the weapon's first trigger charges (the plasma pistol's
+overcharge), seconds; 0 for one that does not */
+static real bots_weapon_charge_seconds(long weapon_index)
+{
+	struct weapon_definition *definition = weapon_definition_get(weapon_get(weapon_index)->definition_index);
+	struct weapon_trigger_definition *trigger;
+
+	if (definition->weapon.triggers.count <= 0)
+		return 0.0f;
+	trigger = TAG_BLOCK_GET_ELEMENT(&definition->weapon.triggers, 0, struct weapon_trigger_definition);
+	return trigger->charging_time > 0.0f && trigger->charging_time < 3.0f ? trigger->charging_time : 0.0f;
 }
 
 static real bots_weapon_range(long weapon_index)
@@ -7022,8 +7040,27 @@ static void bots_bot_fight(struct bots_bot *bot, struct bots_tick *tick)
 		yaw_off < cone && pitch_off < cone * 1.5f && tick->weapon_index != NONE)
 	{
 		short tap_ticks = bots_weapon_tap_ticks(tick->weapon_index);
+		real charge = bots_weapon_charge_seconds(tick->weapon_index);
 
-		if (tap_ticks > 0)
+		/* port: a weapon that charges (the plasma pistol), from normal, at a
+		shielded target not far off: held until charged and let go (its
+		overcharge takes the shields), then the pistol at once if it has
+		one (bots_bot_weapons) */
+		if (charge > 0.0f && bots_globals.skill >= _bots_skill_normal && tick->target_distance < 14.0f &&
+			(target_object->object.shield_vitality > 0.2f || bot->charge_tick))
+		{
+			if (!bot->charge_tick)
+				bot->charge_tick = now;
+			if (now - bot->charge_tick < (long)(charge * TICKS_PER_SECOND) + 3)
+				tick->flags |= FLAG(_unit_control_weapon_primary_trigger_bit);
+			else
+			{
+				bot->charge_tick = 0;
+				bot->combo_until_tick = now + TICKS_PER_SECOND;
+				bots_globals.combat_counts[_bots_combat_count_overcharges]++;
+			}
+		}
+		else if (tap_ticks > 0)
 		{
 			/* (a press a shot, released between: as fast as the weapon fires,
 			a little slower for the less skilled) */
@@ -7251,6 +7288,34 @@ players_update_before_game's player_handle_weapon_swap), let go now and
 then, so that a second swap can follow a first */
 static void bots_bot_weapons(struct bots_bot *bot, struct bots_tick *tick)
 {
+	/* port: the overcharge let go: the precision weapon (the pistol) at once,
+	for the shot to the head of a target its shields gone */
+	if (bot->combo_until_tick > tick->now && tick->fighting)
+	{
+		short slot;
+
+		for (slot = 0; slot < MAXIMUM_WEAPONS_PER_UNIT; slot++)
+		{
+			long other = tick->unit->unit.weapon_object_indices[slot];
+
+			if (slot != tick->unit->unit.current_weapon_index && other != NONE && !bots_weapon_empty(other) &&
+				bots_weapon_kind(weapon_get(other)->definition_index)->aim == _bots_aim_precision)
+			{
+				tick->action->desired_weapon_index = slot;
+				bot->combo_until_tick = 0;
+				break;
+			}
+		}
+	}
+	/* (a charge held while the aim strays off the target, let go for a
+	target lost a while or another weapon in hand) */
+	if (bot->charge_tick && (tick->now - bot->charge_tick > TICKS_PER_SECOND * 2 || tick->weapon_index == NONE ||
+		bots_weapon_charge_seconds(tick->weapon_index) <= 0.0f || tick->object->object.parent_object_index != NONE))
+	{
+		bot->charge_tick = 0;
+	}
+	else if (bot->charge_tick)
+		tick->flags |= FLAG(_unit_control_weapon_primary_trigger_bit);
 	if (tick->weapon_index != NONE && bots_weapon_empty(tick->weapon_index))
 	{
 		short slot;
@@ -8600,7 +8665,10 @@ static void bots_bot_update(struct bots_bot *bot, long bot_index, struct player_
 		bot->ride_vehicle_index = NONE;
 		/* port: (its base's vehicles looked at as it spawns) */
 		bot->spawn_tick = tick.now;
-		/* port: (an attacker gathers at the forward line again) */
+		/* port: (an attacker gathers at the forward line again; no charge
+		held) */
+		bot->charge_tick = 0;
+		bot->combo_until_tick = 0;
 		bot->staged = FALSE;
 		bot->staged_since_tick = 0;
 		bot->wingman_lead = NONE;
@@ -8895,12 +8963,13 @@ static void bots_report(void)
 
 		platform_log("bots: fights since the map's start: grenades %ld (%ld at a last-seen spot), blows %ld "
 			"(%ld held back), head aims %ld, retreats %ld, charges %ld, jumps %ld, halts %ld, shots paced %ld, "
-			"zoomed again %ld, high ground picks %ld, enemies out of vertical view %ld",
+			"zoomed again %ld, high ground picks %ld, enemies out of vertical view %ld, overcharges %ld",
 			counts[_bots_combat_count_grenades] + counts[_bots_combat_count_prenades], counts[_bots_combat_count_prenades],
 			counts[_bots_combat_count_blows], counts[_bots_combat_count_blows_held], counts[_bots_combat_count_head_aims],
 			counts[_bots_combat_count_retreats], counts[_bots_combat_count_charges], counts[_bots_combat_count_jumps],
 			counts[_bots_combat_count_halts], counts[_bots_combat_count_paced], counts[_bots_combat_count_rescopes],
-			counts[_bots_combat_count_high_ground], counts[_bots_combat_count_out_of_view]);
+			counts[_bots_combat_count_high_ground], counts[_bots_combat_count_out_of_view],
+			counts[_bots_combat_count_overcharges]);
 	}
 	platform_log("bots: moves at tick %ld: stuck %ld (a low wall %ld, a tall one %ld, nothing %ld), goals given up %ld; "
 		"powerups gone for/taken: health %ld/%ld, overshield %ld/%ld, camouflage %ld/%ld; bodies restored %ld; "
