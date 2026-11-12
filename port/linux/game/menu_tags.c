@@ -374,6 +374,8 @@ static char const *const port_function_names[] =
 	"port mcc downloads open", "port mcc downloads previous", "port mcc downloads next", "port mcc downloads remove",
 	"port mcc import replace", "port mcc import keep", "port mcc import closed",
 	"port map import page closed",
+	/* the Steam Workshop (menu_functions.c's steam_*) */
+	"port steam init", "port steam close", "port steam choose", "port steam back",
 	"port pause end game", "port coop friendly fire",
 	"port coop begin", "port coop player 2 list initialize", "port coop player 2",
 	"port lobby open", "port lobby add player", "port lobby join", "port lobby leave",
@@ -464,6 +466,7 @@ static char const *const port_game_data_input_names[] =
 	"port mcc import update", "port mcc import text",
 	/* (the consoles' IMPORT's upload page: map_import_page.c) */
 	"port map import page update", "port map import page text",
+	"port steam update",
 	/* (network co-op's pause menu's FRIENDLY FIRE: its text, ON or OFF) */
 	"port coop friendly fire text",
 	/* (the gametype editor's description, with OPENCE OPTIONS' row) */

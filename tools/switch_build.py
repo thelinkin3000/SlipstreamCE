@@ -49,6 +49,9 @@ TOML_DIR = Path("port/third_party/tomlc17")
 KCP_DIR = Path("port/third_party/kcp")
 EXPAT_DIR = Path("port/third_party/expat")
 MONOCYPHER_DIR = Path("port/third_party/monocypher")
+# the Steam Workshop screen's Steam client, in the host (port/android/host/steam_downloads.h)
+STEAM_HOST_FILES = ("steam_cm", "steam_crypto", "steam_depot", "steam_downloads", "steam_net", "steam_seal",
+                    "steam_unpack")
 MUSL_DIR = THIRD_PARTY / f"musl-{MUSL_VERSION}"
 SDL_DIR = THIRD_PARTY / "SDL3"
 
@@ -701,6 +704,8 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
         ANDROID_PORT_DIR / "host" / "host_replay.c",
         # the map lists' IMPORT, as Android's and the PS5's, and its JSON reader
         ANDROID_PORT_DIR / "host" / "host_mcc_import.c", LINUX_DIR / "src" / "server_json.c",
+        # the Steam Workshop screen's Steam client, as Android's and the PS5's
+        *(ANDROID_PORT_DIR / "host" / f"{name}.c" for name in STEAM_HOST_FILES),
     ]
     # the port's zlib (inflate only, its names z_), for the high-res HUD's
     # PNGs, which the host decodes as a map loads (host_dk_hud.c)
@@ -741,8 +746,12 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
         if source in upnp_sources:
             cflags = upnp_cflags + (" -w" if source.name != "posix_upnp.c" else "")
         # (the port's zlib: the high-res HUD's PNGs, and the map lists' IMPORT's .zip files)
-        if source.name in ("host_dk_hud.c", "host_mcc_import.c"):
+        if source.name in ("host_dk_hud.c", "host_mcc_import.c", "steam_cm.c"):
             cflags = f"{host_cflags} -I{ZLIB_DIR}"
+        # (the Steam client's chunk unpacker: the LZMA SDK's and Zstandard's
+        # decoders, whose warnings are not ours)
+        if source.name == "steam_unpack.c":
+            cflags = f"{host_cflags} -I{ZLIB_DIR} -w"
         n.build(outputs=obj, rule="switch_host_cc", inputs=source, variables={"cflags": cflags},
                 implicit=[syscall_h])
         host_objects.append(obj)

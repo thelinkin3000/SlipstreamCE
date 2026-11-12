@@ -674,6 +674,9 @@ _network["categories"] = [
      "What the Server Browser lists and its order: the\nsame settings as its Filters screen."),
     ("DISCORD ACCOUNT:", "network_setup/discord_account",
      "Link a Discord account, which lets you join\nservers that block VPNs while you use one."),
+    # (the Steam Workshop: _steam_workshop)
+    ("STEAM WORKSHOP:", "network_setup/steam_workshop",
+     "Sign in with Steam to download MCC's shared files\nand Halo 1 Workshop maps into mcc_maps."),
 ]
 SCREENS["network_setup/map_sharing"] = {
     "screen": "map_sharing_settings_screen", "header": _network["header"], "spacing": 30,
@@ -830,7 +833,8 @@ SCREENS["network_setup/streamer_mode"] = {
 SCREENS["network_setup/in_game"] = {
     "screen": "in_game_network_settings_screen", "header": _network["header"], "spacing": 30,
     "platform_places": True, "rows": [],
-    "categories": [category for category in _network["categories"] if category[1] != "network_setup/server_browser"],
+    "categories": [category for category in _network["categories"]
+                   if category[1] not in ("network_setup/server_browser", "network_setup/steam_workshop")],
 }
 
 # Controls Setup: the keyboard and mouse's actions, in groups (the order of
@@ -1329,6 +1333,7 @@ def settings_files() -> dict:
     files[f"{PE}/network_setup/mcc_download".replace("/", ".") + ".xml"] = _mcc_download()
     files[f"{PE}/network_setup/mcc_import".replace("/", ".") + ".xml"] = _mcc_import()
     files[f"{PE}/network_setup/map_import_page".replace("/", ".") + ".xml"] = _map_import_page()
+    files[STEAM_WORKSHOP.replace("/", ".") + ".xml"] = _steam_workshop()
     files[f"{PE}/controls_setup".replace("/", ".") + ".xml"] = _controls_screen()
     return {name: ['<?xml version="1.0" encoding="UTF-8"?>',
                    "<!-- The port's settings screen, in the PC version's style (tools/port_settings.py) -->",
@@ -3990,9 +3995,77 @@ def _mcc_import() -> list:
 
 # the screens of a category that are no settings screen (_setting_screen),
 # made by a function of their own
+CUSTOM_SCREENS = {"network_setup/steam_workshop": {"screen": "steam_workshop_screen"}}
+
+# ---------- the Steam Workshop (Settings > Network Setup > STEAM WORKSHOP:
+# the host's port/android/host/steam_downloads.c, menu_functions.c's "port
+# steam" functions; from Halo Content Evolved's): on the left the rows (the
 # sign-in, the hub, MCC's shared files, the Halo 1 Workshop's items), a row
 # each with its name and state; on the right, in the lobby's frame, the row
 # chosen's details and, while signing in, the QR code to scan, else the
+# item's preview (steam_picture: a text box, drawn over by menu_functions.c)
+STEAM_WORKSHOP = f"{PE}/network_setup/steam_workshop"
+STEAM_ROWS = 11
+STEAM_PICTURE_BOUNDS = (448, 262, 128, 128)
+
+
+def _steam_workshop() -> list:
+    base = STEAM_WORKSHOP
+    back = ['<on event="b" run="port steam back"/>', '<on event="back" run="port steam back"/>']
+    lines = _widget(f"{base}/steam_workshop_screen", [("width", 640), ("height", 480),
+                                                       ("flags", "pass_unhandled_to_focused_child"),
+                                                       ("bitmap", "bitmaps/gradient")],
+                    [*back, '<child widget="main_menu/new_select/sel_list_desc_bkd"/>',
+                     f'<child widget="{base}/steam_list"/>', f'<child widget="{base}/header_steam"/>'])
+    lines += _widget(f"{base}/header_steam",
+                     [("type", "text"), ("controller", 1), ("left", 35), ("top", 11), ("width", 363), ("height", 59),
+                      ("text", "STEAM WORKSHOP"), ("font", "ui\\large_ui"), ("color", "#FFFFFFFF"), ("text_x", 13),
+                      ("text_y", 16)], [])
+    rows = [f'<child widget="{base}/op_steam_{index + 1}" x="20" y="{73 + 30 * index}"/>' for index in range(STEAM_ROWS)]
+    lines += _widget(f"{base}/steam_list", [("type", "column_list"), ("width", 640), ("height", 480),
+                                            ("flags", "pass_unhandled_to_focused_child up_down_tabs_children"),
+                                            ("description", f"{base}/steam_details")],
+                     ['<data input="port steam update"/>', '<on event="created" run="port steam init"/>',
+                      '<on event="deleted" run="port steam close"/>', *rows,
+                      f'<child widget="{base}/button_bar" y="414"/>'])
+    for index in range(STEAM_ROWS):
+        lines += _widget(f"{base}/op_steam_{index + 1}",
+                         [("width", 390), ("height", 28), ("flags", "pass_unhandled_to_focused_child"),
+                          ("bitmap", "bitmaps/sel_list_item_bkd_top" if index == 0 else "bitmaps/sel_list_item_bkd"),
+                          ("color", "#FF2896FF")],
+                         ['<on event="a" run="port steam choose"/>', '<on event="start" run="port steam choose"/>',
+                          '<on event="left_mouse" run="mouse emit accept event"/>',
+                          f'<child widget="{base}/steam_name" x="12"/>',
+                          f'<child widget="{base}/steam_state" x="250"/>'])
+    lines += _widget(f"{base}/steam_name",
+                     [("type", "text"), ("controller", 1), ("width", 238), ("height", 22), ("font", "ui\\large_ui"),
+                      ("color", "#FF2896FF"), ("text_y", 4)], [])
+    lines += _widget(f"{base}/steam_state",
+                     [("type", "text"), ("controller", 1), ("width", 134), ("height", 22), ("font", "ui\\small_ui"),
+                      ("color", "#FF2896FF"), ("align", "center"), ("text_y", 6), ("text_flags", "no_focus_test")],
+                     [])
+    lines += _widget(f"{base}/steam_details", [("width", 640), ("height", 480)],
+                     [f'<child widget="{base}/steam_details_name"/>', f'<child widget="{base}/steam_details_text"/>',
+                      f'<child widget="{base}/steam_picture"/>'])
+    lines += _widget(f"{base}/steam_details_name",
+                     [("type", "text"), ("controller", 1), ("left", 412), ("top", 84), ("width", 200), ("height", 44),
+                      ("font", "ui\\large_ui"), ("color", "#FFFFFFFF")], [])
+    left, top, width, height = STEAM_PICTURE_BOUNDS
+    lines += _widget(f"{base}/steam_details_text",
+                     [("type", "text"), ("controller", 1), ("left", 412), ("top", 130), ("width", 200),
+                      ("height", top - 130), ("font", "ui\\small_ui"), ("color", "#FF2896FF")], [])
+    lines += _widget(f"{base}/steam_picture",
+                     [("type", "text"), ("controller", 1), ("left", left), ("top", top), ("width", width),
+                      ("height", height), ("font", "ui\\small_ui"), ("text_flags", "no_focus_test")], [])
+    lines += _widget(f"{base}/button_bar",
+                     [("type", "column_list"), ("width", 640), ("height", 28),
+                      ("flags", "pass_unhandled_to_focused_child left_right_tabs_items")],
+                     [f'<child widget="{base}/button_back" x="510" y="1"/>'])
+    lines += _text_button(f"{base}/button_back", "BACK", ['<on event="a" run="port steam back"/>',
+                                                         '<on event="start" run="port steam back"/>'])
+    return lines
+
+
 def _map_import_page() -> list:
     """the consoles' IMPORT (map_import_page.c): the upload page's address and QR code, what to upload there, and how
     the import is going; B closes it"""

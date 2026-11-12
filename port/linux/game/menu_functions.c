@@ -116,6 +116,7 @@ their handlers open opens.
 #include "../src/server_master.h"
 #include "../src/server_json.h"
 #include "../src/mcc_import.h" /* port: port/linux/src/mcc_import.c */
+#include "../src/steam_screen.h" /* port: the Steam Workshop screen, port/linux/src/steam_screen.c */
 #include "../src/server_rotation.h" /* port: Host Server's maps and rotations */
 #include "server_director.h" /* port: Host Server (server_director.c, server_status.c) */
 #include "server_gametypes.h"
@@ -9891,6 +9892,328 @@ static boolean news_close(struct widget_instance *widget, boolean *widget_delete
 	return TRUE;
 }
 
+/* ---------- the Steam Workshop (Settings > Network Setup > STEAM WORKSHOP:
+the host's port/android/host/steam_downloads.c through steam_screen.c,
+tools/port_settings.py's _steam_workshop; from Halo Content Evolved's):
+rows op_steam_<n> of a name and a state (steam_name, steam_state), the
+chosen row's details (steam_details_name, steam_details_text, measured as
+the Mods screen's are) and, while signing in, the QR code to scan, else the
+chosen Workshop item's preview, over steam_picture (a text box: drawn by
+steam_picture_draw, from menu_functions_text_box_drawn) */
+
+#define STEAM_ROWS 11
+#define STEAM_DETAILS_LINES 8
+#define STEAM_TEXTURE 256
+
+/* the text boxes measured, in the Mods screen's places (one screen is shown
+at a time) */
+static char const *const steam_text_box_names[NUMBER_OF_MOD_TEXT_BOXES] = { "steam_details_name",
+	"steam_details_text", "steam_name" };
+
+static struct
+{
+	short list_shown;
+	char shown[MOD_DETAILS_LENGTH];
+	char row_shown[STEAM_ROWS][2 * ROW_TEXT_LENGTH + 16];
+	/* the picture's texture (the QR code's, or a Workshop item's preview),
+	and what it shows */
+	struct bitmap_data *picture;
+	unsigned qr_serial;
+	unsigned long long preview_key;
+	boolean showing_qr;
+	/* the kind of text the keyboard is up for (STEAM_TEXT_*; 0: none), and
+	what is typed in it */
+	int typing;
+	wchar_t typed[64];
+} steam_screen;
+
+static struct widget_instance *steam_row(struct widget_instance *widget)
+{
+	for (; widget; widget = widget->parent)
+	{
+		if (widget->name && !strncmp(widget->name, "op_steam_", 9))
+			return widget;
+	}
+	return NULL;
+}
+
+static short steam_row_place(struct widget_instance *row)
+{
+	short place = row ? (short)(steam_screen_first() + atoi(row->name + 9) - 1) : NONE;
+
+	return place >= 0 && place < steam_screen_count() ? place : NONE;
+}
+
+/* "port steam init" and "port steam close" */
+static boolean steam_screen_reset(boolean opening)
+{
+	short index;
+
+	if (opening)
+		steam_screen_open();
+	else
+		steam_screen_close();
+	steam_screen.list_shown = NONE;
+	steam_screen.shown[0] = 0;
+	csmemset(steam_screen.row_shown, 0, sizeof(steam_screen.row_shown));
+	for (index = 0; index < NUMBER_OF_MOD_TEXT_BOXES; index++)
+	{
+		mods_screen.fonts[index] = NONE;
+		mods_screen.widths[index] = 0;
+	}
+	return TRUE;
+}
+
+/* (the keyboard: what was typed passed on once it has closed, and wiped;
+else opened if the model wants something typed) */
+static void steam_keyboard_update(void)
+{
+	if (steam_screen.typing && !virtual_keyboard_active())
+	{
+		char text[64];
+		short index;
+
+		for (index = 0; index < (short)NUMBEROF(text) - 1 && steam_screen.typed[index]; index++)
+			text[index] = steam_screen.typed[index] >= L' ' && steam_screen.typed[index] <= L'~' ?
+				(char)steam_screen.typed[index] : '?';
+		text[index] = 0;
+		steam_screen_text_typed(steam_screen.typing, text, virtual_keyboard_last_exit_saved_text());
+		csmemset(steam_screen.typed, 0, sizeof(steam_screen.typed));
+		steam_screen.typing = 0;
+	}
+	if (!steam_screen.typing && !virtual_keyboard_active())
+	{
+		char initial[64];
+		char caption[64];
+		int secret = 0;
+		int kind = steam_screen_text_wanted(initial, (int)sizeof(initial), &secret);
+		short index;
+
+		if (!kind)
+			return;
+		csmemset(steam_screen.typed, 0, sizeof(steam_screen.typed));
+		for (index = 0; initial[index] && index < (short)NUMBEROF(steam_screen.typed) - 1; index++)
+			steam_screen.typed[index] = (wchar_t)(unsigned char)initial[index];
+		steam_screen_text_caption(kind, caption, (int)sizeof(caption));
+		/* (a password shown as stars) */
+		if (virtual_keyboard_launch_text(steam_screen.typed, (word)sizeof(steam_screen.typed), caption,
+			secret ? TRUE : FALSE))
+			steam_screen.typing = kind;
+	}
+}
+
+/* "port steam update": the model's rows, as the Mods screen's; the MCC
+catalog read again when the model put files in mcc_maps */
+static void steam_update(struct widget_instance *list)
+{
+	struct widget_instance *row;
+	struct widget_instance *focused;
+	struct widget_instance *details = list->parameters.list.extended_description;
+	short first;
+	short chosen;
+	short count;
+	short focused_index;
+
+	if (steam_screen_poll())
+		mcc_maps_rescan();
+	steam_keyboard_update();
+	first = (short)steam_screen_first();
+	chosen = (short)steam_screen_chosen();
+	count = (short)steam_screen_count();
+	/* (a list opened: its row chosen focused) */
+	if (steam_screen.list_shown != steam_screen_view())
+	{
+		steam_screen.list_shown = (short)steam_screen_view();
+		if (chosen < first || chosen >= first + STEAM_ROWS)
+			first = (short)PIN(chosen - STEAM_ROWS / 2, 0, MAX(count - STEAM_ROWS, 0));
+		focus_row(list, count ? (short)(chosen - first) : NONE);
+		csmemset(steam_screen.row_shown, 0, sizeof(steam_screen.row_shown));
+	}
+	focused = steam_row(list->focused_child);
+	focused_index = focused ? (short)(atoi(focused->name + 9) - 1) : NONE;
+	if (focused_index == STEAM_ROWS - 1 && first + STEAM_ROWS < count && list_scrolls_at_end())
+	{
+		first++;
+		focus_row(list, --focused_index);
+	}
+	else if (focused_index == 0 && first > 0 && list_scrolls_at_end())
+	{
+		first--;
+		focus_row(list, ++focused_index);
+	}
+	if (first > 0 && first + STEAM_ROWS > count)
+		first = (short)MAX(0, count - STEAM_ROWS);
+	if (focused_index != NONE && first + focused_index < count)
+		chosen = (short)(first + focused_index);
+	steam_screen_set_first(first);
+	steam_screen_set_chosen(chosen);
+	for (row = list->child; row; row = row->next)
+	{
+		short place;
+		short row_index;
+		char name[ROW_TEXT_LENGTH];
+		char state[ROW_TEXT_LENGTH];
+		char shown[sizeof(steam_screen.row_shown[0])];
+
+		if (!row->name || strncmp(row->name, "op_steam_", 9))
+			continue;
+		row->animation.current_frame_index = row == focused ? 1 : 0;
+		place = steam_row_place(row);
+		row->visible = place != NONE;
+		if (place == NONE)
+		{
+			if (row == focused)
+				focus_row(list, count ? (short)(count - 1 - first) : NONE);
+			continue;
+		}
+		row_index = (short)PIN(atoi(row->name + 9) - 1, 0, STEAM_ROWS - 1);
+		steam_screen_row(place, name, sizeof(name), state, sizeof(state));
+		snprintf(shown, sizeof(shown), "%s|%s|%ld", name, state, mods_screen.fonts[_mod_row_name]);
+		if (strcmp(shown, steam_screen.row_shown[row_index]))
+		{
+			char shortened[MOD_DETAILS_LENGTH];
+			wchar_t wide[ROW_TEXT_LENGTH];
+
+			if (mods_text_fits(_mod_row_name, name, strlen(name)))
+				snprintf(shortened, sizeof(shortened), "%s", name);
+			else
+				mods_text_shorten(_mod_row_name, name, strlen(name), shortened, sizeof(shortened));
+			mods_wide_text(shortened, wide, ROW_TEXT_LENGTH);
+			text_set(named(row, "steam_name", 0), wide);
+			mods_wide_text(state, wide, ROW_TEXT_LENGTH);
+			text_set(named(row, "steam_state", 0), wide);
+			snprintf(steam_screen.row_shown[row_index], sizeof(steam_screen.row_shown[0]), "%s", shown);
+		}
+	}
+	if (details)
+	{
+		char title[MOD_DETAILS_LENGTH];
+		char text[MOD_DETAILS_LENGTH];
+		char wrapped[MOD_DETAILS_LENGTH];
+		char shown[sizeof(steam_screen.shown)];
+		wchar_t wide[MOD_DETAILS_LENGTH];
+
+		steam_screen_details(count ? chosen : NONE, title, sizeof(title), text, sizeof(text));
+		/* (made again only when what they show, or its fonts, change) */
+		snprintf(shown, sizeof(shown), "%ld %d %ld %d|%s|%s", mods_screen.fonts[_mod_details_name],
+			mods_screen.widths[_mod_details_name], mods_screen.fonts[_mod_details_text],
+			mods_screen.widths[_mod_details_text], title, text);
+		if (strcmp(shown, steam_screen.shown))
+		{
+			snprintf(steam_screen.shown, sizeof(steam_screen.shown), "%s", shown);
+			wrapped[0] = 0;
+			mods_wrap(title, wrapped, sizeof(wrapped), _mod_details_name, 2, 0);
+			mods_wide_text(wrapped, wide, NUMBEROF(wide));
+			text_set_length(named(details, "steam_details_name", 0), wide, NUMBEROF(wide));
+			wrapped[0] = 0;
+			mods_wrap(text, wrapped, sizeof(wrapped), _mod_details_text, STEAM_DETAILS_LINES, 0);
+			mods_wide_text(wrapped, wide, NUMBEROF(wide));
+			text_set_length(named(details, "steam_details_text", 0), wide, NUMBEROF(wide));
+		}
+	}
+}
+
+/* "port steam choose" (A on a row) */
+static boolean steam_choose(struct widget_instance *widget)
+{
+	short place = steam_row_place(steam_row(widget));
+
+	if (place == NONE)
+		place = (short)steam_screen_chosen();
+	steam_screen_set_chosen(place);
+	ui_play_audio_feedback_sound(SOUND_FORWARD);
+	steam_screen_choose(place);
+	return TRUE;
+}
+
+/* "port steam back" (B, and BACK): a sign-in under way cancelled, a list
+left for the hub, else away */
+static boolean steam_back(struct widget_instance *widget, boolean *widget_deleted)
+{
+	ui_play_audio_feedback_sound(SOUND_BACK);
+	if (steam_screen_back())
+		return TRUE;
+	ui_widget_port_go_back(widget);
+	*widget_deleted = TRUE;
+	return TRUE;
+}
+
+/* the texture of what steam_picture shows: the QR code to scan while
+signing in, else the chosen Workshop item's preview; NULL for none */
+static struct bitmap_data *steam_picture_texture(void)
+{
+	enum { MARGIN = 4 };
+	static unsigned char modules[STEAM_QR_MODULES];
+	unsigned serial = 0;
+	unsigned long long key = 0;
+	long side_modules = steam_screen_qr(modules, &serial);
+	long side = side_modules + 2 * MARGIN;
+	unsigned long *pixels;
+	long x, y;
+
+	if (!side_modules && !steam_screen_picture(&key, NULL))
+		return NULL;
+	if (!steam_screen.picture)
+	{
+		steam_screen.picture = bitmap_2d_new(STEAM_TEXTURE, STEAM_TEXTURE, 0, 11 /* a8r8g8b8 */);
+		if (steam_screen.picture && !rasterizer_bitmap_new(steam_screen.picture))
+		{
+			bitmap_delete(steam_screen.picture);
+			steam_screen.picture = NULL;
+		}
+		if (!steam_screen.picture)
+			return NULL;
+		steam_screen.preview_key = 0;
+		steam_screen.showing_qr = FALSE;
+	}
+	pixels = (unsigned long *)steam_screen.picture->base_address;
+	if (!side_modules)
+	{
+		/* (the preview, copied in once for each item chosen) */
+		if (steam_screen.showing_qr || steam_screen.preview_key != key)
+		{
+			if (steam_screen_picture(&key, (unsigned int *)pixels) != STEAM_PICTURE_SIDE)
+				return NULL;
+			rasterizer_bitmap_changed(steam_screen.picture);
+			steam_screen.preview_key = key;
+			steam_screen.showing_qr = FALSE;
+		}
+		return steam_screen.picture;
+	}
+	if (steam_screen.showing_qr && steam_screen.qr_serial == serial)
+		return steam_screen.picture;
+	for (y = 0; y < STEAM_TEXTURE; y++)
+	{
+		for (x = 0; x < STEAM_TEXTURE; x++)
+		{
+			long module_x = x * side / STEAM_TEXTURE - MARGIN;
+			long module_y = y * side / STEAM_TEXTURE - MARGIN;
+			boolean dark = module_x >= 0 && module_y >= 0 && module_x < side_modules && module_y < side_modules &&
+				modules[module_y * side_modules + module_x];
+
+			pixels[y * STEAM_TEXTURE + x] = dark ? 0xFF000000UL : 0xFFFFFFFFUL;
+		}
+	}
+	rasterizer_bitmap_changed(steam_screen.picture);
+	steam_screen.qr_serial = serial;
+	steam_screen.showing_qr = TRUE;
+	steam_screen.preview_key = 0;
+	return steam_screen.picture;
+}
+
+/* (steam_picture's text box drawn: the picture over its bounds) */
+static void steam_picture_draw(rectangle2d const *bounds)
+{
+	struct bitmap_data *picture = steam_picture_texture();
+	rectangle2d source;
+
+	if (!picture)
+		return;
+	source.x0 = source.y0 = 0;
+	source.x1 = source.y1 = STEAM_TEXTURE;
+	draw_bitmap_in_rect(picture, bounds, &source, NULL, 0xFFFFFFFFUL, NULL, TRUE);
+}
+
 /* ui_widget.c's: a text box drawn, at the bounds its text was drawn in
 (its font and justification still set): a lobby row's player talking in
 voice chat (or muted) has a speaker just left of their name
@@ -9937,11 +10260,17 @@ void menu_functions_text_box_drawn(struct widget_instance *widget, rectangle2d c
 		credits_screen.width = (short)(bounds->x1 - bounds->x0);
 		return;
 	}
-	/* (the Mods screen's texts: the fonts and widths their lines are
-	measured in, mods_text_fits) */
+	/* (the Steam Workshop's picture) */
+	if (widget->name && !strcmp(widget->name, "steam_picture"))
+	{
+		steam_picture_draw(bounds);
+		return;
+	}
+	/* (the Mods screen's texts, and the Steam Workshop's in their places:
+	the fonts and widths their lines are measured in, mods_text_fits) */
 	for (row = 0; widget->name && row < NUMBER_OF_MOD_TEXT_BOXES; row++)
 	{
-		if (!strcmp(widget->name, mod_text_box_names[row]))
+		if (!strcmp(widget->name, mod_text_box_names[row]) || !strcmp(widget->name, steam_text_box_names[row]))
 		{
 			mods_screen.fonts[row] = draw_string_get_font();
 			mods_screen.widths[row] = (short)(bounds->x1 - bounds->x0);
@@ -13365,6 +13694,12 @@ boolean pc_menu_event_function_invoke(
             map_import.screen=NULL;
         else if (!strcmp(name,"port map import page closed"))
             map_import.page_screen=NULL;
+        else if (!strcmp(name,"port steam init") || !strcmp(name,"port steam close"))
+            return steam_screen_reset(!strcmp(name,"port steam init"));
+        else if (!strcmp(name,"port steam choose"))
+            return steam_choose(widget);
+        else if (!strcmp(name,"port steam back"))
+            return steam_back(widget, widget_deleted);
         else if (!strcmp(name,"port mcc downloads open")) mcc_share_menu_open();
         else if (!strcmp(name,"port mcc downloads previous")) mcc_share_menu_step(-1);
         else if (!strcmp(name,"port mcc downloads next")) mcc_share_menu_step(1);
@@ -13731,6 +14066,8 @@ void pc_menu_game_data_function_invoke(
         map_import_text(widget);
     else if (!strcmp(name,"port mcc import update"))
         map_import_screen_update(widget);
+    else if (!strcmp(name,"port steam update"))
+        steam_update(widget);
     else if (!strcmp(name,"port map import page update"))
     {
         map_import.page_screen=widget;

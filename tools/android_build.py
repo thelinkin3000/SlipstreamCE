@@ -922,7 +922,10 @@ def generate_android_build(n: Writer, sln: Any) -> None:
     ]
     for source in host_sources:
         obj = host_obj_dir / (source.name + ".o")
-        n.build(outputs=obj, rule="android_host_cc", inputs=source, variables={"cflags": host_cflags},
+        # (the Steam client's chunk unpacker: the LZMA SDK's and Zstandard's
+        # decoders, whose warnings are not ours)
+        n.build(outputs=obj, rule="android_host_cc", inputs=source,
+                variables={"cflags": host_cflags + (" -w" if source.name == "steam_unpack.c" else "")},
                 implicit=[build_stamp] if source.name == "host_vk_probe.c" else None)
         host_objects.append(obj)
     # internet play's UPnP (posix_upnp.c, with port/third_party/miniupnpc),

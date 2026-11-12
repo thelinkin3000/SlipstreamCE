@@ -239,5 +239,25 @@ int host_mcc_import_question(unsigned int title, unsigned int title_size, unsign
 	unsigned int destination_size);
 void host_mcc_import_answer(int question, int replace);
 int host_mcc_import_finish(unsigned int report, unsigned int size);
+/* the Steam Workshop screen, whose Steam client is the host's (port/android/host/steam_downloads.c, which
+says what each does; the guest's wrappers are port/linux/src/steam_screen.c's) */
+void host_steam_open(unsigned int data_root);
+void host_steam_close(void);
+int host_steam_poll(void);
+int host_steam_count(void);
+int host_steam_view(void);
+int host_steam_first(void);
+void host_steam_set_first(int first);
+int host_steam_chosen(void);
+void host_steam_set_chosen(int chosen);
+void host_steam_row(int place, unsigned int name, int name_size, unsigned int state, int state_size);
+void host_steam_details(int place, unsigned int title, int title_size, unsigned int text, int text_size);
+void host_steam_choose(int place);
+int host_steam_back(void);
+int host_steam_picture(unsigned int key, unsigned int pixels);
+int host_steam_text_wanted(unsigned int initial, int initial_size, unsigned int secret);
+void host_steam_text_caption(int kind, unsigned int text, int text_size);
+void host_steam_text_typed(int kind, unsigned int text, int saved);
+int host_steam_qr(unsigned int modules, int capacity, unsigned int serial);
 
 #endif
