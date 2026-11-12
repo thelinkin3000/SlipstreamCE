@@ -1530,20 +1530,105 @@ void host_memory_watch_begin_frame(void)
 {
 }
 
-/* MCC's tag window (port/linux/src/mcc_memory.c): Android's host holds it
-from before the Java runtime starts (port/android/host/host_mcc_memory.c);
-this guest maps it itself, as it does Custom Edition's tag cache, and never
-asks */
+/* MCC's tag window (port/linux/src/mcc_memory.c): its maps' tag data is linked
+to 0x50000000, 64 MB, which is also the bottom of the range held for the
+Xbox window (WINDOW_HOLD_BASE). Mapped by the guest at map load, it was
+almost never free: the window took it on runs that placed the window at
+0x50000000, and on the others something had landed in it since the start
+of main - one run, at 0x508d5000, below a window the same something pushed
+up to 0x57000000 - a thread's local storage page, most likely, which the
+kernel places where it likes, libnx's reservations or not (the image's
+placeholder, host_memory_hold_image_range). The map was refused: "the MCC
+tag address window at 50000000 (64 MiB) is unavailable".
+
+So it is mapped here, before any thread exists, and kept for the whole run:
+the kernel places nothing over a mapping, the window's placement and the
+host's mappings step past it, and the guest is handed the same memory at
+each MCC map's load (as Android's host does, port/android/host/
+host_mcc_memory.c). It costs 64 MB of the heap for the run. Zeroed before
+it is handed out again, as a fresh mapping would be. */
+#define MCC_TAG_BASE 0x50000000u
+#define MCC_TAG_SIZE 0x04000000u
+
+static pthread_mutex_t mcc_lock = PTHREAD_MUTEX_INITIALIZER;
+/* mapped at MCC_TAG_BASE; handed to the guest; used since it was zeroed */
+static int mcc_held, mcc_active, mcc_dirty;
+/* a window the guest asked for at another linked address (mcc_memory.c
+accepts 0x42000000-0x70000000), mapped for it alone */
+static void *mcc_other;
+
+void host_memory_hold_mcc_range(void)
+{
+	virtmemLock();
+	(void)virtmemAddReservation((void *)(uintptr_t)MCC_TAG_BASE, MCC_TAG_SIZE);
+	virtmemUnlock();
+	/* (the log is not open yet: a failure is said at the first map load) */
+	if (mmap((void *)(uintptr_t)MCC_TAG_BASE, MCC_TAG_SIZE, PROT_READ | PROT_WRITE,
+			MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0) == (void *)(uintptr_t)MCC_TAG_BASE)
+		mcc_held = 1;
+}
+
 long long host_mcc_memory_reserve(unsigned int address, unsigned int size)
 {
-	(void)address;
-	(void)size;
-	return -ENOSYS;
+	long long result;
+
+	/* the MCC reader's allowed windows (mcc_memory.c) */
+	if ((address & 0xffffu) || size != MCC_TAG_SIZE || address < 0x42000000u || address > 0x70000000u)
+		return -EINVAL;
+	pthread_mutex_lock(&mcc_lock);
+	if (mcc_active || mcc_other)
+		result = -EBUSY;
+	else if (address == MCC_TAG_BASE && mcc_held)
+	{
+		if (mcc_dirty)
+			memset((void *)(uintptr_t)MCC_TAG_BASE, 0, MCC_TAG_SIZE);
+		mcc_active = mcc_dirty = 1;
+		result = address;
+	}
+	else
+	{
+		void *wanted = (void *)(uintptr_t)address;
+		void *allocation = mmap(wanted, size, PROT_READ | PROT_WRITE,
+			MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
+
+		if (allocation == wanted)
+		{
+			mcc_other = allocation;
+			result = address;
+		}
+		else
+		{
+			result = -(errno ? errno : EEXIST);
+			if (allocation != MAP_FAILED)
+				munmap(allocation, size);
+			if (address == MCC_TAG_BASE)
+				host_logf(HOST_LOG_ERROR, "mcc memory: the tag window at %08x could not be held from the start "
+					"of main, and is not free now", address);
+			log_conflicts(address, size);
+		}
+	}
+	pthread_mutex_unlock(&mcc_lock);
+	return result;
 }
 
 int host_mcc_memory_release(unsigned int address, unsigned int size)
 {
-	(void)address;
-	(void)size;
-	return -ENOSYS;
+	int error = 0;
+
+	pthread_mutex_lock(&mcc_lock);
+	if (size != MCC_TAG_SIZE)
+		error = -EINVAL;
+	else if (address == MCC_TAG_BASE && mcc_held && mcc_active)
+		mcc_active = 0;
+	else if (mcc_other && mcc_other == (void *)(uintptr_t)address)
+	{
+		if (munmap(mcc_other, size))
+			error = -errno;
+		else
+			mcc_other = NULL;
+	}
+	else
+		error = -EINVAL;
+	pthread_mutex_unlock(&mcc_lock);
+	return error;
 }

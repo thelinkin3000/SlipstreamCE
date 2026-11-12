@@ -7,9 +7,11 @@
 #include <string.h>
 
 /* (Android's host holds the window from before the Java runtime can take it:
-port/android/host/host_mcc_memory.c. The Switch's and the PS5's guests map it
-themselves, as xbox_memory.c does Custom Edition's tag cache) */
-#if defined(HALO_ANDROID) && !defined(HALO_SWITCH) && !defined(HALO_PS5)
+port/android/host/host_mcc_memory.c; the Switch's from the start of main,
+before a thread's local storage can land in it: port/switch/host/
+host_memory.c. The PS5's guest maps it itself, as xbox_memory.c does Custom
+Edition's tag cache) */
+#if defined(HALO_ANDROID) && !defined(HALO_PS5)
 #define MCC_MEMORY_ANDROID_HOST 1
 #include "guest_host.h"
 #endif
