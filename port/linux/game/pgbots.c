@@ -62,6 +62,7 @@ same input, the same bots. Nothing of it is game state.
 #include "bots_combat.h"
 #include "infection.h"
 #include "pgbots.h"
+#include "bots_team.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -1261,7 +1262,13 @@ boolean pgbots_aim_and_fire(struct pgbots_bot *bot, struct player_datum *player,
 	{
 		/* (a charge held for the overcharge is let go only on target) */
 		if (info->weapon_class == _pgbots_class_charge && bot->charge_tick)
-			*flags |= FLAG(_unit_control_weapon_primary_trigger_bit);
+		{
+			/* (the target lost a while: let go) */
+			if (now - bot->charge_tick < SECONDS(2.0f))
+				*flags |= FLAG(_unit_control_weapon_primary_trigger_bit);
+			else
+				bot->charge_tick = 0;
+		}
 		return FALSE;
 	}
 	switch (info->weapon_class)
@@ -1294,7 +1301,7 @@ boolean pgbots_aim_and_fire(struct pgbots_bot *bot, struct player_datum *player,
 			else
 			{
 				bot->charge_tick = 0;
-				bot->weapon_switch_tick = MIN(bot->weapon_switch_tick, now + SECONDS(0.3f));
+				bot->combo_until_tick = now + SECONDS(1.2f);
 			}
 			break;
 		}
@@ -1793,6 +1800,7 @@ static void pgbots_decide(struct pgbots_bot *bot, struct player_datum *player, s
 	input.objective = objective;
 	input.carrying = carrying;
 	input.grab_near = grab_near;
+	input.regrab_urgent = bots_team_ctf_regrab_now(bot->player_index, input.target_visible);
 	input.stand_unguarded = unguarded;
 	input.runner = bot->role == _pgbots_role_runner || bot->role == _pgbots_role_scorer;
 	input.hold = bot->team != NONE && pgbots_map_hold(bot->team, bot->team_rank % 3, &hold_point, &hold_surface);
@@ -2004,7 +2012,7 @@ static void pgbots_choose_weapon(struct pgbots_bot *bot, struct unit_datum *unit
 		score = pgbots_rules_weapon_score(info->weapon_class, info->low, info->high, fighting ? distance : -1.0f,
 			bot->profile.liked, bot->profile.disliked);
 		/* (after an overcharge, the precision weapon at once) */
-		if (bot->weapon_switch_tick > now && info->weapon_class == _pgbots_class_precision && fighting)
+		if (bot->combo_until_tick > now && info->weapon_class == _pgbots_class_precision && fighting)
 			score += 3.0f;
 		if (slot == current_slot)
 			current_score = score;
@@ -2015,9 +2023,11 @@ static void pgbots_choose_weapon(struct pgbots_bot *bot, struct unit_datum *unit
 		}
 	}
 	if (best_slot != NONE && best_slot != current_slot &&
-		(dry || (now >= bot->weapon_switch_tick && pgbots_rules_weapon_switch(current_score, best_score))))
+		(dry || (bot->combo_until_tick > now && fighting) ||
+			(now >= bot->weapon_switch_tick && pgbots_rules_weapon_switch(current_score, best_score))))
 	{
 		action->desired_weapon_index = (short)best_slot;
+		bot->combo_until_tick = 0;
 		bot->weapon_switch_tick = now + pgbots_random_ticks(bot, 1.2f, 2.0f);
 	}
 	if (current != NONE && !fighting && bots_common_weapon_loaded(current) < 0.4f && (now & 31) == 0)
@@ -2470,6 +2480,16 @@ void pgbots_bot_update(long bot_index, long player_index, struct player_action *
 			pgbots_headway(bot, &position, now);
 		}
 		carrying = info && info->weapon_class == _pgbots_class_objective;
+		/* (hiding with the flag, an enemy in sight: the flag let go to fire,
+		a press of the trigger dropping it - players.c - taken again once the
+		fight is done or before it goes home: bots_team.h) */
+		if (carrying && visible && game_engine_get_variant()->game_engine_index == game_engine_ctf &&
+			bots_team_ctf_drop(bot->player_index, TRUE, target_distance))
+		{
+			flags |= FLAG(_unit_control_weapon_primary_trigger_bit);
+			carrying = FALSE;
+			bot->decide_tick = now;
+		}
 		pgbots_profile_part(_pgbots_part_decide, &started);
 
 		/* the goal's walk */
@@ -2564,6 +2584,24 @@ void pgbots_bot_update(long bot_index, long player_index, struct player_action *
 				bot->profile.traits[_pgbots_trait_crouchy] > 0.5f)
 			{
 				flags |= FLAG(_unit_control_crouch_modifier_bit);
+			}
+			/* (the flag home: straight onto the stand past where the walk
+			stops - a capture needs it within a unit, height and all - a jump
+			if the stand stands higher) */
+			if (bot->goal == _pgbots_goal_objective && carrying &&
+				game_engine_get_variant()->game_engine_index == game_engine_ctf)
+			{
+				real_point3d stand;
+
+				if (bots_team_ctf_carry(bot->player_index, &stand) == _bots_carry_home &&
+					pgbots_distance2d(&position, &stand) < 4.0f && (real)fabs(stand.z - position.z) < 2.5f)
+				{
+					moving = TRUE;
+					direction = pgbots_yaw_to(&position, &stand);
+					throttle = 1.0f;
+					if (pgbots_distance2d(&position, &stand) < 1.5f && stand.z > position.z + 0.4f && (now & 15) == 0)
+						flags |= FLAG(_unit_control_jump_bit);
+				}
 			}
 			/* (the ball, the flag: picked up with the action button) */
 			if (bot->goal == _pgbots_goal_objective && !carrying && pgbots_distance2d(&position, &bot->goal_point) < 1.2f)

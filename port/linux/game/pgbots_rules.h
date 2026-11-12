@@ -337,6 +337,9 @@ struct pgbots_goal_input
 	int objective;
 	int carrying;
 	int grab_near;
+	/* the team's carrier going back for the flag it let go, its return near
+	(bots_team.h): before any fight */
+	int regrab_urgent;
 	int stand_unguarded;
 	/* a runner (the objective its role) */
 	int runner;

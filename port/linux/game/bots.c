@@ -234,6 +234,7 @@ debug.bot_trace logs each bot's state.
 #include "bots_common.h"
 #include "bots_combat.h"
 #include "bots_tactics.h"
+#include "bots_team.h"
 #include "game_modes.h"
 #include "infection.h"
 #include "game/player_queues_new.h"
@@ -3108,6 +3109,7 @@ void bots_initialize_for_new_map(void)
 	bots_tactics_initialize_for_new_map();
 	/* port: (the Proving Grounds kind's) */
 	pgbots_initialize_for_new_map();
+	bots_team_reset();
 }
 
 void bots_dispose_from_old_map(void)
@@ -4665,14 +4667,26 @@ static boolean bots_ctf_urgent_goal(struct bots_bot *bot, struct player_datum *p
 		return FALSE;
 	bots_ctf_update();
 	defender = bots_ctf_defender(bot, player);
-	/* carrying theirs: home */
-	if (bots_globals.ctf.present[other] && bots_globals.ctf.carrier_player_index[other] == bot->player_index)
-		return bots_ctf_set_goal(bot, &bots_globals.ctf.home[team], 1.0f);
+	/* port: the team's carrier (bots_team.h): home to score, hiding near
+	home while ours is away (captures needing it), back to theirs where it
+	let it go */
+	{
+		real_point3d point;
+		short carry = bots_team_ctf_carry(bot->player_index, &point);
+
+		if (carry == _bots_carry_home || carry == _bots_carry_regrab)
+			return bots_ctf_set_goal(bot, &point, 1.0f);
+		if (carry == _bots_carry_hide)
+			return bots_ctf_set_goal(bot, &point, 1.5f);
+		/* (the hiding carrier's guard) */
+		if (bots_team_ctf_escort(bot->player_index, &point))
+			return bots_ctf_set_goal(bot, &point, 3.0f);
+	}
 	/* (a gametype whose captures need the team's own flag at home, ours
-	carried off while a team mate carries theirs: everyone after our flag,
-	or the carrier waits at home for ever, Quake III's flag standoff) */
+	away while a team mate has theirs: everyone after our flag, or the
+	carrier waits for ever, Quake III's flag standoff) */
 	if (bots_globals.ctf.home_to_score && bots_globals.ctf.present[team] && bots_globals.ctf.present[other] &&
-		bots_globals.ctf.carrier_player_index[team] != NONE && bots_globals.ctf.carrier_player_index[other] != NONE)
+		!bots_globals.ctf.at_home[team] && bots_team_ctf_carrier(team) != NONE)
 	{
 		return bots_ctf_set_goal(bot, &bots_globals.ctf.position[team], 4.0f);
 	}
@@ -4711,6 +4725,16 @@ static boolean bots_ctf_choose_goal(struct bots_bot *bot, struct player_datum *p
 		/* a team mate has it: with the carrier */
 		if (carrier != NONE)
 			return bots_ctf_set_goal(bot, &bots_globals.ctf.position[other], 4.0f);
+		/* port: lying, its carrier's to take again (bots_team.h): with that
+		carrier, not onto the flag */
+		if (bots_team_ctf_flag_left(bot->player_index))
+		{
+			struct player_datum *teammate = player_try_and_get(bots_team_ctf_carrier(team));
+
+			if (teammate && teammate->unit_index != NONE)
+				return bots_ctf_set_goal(bot, &object_get(teammate->unit_index)->object.position, 4.0f);
+			return FALSE;
+		}
 		/* at home or dropped: to it */
 		return bots_ctf_set_goal(bot, &bots_globals.ctf.position[other], 1.5f);
 	}
@@ -7917,12 +7941,26 @@ static void bots_bot_update(struct bots_bot *bot, long bot_index, struct player_
 	{
 		/* (carrying a flag: home, fighting only what stands in its way) */
 		boolean carrying = bots_ctf_carrying(bot);
+		boolean sees = bot->target_player_index != NONE && tick.now - bot->target_seen_tick <= TICKS_PER_SECOND / 2;
+		real_point3d carry_point;
+		short carry = bots_team_ctf_carry(bot->player_index, &carry_point);
+		boolean regrab;
 
-		if (bot->target_player_index != NONE && tick.now - bot->target_seen_tick <= TICKS_PER_SECOND / 2 &&
-			(!carrying || bots_distance3d(&tick.position, &bot->target_last_position) < 2.0f))
+		/* port: hiding with the flag, an enemy in sight: the flag let go to
+		fire (a press of the trigger drops it: players.c), taken again once
+		the fight is done or before it goes home (bots_team.h) */
+		if (carrying && sees &&
+			bots_team_ctf_drop(bot->player_index, TRUE, bots_distance3d(&tick.position, &bot->target_last_position)))
 		{
-			bots_bot_fight(bot, &tick);
+			tick.flags |= FLAG(_unit_control_weapon_primary_trigger_bit);
+			carrying = FALSE;
 		}
+		if (sees && (!carrying || bots_distance3d(&tick.position, &bot->target_last_position) < 2.0f))
+			bots_bot_fight(bot, &tick);
+		regrab = !carrying && carry == _bots_carry_regrab && bots_team_ctf_regrab_now(bot->player_index, tick.fighting);
+		/* (the flag's own carrier, holding it or going back for it, walks on) */
+		if (regrab)
+			carrying = TRUE;
 		bots_profile_part(_bots_part_fight, &started);
 
 		/* the goal, and the path to it (while fighting, only a weapon close by
@@ -7977,7 +8015,7 @@ static void bots_bot_update(struct bots_bot *bot, long bot_index, struct player_
 		/* (carrying a flag near home: straight onto its place, which a
 		capture needs within a unit of, past where its path ends; a jump if it
 		stands still there) */
-		if (carrying && (tick.player->team_index == 0 || tick.player->team_index == 1) &&
+		if (carrying && !regrab && carry == _bots_carry_home && (tick.player->team_index == 0 || tick.player->team_index == 1) &&
 			bots_globals.ctf.present[tick.player->team_index])
 		{
 			real_point3d const *home = &bots_globals.ctf.home[tick.player->team_index];
@@ -8589,6 +8627,8 @@ void bots_update_actions(struct player_action *actions)
 			bots_ground_memo_begin();
 			bots_powerups_find();
 			bots_paths_scan();
+			/* port: what each team agrees on (bots_team.h) */
+			bots_team_update();
 			bots_profile_part(_bots_part_scan, &scan_started);
 		}
 		bot_index = player->network_player_data.machine_index - BOTS_FIRST_MACHINE;

@@ -258,8 +258,10 @@ struct pgbots_bot
 	long charge_tick;
 	long flush_seen_tick;
 
-	/* weapons: the next switch allowed */
+	/* weapons: the next switch allowed; an overcharge let go, the precision
+	weapon taken at once until this tick */
 	long weapon_switch_tick;
+	long combo_until_tick;
 	long pickup_press_tick;
 
 	/* the path: its search's slot (NONE), the path and when found, its

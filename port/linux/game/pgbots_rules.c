@@ -621,10 +621,31 @@ void pgbots_rules_goal_scores(struct pgbots_goal_input const *input, struct pgbo
 				scores[lowered[index]] *= 0.3f;
 		}
 	}
+	/* (the carrier: the flag before any fight, which it cannot fire in -
+	it lets the flag go to fight, hiding: bots_team.h - and before turning
+	to a hit or backing off; going back for the flag, its return near, the
+	same) */
+	if (input->carrying || input->regrab_urgent)
+	{
+		static short const yielding[] = { _pgbots_goal_fight, _pgbots_goal_react, _pgbots_goal_attacker,
+			_pgbots_goal_retreat, _pgbots_goal_recharge, _pgbots_goal_hunt, _pgbots_goal_health,
+			_pgbots_goal_powerup, _pgbots_goal_weapon, _pgbots_goal_vehicle };
+		long index;
+
+		for (index = 0; index < (long)(sizeof(yielding) / sizeof(yielding[0])); index++)
+		{
+			if (scores[yielding[index]] > 1.0f)
+				scores[yielding[index]] = 1.0f;
+		}
+		scores[_pgbots_goal_objective] = 3.5f;
+	}
 	for (goal = 0; goal < NUMBER_OF_PGBOTS_GOALS; goal++)
 	{
-		if (input->banned & (1UL << goal))
+		if ((input->banned & (1UL << goal)) &&
+			!(goal == _pgbots_goal_objective && (input->carrying || input->regrab_urgent)))
+		{
 			scores[goal] = -1.0f;
+		}
 	}
 	scores[_pgbots_goal_none] = -1.0f;
 }

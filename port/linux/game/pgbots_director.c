@@ -43,6 +43,7 @@ Clean room: none of Project Proving Grounds' code.
 #include "bots_combat.h"
 #include "infection.h"
 #include "pgbots.h"
+#include "bots_team.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -307,11 +308,37 @@ boolean pgbots_director_objective(struct pgbots_bot *bot, real_point3d const *po
 		{
 			return FALSE;
 		}
+		/* (the team's carrier, bots_team.h: home to score, hiding near home
+		while ours is away and captures need it, back to theirs where it let
+		it go - the flag lying is its alone; the hiding carrier's guard) */
+		switch (bots_team_ctf_carry(bot->player_index, point))
+		{
+		case _bots_carry_home:
+		case _bots_carry_hide:
+			*carrying = TRUE;
+			return TRUE;
+		case _bots_carry_regrab:
+			*grab_near = TRUE;
+			return TRUE;
+		}
+		if (bots_team_ctf_escort(bot->player_index, point))
+			return TRUE;
 		if (their_carrier == bot->player_index)
 		{
 			*carrying = TRUE;
 			*point = our_home;
 			return TRUE;
+		}
+		if (bots_team_ctf_flag_left(bot->player_index) && our_home_now)
+		{
+			struct player_datum *carrier = player_try_and_get(bots_team_ctf_carrier(team));
+
+			if (carrier && carrier->unit_index != NONE)
+			{
+				*point = object_get(carrier->unit_index)->object.position;
+				return TRUE;
+			}
+			return FALSE;
 		}
 		/* (ours away: back to it, or after its carrier) */
 		if (!our_home_now)
@@ -520,12 +547,21 @@ static void director_slots(short team_index, long bot_count)
 			else
 				director_slot(team, _pgbots_role_defender, &our_home, _pgbots_trait_camping, NONE);
 		}
-		/* (a runner and its escort: theirs taken, ours away) */
-		director_slot(team, _pgbots_role_runner, their_carrier != NONE ? &our_home : &theirs, _pgbots_trait_objective,
-			NONE);
-		director_slot(team, _pgbots_role_escort, &theirs, NONE, NONE);
-		/* (hunters after their carrier, ahead of him toward his home) */
-		if (our_carrier != NONE)
+		/* (a runner and its escort: theirs taken, ours away; our carrier's,
+		bots_team.h, with it - a flag it let go is its alone to take again) */
+		{
+			struct player_datum *carrier = player_try_and_get(bots_team_ctf_carrier(team_index));
+			real_point3d with = theirs;
+
+			if (carrier && carrier->unit_index != NONE)
+				with = object_get(carrier->unit_index)->object.position;
+			director_slot(team, _pgbots_role_runner, their_carrier != NONE ? &our_home : &with, _pgbots_trait_objective,
+				NONE);
+			director_slot(team, _pgbots_role_escort, &with, NONE, NONE);
+		}
+		/* (hunters after their carrier, ahead of him toward his home, or to
+		ours lying away) */
+		if (our_carrier != NONE || !our_at_home)
 		{
 			for (index = 0; index < 2; index++)
 				director_slot(team, _pgbots_role_hunter, &ours, _pgbots_trait_aggression, NONE);

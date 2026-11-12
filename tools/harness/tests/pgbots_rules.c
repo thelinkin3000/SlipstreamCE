@@ -369,10 +369,23 @@ int main(int argc, char **argv)
 		pgbots_rules_goal_scores(&in, &rusher, _pgbots_personality_rusher, scores);
 		CHECK(NEAR(scores[_pgbots_goal_fight], 1.5f + 0.4f * 0.9f - 1.2f * 0.4f), "a runner skips far fights less");
 		in.target_distance = 5.0f;
-		in.carrying = 1;
+		in.grab_near = 1;
 		pgbots_rules_goal_scores(&in, &rusher, _pgbots_personality_rusher, scores);
 		CHECK(pgbots_rules_goal_pick(scores, _pgbots_goal_objective, zero) == _pgbots_goal_fight,
-			"an enemy within 8 u is not fought (even carrying)");
+			"an enemy within 8 u is not fought (even a grab near)");
+		in.grab_near = 0;
+		/* (a carrier cannot fire: the flag first, let go to fight only
+		hiding - bots_team.h - and banned or not) */
+		in.carrying = 1;
+		in.banned = 1UL << _pgbots_goal_objective;
+		pgbots_rules_goal_scores(&in, &rusher, _pgbots_personality_rusher, scores);
+		CHECK(pgbots_rules_goal_pick(scores, _pgbots_goal_fight, zero) == _pgbots_goal_objective,
+			"a carrier turns to fight an enemy within 8 u, or its flag goal is banned");
+		in.carrying = 0;
+		in.regrab_urgent = 1;
+		pgbots_rules_goal_scores(&in, &rusher, _pgbots_personality_rusher, scores);
+		CHECK(pgbots_rules_goal_pick(scores, _pgbots_goal_fight, zero) == _pgbots_goal_objective,
+			"a carrier does not go back for its flag before its return");
 		memset(&in, 0, sizeof(in));
 		in.posture = 0.5f;
 		in.health_distance = -1.0f;
@@ -387,7 +400,9 @@ int main(int argc, char **argv)
 		CHECK(pgbots_rules_goal_pick(scores, _pgbots_goal_none, zero) == _pgbots_goal_hunt, "the rusher does not hunt");
 		in.carrying = 1;
 		pgbots_rules_goal_scores(&in, &rusher, _pgbots_personality_rusher, scores);
-		CHECK(scores[_pgbots_goal_objective] == 3.0f, "carrying is not 3.0");
+		CHECK(scores[_pgbots_goal_objective] == 3.5f, "carrying is not 3.5");
+		in.carrying = 0;
+		in.objective = 1;
 		in.banned = 1UL << _pgbots_goal_objective;
 		pgbots_rules_goal_scores(&in, &rusher, _pgbots_personality_rusher, scores);
 		CHECK(scores[_pgbots_goal_objective] < 0.0f, "a banned goal is scored");
