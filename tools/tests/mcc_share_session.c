@@ -147,6 +147,8 @@ static struct {
     int stop_after_page;
     int check_result,check_polls,check_cancels,install_calls,install_ok,prepare_mode;
     int verify_heartbeats;
+    /* reuse_wait: its calls and answer; whether the held files have come in */
+    int wait_calls, wait_answer, reuse_ready;
 } W;
 
 static uint32_t env_now(void *u) { (void)u; return W.clock; }
@@ -273,6 +275,17 @@ static int env_reuse(void *u, struct mcc_share_file const *file, char path[1024]
     W.reuse_candidates++;
     snprintf(path,1024,"%scached/%s",J,W.reuse_missing ? "missing.map" : file->leaf);
     return 1;
+}
+/* a resource on its way from elsewhere (the Workshop): not here until reuse_ready */
+static int env_reuse_late(void *u, struct mcc_share_file const *file, char path[1024])
+{
+    return W.reuse_ready ? env_reuse(u,file,path) : 0;
+}
+static int env_wait(void *u, struct mcc_share_file const *file, uint32_t host_rate)
+{
+    (void)u;(void)file;(void)host_rate;
+    W.wait_calls++;
+    return W.wait_answer;
 }
 static void env_finished(void *u, int ok, char const *text)
 {
@@ -884,7 +897,7 @@ int main(int argc,char **argv)
         for (i=0;i<5;i++) step();
         CHECK(!mcc_share_host_active(&W.host,MACHINE));                 /* the joiner's done ended it */
         CHECK(W.identity_calls==1);
-        CHECK(native_reads==16 && !native_cached_reads); /* four hashes and twelve chunk reads */
+        CHECK(native_reads==8 && !native_cached_reads); /* four hashes, and each file opened once for its chunks */
         CHECK(W.host_completions==1);
         mcc_share_host_request(&W.host,MACHINE,&W.join.terminal,sizeof(W.join.terminal));
         CHECK(W.host_completions==1); /* A replay cannot renew admission grace. */
@@ -1145,7 +1158,7 @@ int main(int argc,char **argv)
         W.reuse_mask=(1u<<MCC_SHARE_FILE_BITMAPS)|(1u<<MCC_SHARE_FILE_SOUNDS);
         if (!strcmp(argv[1],"reuse_bounded") || !strcmp(argv[1],"reuse_cancel") ||
             !strcmp(argv[1],"reuse_disconnect") || !strcmp(argv[1],"reuse_short_read")) {
-            bytes=3u*1024u*1024u+7;
+            bytes=9u*1024u*1024u+7;
             data=make_bytes(bytes,99);
             snprintf(path,sizeof(path),"%smcc_maps/solar_flare/bitmaps.map",H);
             CHECK(write_file(path,data,bytes));free(data);
@@ -1167,7 +1180,7 @@ int main(int argc,char **argv)
         if (!strcmp(argv[1],"reuse_bounded") || !strcmp(argv[1],"reuse_cancel") ||
             !strcmp(argv[1],"reuse_disconnect") || !strcmp(argv[1],"reuse_short_read")) {
             for (i=0;i<100 && !W.join.reuse_stream;i++) step();
-            CHECK(W.join.reuse_stream && W.join.stage.written==1024u*1024u);
+            CHECK(W.join.reuse_stream && W.join.stage.written==4u*1024u*1024u);
             CHECK(!W.file_requests[1] && !W.have_requests);
             snprintf(path,sizeof(path),"%scached/bitmaps.map",J);
             if (!strcmp(argv[1],"reuse_cancel") || !strcmp(argv[1],"reuse_disconnect")) {
@@ -1182,7 +1195,7 @@ int main(int argc,char **argv)
             else while (W.join.reuse_stream) {
                 uint32_t before=W.join.stage.done;
                 W.clock+=10000;step();frames++;
-                CHECK(!W.finished && W.join.stage.done-before<=1024u*1024u);
+                CHECK(!W.finished && W.join.stage.done-before<=4u*1024u*1024u);
                 CHECK(frames<10);
             }
         }
@@ -1215,6 +1228,74 @@ int main(int argc,char **argv)
                 }
             }
         }
+        return 0;
+    }
+
+    if (!strcmp(argv[1],"hold_reuse") || !strcmp(argv[1],"hold_limit") || !strcmp(argv[1],"hold_declined")) {
+        char path[400],source[400];
+        unsigned char *data;
+        unsigned bytes;
+        snprintf(path,sizeof(path),"%scached",J);CHECK(io_make(path));
+        for (i=1;i<=2;i++) {
+            snprintf(source,sizeof(source),"%smcc_maps/solar_flare/%s",H,names[i]);
+            data=read_file(source,&bytes);CHECK(data);
+            snprintf(path,sizeof(path),"%scached/%s",J,names[i]);
+            CHECK(write_file(path,data,bytes));free(data);
+        }
+        W.join.env.reuse_file=env_reuse_late;
+        W.join.env.reuse_wait=env_wait;
+        W.reuse_mask=(1u<<MCC_SHARE_FILE_BITMAPS)|(1u<<MCC_SHARE_FILE_SOUNDS);
+        W.wait_answer=strcmp(argv[1],"hold_declined")!=0;
+        CHECK(mcc_share_client_begin(&W.join,LEVEL,W.digest));
+        for (i=0;i<400 && !W.wait_calls;i++) step();
+        CHECK(W.wait_calls && W.join.stage.current==1);
+        if (!strcmp(argv[1],"hold_declined")) {
+            /* the host asked at once */
+            for (i=0;i<5;i++) step();
+            CHECK(W.file_requests[1]);
+            CHECK(run_until_finished(2000) && W.finished_ok && !W.have_requests);
+            return 0;
+        }
+        /* held: nothing asked of the host for it, the host hearing from us */
+        /* (past the host's 30 s idle limit: the hold's heartbeats keep it) */
+        for (i=0;i<40;i++) { W.clock+=980; step(); }
+        CHECK(!W.file_requests[1] && !W.finished && W.host.transfers[0].used);
+        if (!strcmp(argv[1],"hold_reuse")) {
+            W.reuse_ready=1;
+            CHECK(run_until_finished(2000) && W.finished_ok);
+            CHECK(W.have_requests==2 && !W.file_requests[1] && !W.file_requests[2]);
+            for (i=0;i<5;i++) step();
+            CHECK(W.host_completions==1);
+            return 0;
+        }
+        /* never in: each file asked of the host once its hold reaches the limit,
+           the host's transfer kept the while */
+        for (i=0;i<400 && !W.finished;i++) { W.clock+=980; step(); }
+        CHECK(W.finished && W.finished_ok && W.file_requests[1] && W.file_requests[2] && !W.have_requests);
+        for (i=0;i<5;i++) step();
+        CHECK(W.host_completions==1);
+        return 0;
+    }
+
+    CASE("window") {
+        char path[400];
+        unsigned char *data;
+        unsigned bytes=1u<<20;
+        int max_outstanding=0,max_queued=0,identity_ok;
+        data=make_bytes(bytes,7);
+        snprintf(path,sizeof(path),"%smcc_maps/solar_flare/bitmaps.map",H);
+        CHECK(write_file(path,data,bytes));free(data);
+        snprintf(path,sizeof(path),"%smcc_maps/solar_flare",H);
+        identity_digest(path,W.digest,&identity_ok);CHECK(identity_ok);
+        CHECK(mcc_share_client_begin(&W.join,LEVEL,W.digest));
+        for (i=0;i<5000 && !W.finished;i++) {
+            step();
+            if (W.join.outstanding>max_outstanding) max_outstanding=W.join.outstanding;
+            if (W.host.transfers[0].queued>max_queued) max_queued=W.host.transfers[0].queued;
+        }
+        /* every host queues 32 a transfer: as many in flight, never more */
+        CHECK(W.finished && W.finished_ok);
+        CHECK(max_outstanding==MCC_SHARE_CLIENT_WINDOW && max_queued<=MCC_SHARE_WINDOW*2);
         return 0;
     }
 

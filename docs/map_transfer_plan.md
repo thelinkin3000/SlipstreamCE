@@ -41,98 +41,42 @@ network version 44.
 
 ## Part A: MCC from the host and the Workshop at once (joiner side)
 
-The host's manifest already gives each file's kind, size, leaf name and
-SHA-256 (`mcc_share_entry`). Steam's manifest gives each file's path, size,
-whole-file SHA-1 and per-chunk SHA-1s. They cannot be compared directly, so a
-match is decided in three steps: same leaf names and sizes before downloading;
-the host's first bytes of each file hashed with SHA-1 along Steam's chunk
-boundaries and compared with Steam's chunk hashes; every finished file checked
-against the host's SHA-256 whatever its bytes came from (the check that
-exists).
+Built per file, not front/back within a file: OpenCE's MCC protocol already
+lets a joiner skip a whole resource map (`bitmaps.map`, `sounds.map`) it has
+copied locally and checked (`MCC_SHARE_OP_HAVE`, `host_request_have`), and
+then ends with the ordinary `DONE(1)`, so the host's finish and admission run
+as always. The host's order is the level's map, `bitmaps.map`, `sounds.map`,
+then metadata and credits; the resource maps are most of a package.
 
-The host only serves front to back, so the split is: the host fills from the
-front of the package (as now), Steam from the back, a chunk at a time; where
-they meet the joiner ends the host's transfer (`MCC_SHARE_OP_DONE`, flags 0,
-which every host accepts as a cancel). Steam's servers are usually faster than
-one player's upload, so most of a package comes from Steam.
-
-### A1. Native host: a Workshop item by id
-
-- `steam_downloads.c`: look an item up by id on the session thread
-  (`steam_cm_workshop_details` exists), then its manifest
-  (`steam_depot_manifest`), without downloading.
-- `steam_depot.c`: keep the whole-file SHA-1 (`FileMapping` field 5,
-  `sha_content`) in `steam_depot_file`.
-- Host imports (`host_imports.list`, `guest_host.h`, the three hosts):
-  `host_steam_item_lookup(id)`, `host_steam_item_poll(...)` (state, file list:
-  path, size, SHA-1, chunk offsets/sizes/SHA-1s), `host_steam_signed_in()`.
-- Needs a signed-in account owning MCC and Halo: CE Anniversary; otherwise the
-  lookup says so and the joiner goes host-only.
-
-### A2. Native host: ranges of a file from the back
-
-- A job: item, depot key, the file's chunks, the `.part` path the guest
-  writes, and a fence (the offset below which the guest's host transfer has
-  or will have the bytes). The files thread fetches chunks from the last down,
-  writes each at its offset (pwrite), never at or below the fence, and reports
-  the lowest offset it holds.
-- Imports: `host_steam_range_start`, `host_steam_range_fence` (the guest moves
-  the fence up as host bytes arrive), `host_steam_range_poll` (lowest held
-  offset, bytes, speed, error), `host_steam_range_cancel`.
-- Each chunk is checked against its SHA-1 as it is unpacked (exists).
-
-### A3. Guest MCC client: the split
-
-- `mcc_share_session.c` / `mcc_share_stage.c`: when the offer arrives and the
-  package carries a Workshop id (`mcc_workshop_wire_unpack`), look the item up
-  (A1). Match the host's files to the item's by leaf name (case aside) and
-  size; any difference, or a file the item lacks: host-only.
-- Write host bytes into the same `.part` files the Steam job writes. Move the
-  fence up as they land. When the host's front reaches the Steam job's lowest
-  offset in the last file it needs, send DONE(0) and stop requesting.
-- SHA-1 the host's bytes per Steam chunk as they arrive; the first complete
-  chunk of each file decides. A mismatch cancels the Steam job and discards
-  its ranges (tracked per file), and the host transfer goes on to the end.
-- Verify each file against the host's SHA-256 (exists). A file that fails is
-  fetched again from the host alone.
-- To check first: after DONE(0) the host does not call `host_finished`. Find
-  how the joiner is admitted then (its HAVE, `host_request_have`, and the
-  ordinary admission of a local package), against an OpenCE host and ours,
-  so the join in progress (#665) still happens.
-
-### A4. MCC's shared resource sets
-
-- The host never sends the base resources (bitmaps/sounds sets). A joiner
-  without matching copies cannot play today. When the check says they are
-  missing and the joiner is signed in, queue the shared sets on the existing
-  downloader (it fetches them from depot 976733) before or with the item.
-
-### A5. The prompt
-
-- DOWNLOAD stays the one choice; it splits automatically when A1 found a
-  matching item, else host-only. The Workshop page action stays for PCs.
-- Progress shows both sources: bytes and speed from the host and from Steam.
-- debug.txt: one line when the split is decided (or why not), one when the
-  sources meet, totals per source at the end.
-
-### A6. The host part, within what OpenCE allows
-
-- Joiner: `MCC_SHARE_WINDOW` 16 -> 32 requests in flight (every host queues
-  32; more would stall an OpenCE host). About twice the host part's speed.
-- Our hosts: `host_serve` opens, seeks and closes the file for every 3 KB
-  chunk on the game's thread. Keep the file open per transfer and read ahead
-  on a thread into a buffer, so the frame only copies.
-
-### A tests
-
-- Harness: the split's bookkeeping (fence, meeting, discard on mismatch,
-  re-fetch on a failed SHA-256), with negative controls; the joiner against
-  the unmodified host session code (its in-order rule, the 32 queue, DONE(0)).
-- `tools/test_host_mcc_hash.py`-style test for the SHA-1 along chunk
-  boundaries.
-- Device: a Workshop package joined from a signed-in Switch and Android, and
-  from one not signed in; an item whose Workshop version differs from the
-  host's.
+- Native host (`steam_downloads.c`, "a joiner's fetch"): the guest names the
+  Workshop item and the resource files of the host's list (leaf, size,
+  SHA-256). A thread of its own looks the item up by id, reads its manifest,
+  finds each file by leaf name and size, downloads it to
+  `mcc_staging/steam_fetch`, and checks it against the host's SHA-256
+  (`host_sha256_file`, the CPU's SHA instructions). Imports:
+  `host_steam_fetch_start/_status/_skip/_stop`. The Steam threads start
+  without the Workshop screen (`threads_start`).
+- MCC's shared sets (the base resources no host sends) are queued on the
+  existing downloader when missing (`host_steam_shared_fetch/_state`); the
+  staged download's identity check waits while they download.
+- Guest session (`mcc_share_session.c`): a new optional `reuse_wait`
+  callback. When the host's turn comes to a resource the local lookup did not
+  find, a nonzero answer holds the host's request for it (heartbeats keep the
+  host's transfer), asked again each update, at most `MCC_SHARE_HOLD_LIMIT`
+  (60 s, under the host's 80 s without progress). The host's rate is measured
+  for the decision.
+- Guest adapter (`mcc_share.c`): starts the fetch when the download is
+  accepted (Workshop item, Steam sign-in); `reuse_file` returns the
+  Workshop's file once ready; `reuse_wait` holds while the Workshop would
+  finish sooner than the host (and under 55 s), else tells the fetch to skip
+  the file and the host sends it. Progress shows the Workshop's part.
+- Within what OpenCE allows: the joiner keeps 32 chunk requests in flight
+  (every host queues 32); our hosts keep a served file open across chunks
+  (it was opened, sized and closed for every 3 KB); a local copy into the
+  stage runs up to 4 MB or 12 ms an update (was 1 MB).
+- Tests: `tools/test_mcc_share.py` cases hold_reuse, hold_limit,
+  hold_declined, window, with negative controls; `tools/test_steam_client.py`
+  builds the host code with -Werror.
 
 ## Part B: CE map sharing on the native host
 

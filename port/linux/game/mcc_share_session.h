@@ -18,6 +18,9 @@
 #define MCC_SHARE_LEVEL_SIZE 64
 #define MCC_SHARE_CHUNK_BYTES 3072
 #define MCC_SHARE_WINDOW 16
+/* The joiner's chunk requests in flight: every host queues MCC_SHARE_WINDOW * 2
+ * (32) of a transfer and ignores more, which stalls it, so never above that. */
+#define MCC_SHARE_CLIENT_WINDOW (MCC_SHARE_WINDOW * 2)
 #define MCC_SHARE_HOST_TRANSFERS 4
 #define MCC_SHARE_HOST_MACHINES 128
 #define MCC_SHARE_MANIFEST_PAGE 16
@@ -110,6 +113,12 @@ struct mcc_share_env {
     /* Optional verified-receipt candidate for bitmaps/sounds only. Return zero
      * when absent; the core copies and hashes the actual bytes before HAVE. */
     int (*reuse_file)(void *user, struct mcc_share_file const *file, char path[1024]);
+    /* Optional, bitmaps/sounds only, asked when the host's turn comes to a file
+     * reuse_file did not find: nonzero holds the host's request for it a while
+     * (the file is on its way from elsewhere, sooner than the host would send
+     * it: host_rate is the host's bytes a second so far, 0 not known). The core
+     * asks again each update and holds a file at most MCC_SHARE_HOLD_LIMIT. */
+    int (*reuse_wait)(void *user, struct mcc_share_file const *file, uint32_t host_rate);
     void (*finished)(void *user, int ok, char const *message);   /* installed, or why not */
     /* host */
     int (*send_response)(void *user, long machine, void const *message, unsigned bytes);
@@ -150,6 +159,10 @@ struct mcc_share_host_transfer {
     uint32_t hash_offset;
     struct mcc_sha256 hash;
     FILE *hash_stream;
+    /* the file being served, kept open between chunks (serve_file: its number, -1 none) */
+    FILE *serve_stream;
+    int serve_file;
+    uint32_t serve_offset;
     struct {
         uint8_t file;
         uint32_t offset, length;
@@ -204,6 +217,11 @@ struct mcc_share {
     int outstanding;
     FILE *reuse_stream;
     int reuse_checked_file, reuse_file, have_pending;
+    /* the file whose host request reuse_wait holds, and since when */
+    int hold_file;
+    uint32_t hold_since;
+    /* the host's bytes a second (smoothed), and the bytes and time it was last measured from */
+    uint32_t host_rate, host_rate_bytes, host_rate_at, host_bytes;
     char credit[MCC_SHARE_CREDIT_SIZE];
     struct mcc_share_stage stage;
 };

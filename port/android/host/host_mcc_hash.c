@@ -988,6 +988,38 @@ struct guest_result {
 enum { JOBS = 4 };
 enum { JOB_FREE, JOB_RUNNING, JOB_DONE, JOB_FAILED, JOB_ABANDONED };
 
+/* a file's plain SHA-256, read a megabyte at a time (host_mcc_hash.h) */
+int host_sha256_file(char const *path, unsigned char digest[32], volatile int const *cancel)
+{
+	static unsigned char buffer[1 << 20];
+	static pthread_mutex_t buffer_lock = PTHREAD_MUTEX_INITIALIZER;
+	struct sha sha;
+	FILE *file;
+	size_t got;
+	int ok = 1;
+
+	pthread_once(&hash_once, hash_setup);
+	file = fopen(path, "rb");
+	if (!file)
+		return 0;
+	sha_begin(&sha);
+	pthread_mutex_lock(&buffer_lock);
+	while ((got = fread(buffer, 1, sizeof(buffer), file)) > 0) {
+		if (cancel && *cancel) {
+			ok = 0;
+			break;
+		}
+		sha_add(&sha, buffer, got);
+	}
+	pthread_mutex_unlock(&buffer_lock);
+	if (ferror(file))
+		ok = 0;
+	fclose(file);
+	if (ok)
+		sha_end(&sha, digest);
+	return ok;
+}
+
 struct job {
 	int state;
 	volatile int cancel;
