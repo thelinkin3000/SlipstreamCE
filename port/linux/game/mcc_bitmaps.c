@@ -13,6 +13,7 @@
 #include "mcc_texture_cache.h"
 #include "../src/mcc_texture_bridge.h"
 #include "../src/port_config.h"
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 /* Unmodified iOrange/bcdec, MIT option (see third_party/bcdec/LICENSE).
@@ -42,6 +43,9 @@ struct mcc_textures {
     struct mcc_texture *items;
     struct mcc_bitmap_clone *clones;
     uint32_t count, end, capacity, clone_count, tag_capacity, stream_end;
+    /* BC7 bitmaps kept as DXT5 (mcc_bc7_to_dxt5), and the bytes that saved */
+    uint32_t transcoded;
+    uint64_t transcode_saved;
 };
 
 static void *mcc_bitmap_tag(struct mcc_runtime *runtime,uint32_t handle,uint32_t group,uint32_t size)
@@ -330,6 +334,160 @@ static void mcc_bitmap_decode(unsigned char const *input,uint32_t *output,
     }
 }
 
+/* ---------- BC7 as DXT5
+ *
+ * A BC7 bitmap (MCC's "high quality compression", format 18) was decoded to
+ * 32-bit ARGB at the map's load: four times its own size (BC7 is a byte a
+ * texel), for every BC7 bitmap of the map, for as long as it is loaded. A
+ * BC7 block is 16 bytes, as a DXT5 one is, so each is decoded and encoded
+ * again as DXT5 where it lies, and the bitmap goes on as an ordinary DXT5
+ * one - which every renderer draws already. DXT5 keeps less than BC7 (its
+ * colors are two endpoints and two points between them, a block's), the
+ * price of a quarter of the memory.
+ *
+ * The encoder: the colors' endpoints from the principal axis of the block's
+ * texels (the texels furthest along it), then refined twice by least
+ * squares over the indices they chose, whichever errs least kept; alpha from
+ * its smallest and largest values, eight steps between them. */
+static unsigned mcc_dxt_565(float const color[3])
+{
+    int r=(int)(color[0]*31.0f/255.0f+0.5f),g=(int)(color[1]*63.0f/255.0f+0.5f),b=(int)(color[2]*31.0f/255.0f+0.5f);
+    r=r<0 ? 0 : r>31 ? 31 : r;g=g<0 ? 0 : g>63 ? 63 : g;b=b<0 ? 0 : b>31 ? 31 : b;
+    return (unsigned)(r<<11|g<<5|b);
+}
+
+static void mcc_dxt_expand(unsigned color,int out[3])
+{
+    int r=(color>>11)&31,g=(color>>5)&63,b=color&31;
+    out[0]=r<<3|r>>2;out[1]=g<<2|g>>4;out[2]=b<<3|b>>2;
+}
+
+/* each texel's nearest of the four colors; the summed squared error */
+static uint32_t mcc_dxt_indices(unsigned char const *rgba,unsigned c0,unsigned c1,uint32_t *error)
+{
+    int palette[4][3],i,j,k;
+    uint32_t indices=0,total=0;
+    mcc_dxt_expand(c0,palette[0]);mcc_dxt_expand(c1,palette[1]);
+    for (k=0;k<3;k++) {
+        palette[2][k]=(2*palette[0][k]+palette[1][k])/3;
+        palette[3][k]=(palette[0][k]+2*palette[1][k])/3;
+    }
+    for (i=0;i<16;i++) {
+        uint32_t best=0xffffffffu;
+        int chosen=0;
+        for (j=0;j<4;j++) {
+            int dr=rgba[i*4]-palette[j][0],dg=rgba[i*4+1]-palette[j][1],db=rgba[i*4+2]-palette[j][2];
+            uint32_t distance=(uint32_t)(dr*dr+dg*dg+db*db);
+            if (distance<best) {best=distance;chosen=j;}
+        }
+        indices|=(uint32_t)chosen<<(2*i);
+        total+=best;
+    }
+    *error=total;
+    return indices;
+}
+
+static void mcc_dxt_color(unsigned char const *rgba,unsigned char *out)
+{
+    static float const weight[4]={1.0f,0.0f,2.0f/3.0f,1.0f/3.0f};
+    float mean[3]={0,0,0},covariance[6]={0,0,0,0,0,0},axis[3],low=1e30f,high=-1e30f,color[3];
+    int i,k,iteration,minimum[3]={255,255,255},maximum[3]={0,0,0},lowest=0,highest=0;
+    unsigned c0,c1;
+    uint32_t indices,error;
+    for (i=0;i<16;i++) for (k=0;k<3;k++) {
+        mean[k]+=rgba[i*4+k];
+        if (rgba[i*4+k]<minimum[k]) minimum[k]=rgba[i*4+k];
+        if (rgba[i*4+k]>maximum[k]) maximum[k]=rgba[i*4+k];
+    }
+    for (k=0;k<3;k++) mean[k]/=16.0f;
+    for (i=0;i<16;i++) {
+        float d0=rgba[i*4]-mean[0],d1=rgba[i*4+1]-mean[1],d2=rgba[i*4+2]-mean[2];
+        covariance[0]+=d0*d0;covariance[1]+=d0*d1;covariance[2]+=d0*d2;
+        covariance[3]+=d1*d1;covariance[4]+=d1*d2;covariance[5]+=d2*d2;
+    }
+    for (k=0;k<3;k++) axis[k]=(float)(maximum[k]-minimum[k]);
+    for (iteration=0;iteration<8;iteration++) {
+        float x=covariance[0]*axis[0]+covariance[1]*axis[1]+covariance[2]*axis[2];
+        float y=covariance[1]*axis[0]+covariance[3]*axis[1]+covariance[4]*axis[2];
+        float z=covariance[2]*axis[0]+covariance[4]*axis[1]+covariance[5]*axis[2];
+        float largest=fabsf(x);
+        if (fabsf(y)>largest) largest=fabsf(y);
+        if (fabsf(z)>largest) largest=fabsf(z);
+        if (largest<1e-6f) break;
+        axis[0]=x/largest;axis[1]=y/largest;axis[2]=z/largest;
+    }
+    for (i=0;i<16;i++) {
+        float t=(rgba[i*4]-mean[0])*axis[0]+(rgba[i*4+1]-mean[1])*axis[1]+(rgba[i*4+2]-mean[2])*axis[2];
+        if (t<low) {low=t;lowest=i;}
+        if (t>high) {high=t;highest=i;}
+    }
+    for (k=0;k<3;k++) color[k]=rgba[highest*4+k];
+    c0=mcc_dxt_565(color);
+    for (k=0;k<3;k++) color[k]=rgba[lowest*4+k];
+    c1=mcc_dxt_565(color);
+    indices=mcc_dxt_indices(rgba,c0,c1,&error);
+    for (iteration=0;iteration<2 && error;iteration++) {
+        float aa=0,bb=0,ab=0,ax[3]={0,0,0},bx[3]={0,0,0},determinant,a[3],b[3];
+        unsigned r0,r1;
+        uint32_t refined,refined_error;
+        for (i=0;i<16;i++) {
+            float w=weight[(indices>>(2*i))&3];
+            aa+=w*w;bb+=(1-w)*(1-w);ab+=w*(1-w);
+            for (k=0;k<3;k++) {ax[k]+=w*rgba[i*4+k];bx[k]+=(1-w)*rgba[i*4+k];}
+        }
+        determinant=aa*bb-ab*ab;
+        if (fabsf(determinant)<1e-6f) break;
+        for (k=0;k<3;k++) {
+            a[k]=(ax[k]*bb-bx[k]*ab)/determinant;
+            b[k]=(bx[k]*aa-ax[k]*ab)/determinant;
+        }
+        r0=mcc_dxt_565(a);r1=mcc_dxt_565(b);
+        refined=mcc_dxt_indices(rgba,r0,r1,&refined_error);
+        if (refined_error>=error) break;
+        c0=r0;c1=r1;indices=refined;error=refined_error;
+    }
+    /* (four colors whatever the order, in a DXT5 block; the larger first
+    all the same, as DXT1's four-color blocks are, for any decoder that asks) */
+    if (c0<c1) {unsigned swap=c0;c0=c1;c1=swap;indices^=0x55555555u;}
+    else if (c0==c1) indices=0;
+    out[0]=(unsigned char)c0;out[1]=(unsigned char)(c0>>8);
+    out[2]=(unsigned char)c1;out[3]=(unsigned char)(c1>>8);
+    for (i=0;i<4;i++) out[4+i]=(unsigned char)(indices>>(8*i));
+}
+
+static void mcc_dxt_alpha(unsigned char const *rgba,unsigned char *out)
+{
+    int i,j,low=255,high=0,palette[8];
+    uint64_t bits=0;
+    for (i=0;i<16;i++) {
+        if (rgba[i*4+3]<low) low=rgba[i*4+3];
+        if (rgba[i*4+3]>high) high=rgba[i*4+3];
+    }
+    out[0]=(unsigned char)high;out[1]=(unsigned char)low;
+    memset(out+2,0,6);
+    if (high==low) return;
+    /* the first larger: eight steps, not six and the two extremes */
+    palette[0]=high;palette[1]=low;
+    for (j=1;j<7;j++) palette[j+1]=((7-j)*high+j*low)/7;
+    for (i=0;i<16;i++) {
+        int best=256,chosen=0;
+        for (j=0;j<8;j++) {
+            int distance=abs(rgba[i*4+3]-palette[j]);
+            if (distance<best) {best=distance;chosen=j;}
+        }
+        bits|=(uint64_t)chosen<<(3*i);
+    }
+    for (i=0;i<6;i++) out[2+i]=(unsigned char)(bits>>(8*i));
+}
+
+static void mcc_bc7_to_dxt5(unsigned char *block)
+{
+    unsigned char rgba[64];
+    bcdec_bc7(block,rgba,16);
+    mcc_dxt_alpha(rgba,block);
+    mcc_dxt_color(rgba,block+8);
+}
+
 static uint32_t mcc_morton_axis(unsigned value,unsigned width,unsigned height,unsigned depth,unsigned axis)
 {
     unsigned dimensions[3]={width,height,depth},bit,position=0,n;
@@ -438,10 +596,16 @@ static int mcc_texture_prepare(struct mcc_runtime *runtime,struct mcc_textures *
     unsigned level,faces=bitmap->type==2 ? 6 : 1;
     uint64_t raw_size=0,decoded_size=0;
     unsigned char *raw=NULL,*pixels=NULL,*hardware=NULL;
-    int convert=bitmap->format==18 || texture->channels==2 || texture->channels==4 ||
-        ((bitmap->flags&16) && bitmap->format>=14 && bitmap->format<=17);
     int bytes_per_pixel=mcc_bitmap_bytes(bitmap->format);
     int non_power_two=bitmap->type==0 && ((bitmap->width&(bitmap->width-1)) || (bitmap->height&(bitmap->height-1)));
+    /* BC7 as DXT5 (mcc_bc7_to_dxt5) where it would be drawn as it is: a 2D
+    or cube texture of whole blocks, not linear and not one whose channels
+    are moved on the CPU, which must still be decoded */
+    int transcode=bitmap->format==18 && texture->channels!=2 && texture->channels!=4 &&
+        !(bitmap->flags&16) && !non_power_two && (bitmap->type==0 || bitmap->type==2) &&
+        bitmap->width>=4 && bitmap->height>=4;
+    int convert=(bitmap->format==18 && !transcode) || texture->channels==2 || texture->channels==4 ||
+        ((bitmap->flags&16) && bitmap->format>=14 && bitmap->format<=17);
     uint32_t input_offset=0,output_offset=0,hardware_size,allocation;
     if (bitmap->width<=0 || bitmap->height<=0 || bitmap->depth<=0 || bitmap->type<0 || bitmap->type>2 ||
         bitmap->width>16384 || bitmap->height>16384 || bitmap->depth>512 || bitmap->mipmap_count<0 || bitmap->mipmap_count>13 ||
@@ -480,6 +644,7 @@ static int mcc_texture_prepare(struct mcc_runtime *runtime,struct mcc_textures *
         normalized.format=11;
         normalized.flags&=~(2|4|8|32|0x100);
     } else normalized.flags&=~(8|0x100);
+    if (transcode) normalized.format=16;
     /* CEA bit 9 marks environment/lightmap use (Invader's public bitmap
      * schema). It is not a pixel-layout flag and has no Xbox counterpart. */
     normalized.flags&=~0x200;
@@ -523,6 +688,15 @@ static int mcc_texture_prepare(struct mcc_runtime *runtime,struct mcc_textures *
             goto failed;
         }
     } else if (!mcc_runtime_read(runtime,bitmap->pixels_offset,(uint32_t)raw_size,raw)) goto failed;
+    if (transcode) {
+        uint32_t block;
+        for (block=0;block<(uint32_t)(raw_size/16);block++) {
+            if (!(block&4095u)) mcc_loading_pulse();
+            mcc_bc7_to_dxt5(raw+(size_t)block*16);
+        }
+        textures->transcoded++;
+        textures->transcode_saved+=decoded_size>raw_size ? decoded_size-raw_size : 0;
+    }
     if (convert) {
         pixels=malloc(allocation);
         if (!pixels) goto out_of_memory;
@@ -626,6 +800,9 @@ int mcc_bitmaps_prepare(struct mcc_runtime *runtime)
         mcc_loading_update(MCC_LOADING_BITMAPS, index + 1, textures->count);
     }
     error(_error_silent,"mcc bitmaps: %lu textures converted to %lu bytes",textures->count,textures->end);
+    if (textures->transcoded)
+        error(_error_silent,"mcc bitmaps: %lu BC7 bitmaps kept as DXT5, %lu KB less than as 32-bit",
+            (unsigned long)textures->transcoded,(unsigned long)(textures->transcode_saved>>10));
     return 1;
 }
 
