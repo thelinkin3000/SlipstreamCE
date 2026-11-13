@@ -77,6 +77,15 @@ static char mcc_share_name[128];
 static unsigned char mcc_share_digest[32], mcc_share_metadata[32];
 static boolean mcc_share_prompt_pending, mcc_share_prompt_visible;
 static boolean mcc_share_prompt_download;
+/* The host's offer is in and the Workshop is being asked whether it has the
+ * package's resource maps (mcc_share_offered): the download is taken without
+ * asking when it does, the consent prompt shown only when the host is the
+ * only source (no Steam sign-in, not a Workshop item, the Workshop's copy not
+ * the host's, or no answer in MCC_SHARE_DECIDE_MS). Declined: the Workshop
+ * was asked and could not, so it is not asked again for this offer. */
+static boolean mcc_share_deciding, mcc_share_workshop_declined;
+static unsigned long mcc_share_deciding_at;
+#define MCC_SHARE_DECIDE_MS 20000u
 /* Manual guidance outlives the refused join, but never a new session. */
 static enum {
     MCC_SHARE_MANUAL_NONE,
@@ -99,6 +108,7 @@ void platform_translate_path(char const *, char *, unsigned long);
 void platform_open_url(char const *);
 void ui_widget_port_go_back(struct widget_instance *widget);
 static void mcc_share_offered(void *, uint64_t, char const *);
+static int mcc_share_client_current(void);
 static void mcc_share_host_lifecycle(void);
 struct network_game_server_client_machine *network_game_server_get_client_machine_at_index(struct network_game_server *,long);
 boolean network_game_server_client_machine_is_joined_to_game(struct network_game_server *,struct network_game_server_client_machine *);
@@ -569,6 +579,10 @@ static void mcc_share_fetch_begin(void)
         error(_error_silent,"mcc share: MCC's shared files are missing here: downloading them from Steam too");
 #endif
     if (!mcc_share_fetch.count) return;
+    if (mcc_share_workshop_declined) {
+        mcc_share_fetch.count=0;
+        return;
+    }
     if (!mcc_workshop_wire_unpack(mcc_share_name,&item) || !item.id[0]) {
         error(_error_silent,"mcc share: %s is not a Workshop item: all from the host",mcc_share_globals.level);
         mcc_share_fetch.count=0;
@@ -834,7 +848,52 @@ static void mcc_share_offered(void *user,uint64_t bytes,char const *credit)
         "Maps, required metadata/resources and supported previews are included.\n"
         "Your existing installation will be kept.\nMaker: %s",
         (double)bytes/(1024.0*1024.0),credit[0] ? credit : "Not provided");
+    /* The Workshop asked first (its files go to mcc_staging/steam_fetch alone
+     * until the download is taken): the prompt only when the host is the only
+     * source (mcc_share_workshop_decide). */
+    mcc_share_workshop_declined=FALSE;
+    mcc_share_fetch_begin();
+    if (mcc_share_fetch.active) {
+        mcc_share_deciding=TRUE;
+        mcc_share_deciding_at=system_milliseconds();
+        error(_error_silent,"mcc share: asking the Workshop for %s before asking the player",mcc_share_globals.level);
+        return;
+    }
     mcc_share_prompt_pending=TRUE;
+}
+
+/* (each frame while deciding) the Workshop has the package's resource maps
+(one of them downloading, or done): the download taken without asking; none
+of them there, or no answer in time: the prompt, the host the only source */
+static void mcc_share_workshop_decide(void)
+{
+    int i,available=0,unavailable=0;
+    if (!mcc_share_deciding) return;
+    if (!mcc_share_fetch.active || mcc_share_globals.state!=MCC_SHARE_CLIENT_WAITING || !mcc_share_client_current()) {
+        mcc_share_deciding=FALSE;
+        return;
+    }
+    for (i=0;i<mcc_share_fetch.count;i++) {
+        int state=mcc_share_fetch_state(i);
+        available+=state==MCC_FETCH_DOWNLOADING || state==MCC_FETCH_CHECKING || state==MCC_FETCH_READY;
+        unavailable+=state==MCC_FETCH_UNAVAILABLE;
+    }
+    if (available) {
+        mcc_share_deciding=FALSE;
+        mcc_share_prompt_download=FALSE;
+        error(_error_silent,"mcc share: the Workshop has %s's resource maps: downloading without asking",
+            mcc_share_globals.level);
+        mcc_share_client_accept(&mcc_share_globals);
+        return;
+    }
+    if (unavailable==mcc_share_fetch.count || system_milliseconds()-mcc_share_deciding_at>=MCC_SHARE_DECIDE_MS) {
+        error(_error_silent,"mcc share: the Workshop cannot give %s's resource maps (%s): asking the player",
+            mcc_share_globals.level,unavailable==mcc_share_fetch.count ? "not there or not the host's" : "no answer");
+        mcc_share_deciding=FALSE;
+        mcc_share_workshop_declined=TRUE;
+        mcc_share_fetch_end();
+        mcc_share_prompt_pending=TRUE;
+    }
 }
 
 static int mcc_share_client_current(void)
@@ -1076,6 +1135,7 @@ void mcc_share_game_update(
     }
     mcc_share_host_lifecycle();
     mcc_share_update(&mcc_share_globals);
+    mcc_share_workshop_decide();
     if (mcc_share_fetch.active && !mcc_share_client_busy(&mcc_share_globals)) mcc_share_fetch_end();
     if ((mcc_share_prompt_pending || mcc_share_prompt_visible) && !mcc_share_prompt_download &&
         mcc_share_manual==MCC_SHARE_MANUAL_NONE && mcc_share_client_current()) {
@@ -1120,6 +1180,8 @@ void mcc_share_game_render(
 	percent = mcc_share_client_percent(&mcc_share_globals);
 	if (mcc_share_globals.state==MCC_SHARE_CLIENT_VERIFYING)
         snprintf(mcc_share_text,sizeof(mcc_share_text),"Verifying the downloaded map %s...",name);
+	else if (mcc_share_deciding)
+		snprintf(mcc_share_text, sizeof(mcc_share_text), "Looking for the map %s on the Workshop...", name);
 	else if (percent <= 0)
 		snprintf(mcc_share_text, sizeof(mcc_share_text), "Asking the host for the map %s...", name);
 	else if (mcc_share_fetch_percent() >= 0)
