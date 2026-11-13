@@ -41,6 +41,46 @@ static struct mcc_runtime mcc_loaded_cache;
 static FILE *mcc_stream;
 static boolean mcc_loaded;
 
+/* How long each stage of an MCC map's load took, said once the load ends
+(or fails, as far as it got): which stage is worth making faster, and
+whether a change did. */
+unsigned long system_milliseconds(void);
+enum {
+    MCC_TIMING_READ, MCC_TIMING_RESOURCES, MCC_TIMING_TAG_COPY, MCC_TIMING_TAGS, MCC_TIMING_SCRIPTS,
+    MCC_TIMING_GEOMETRY, MCC_TIMING_AUDIO, MCC_TIMING_BITMAPS, MCC_TIMING_VALIDATION, MCC_TIMING_FINISH,
+    MCC_TIMING_COUNT
+};
+static struct { unsigned long start, last, elapsed[MCC_TIMING_COUNT]; int reached; } mcc_timing;
+
+static void mcc_timing_begin(void)
+{
+    memset(&mcc_timing, 0, sizeof(mcc_timing));
+    mcc_timing.start = mcc_timing.last = system_milliseconds();
+}
+
+static void mcc_timing_mark(int stage)
+{
+    unsigned long now = system_milliseconds();
+    mcc_timing.elapsed[stage] = now - mcc_timing.last;
+    mcc_timing.last = now;
+    mcc_timing.reached = stage + 1;
+}
+
+static void mcc_timing_report(char const *name)
+{
+    static char const *const names[MCC_TIMING_COUNT] = {
+        "read", "resources", "tag copy", "tags", "scripts", "geometry", "audio", "bitmaps", "validation", "finish"
+    };
+    char line[384];
+    int stage, used;
+    used = snprintf(line, sizeof(line), "mcc timing: %s: %lu ms in all", name ? name : "(unnamed)",
+        system_milliseconds() - mcc_timing.start);
+    for (stage = 0; stage < mcc_timing.reached && used > 0 && used < (int)sizeof(line); stage++)
+        used += snprintf(line + used, sizeof(line) - (size_t)used, "%s %s %lu", stage ? "," : ";",
+            names[stage], mcc_timing.elapsed[stage]);
+    error(_error_silent, "%s", line);
+}
+
 /* Menu selection, local admission and readiness ask about the same package.
  * Retain only its small validation result, never an open file or converted tags. */
 static struct {
@@ -327,6 +367,7 @@ struct cache_file_tag_header *mcc_cache_tags_load(char const *name, void *header
     char memory_problem[192];
     char const *problem = "the map could not be opened";
     mcc_cache_tags_unload();
+    mcc_timing_begin();
     mcc_stream = mcc_open_explain(mcc_identity_local_name(name), &runtime->source, &identity,
         runtime->failure,sizeof(runtime->failure));
     if (!mcc_stream) goto failed;
@@ -343,6 +384,7 @@ struct cache_file_tag_header *mcc_cache_tags_load(char const *name, void *header
         mcc_cache_status_string(status),(unsigned long)runtime->report.problem_tag,
         (unsigned long)runtime->report.problem_location);
     if (status != MCC_CACHE_OK) goto failed;
+    mcc_timing_mark(MCC_TIMING_READ);
     problem = "Its MCC resources could not be selected. See debug.txt for the failing check.";
     if (!mcc_resources_select(runtime,raw)) goto failed;
     mcc_loading_update(MCC_LOADING_RESOURCES, 1, 3);
@@ -353,6 +395,7 @@ struct cache_file_tag_header *mcc_cache_tags_load(char const *name, void *header
     mcc_loading_update(MCC_LOADING_RESOURCES, 2, 3);
     problem = "Its map or resources changed after joining. Rejoin with the host's matching complete package.";
     if (!mcc_identity_loaded(name,runtime)) goto failed;
+    mcc_timing_mark(MCC_TIMING_RESOURCES);
     runtime->capacity = MCC_CACHE_TAG_CAPACITY;
     runtime->tags = mcc_memory_reserve(runtime->report.tag_base, runtime->capacity);
     if (!runtime->tags) {
@@ -372,21 +415,27 @@ struct cache_file_tag_header *mcc_cache_tags_load(char const *name, void *header
     raw = NULL;
     problem = "Its saved-game identity could not be prepared. See debug.txt for details.";
     if (!mcc_scenario_identity(runtime, name)) goto failed;
+    mcc_timing_mark(MCC_TIMING_TAG_COPY);
     problem = "Its map data could not be converted. Check for an updated map; debug.txt has the failing check.";
     mcc_loading_stage(MCC_LOADING_TAGS);
     if (!mcc_hud_bitmaps_prepare(runtime) || !mcc_tags_prepare(runtime)) goto failed;
+    mcc_timing_mark(MCC_TIMING_TAGS);
     mcc_loading_stage(MCC_LOADING_SCRIPTS);
     problem = "Its scripts could not be prepared. Check for an updated map; debug.txt names the failing script check.";
     if (!mcc_scripts_prepare(runtime)) goto failed;
+    mcc_timing_mark(MCC_TIMING_SCRIPTS);
     mcc_loading_stage(MCC_LOADING_GEOMETRY);
     problem = "Its level geometry could not be prepared. See debug.txt for the failing geometry check.";
     if (!mcc_geometry_prepare(runtime)) goto failed;
+    mcc_timing_mark(MCC_TIMING_GEOMETRY);
     mcc_loading_stage(MCC_LOADING_AUDIO);
     problem = "Its sounds could not be converted. See debug.txt for the failing sound check.";
     if (!mcc_audio_prepare(runtime)) goto failed;
+    mcc_timing_mark(MCC_TIMING_AUDIO);
     mcc_loading_stage(MCC_LOADING_BITMAPS);
     problem = "Its textures could not be converted. See debug.txt for the failing texture check.";
     if (!mcc_bitmaps_prepare(runtime)) goto failed;
+    mcc_timing_mark(MCC_TIMING_BITMAPS);
     /* The runtime tag table is stock-shaped. The independent wire reader's
      * report retains model offsets; no other loader sees an MCC header. */
     memset(runtime->tags + 16, 0, 20);
@@ -396,6 +445,7 @@ struct cache_file_tag_header *mcc_cache_tags_load(char const *name, void *header
     problem = "Its converted map data failed validation. Check for an updated map; debug.txt has the failing check.";
     mcc_loading_stage(MCC_LOADING_VALIDATION);
     if (!mcc_tags_validate(runtime)) goto failed;
+    mcc_timing_mark(MCC_TIMING_VALIDATION);
     if (!mcc_runtime_read(runtime, 0, MCC_CACHE_HEADER_BYTES, header)) {
         problem = "Its map header could not be read. Check that the complete file is accessible.";
         goto failed;
@@ -408,10 +458,13 @@ struct cache_file_tag_header *mcc_cache_tags_load(char const *name, void *header
     mcc_loading_stage(MCC_LOADING_SCENARIO);
     mcc_bitmaps_prepare_gpu(runtime);
     mcc_campaign_begin();
+    mcc_timing_mark(MCC_TIMING_FINISH);
     error(_error_silent, "mcc: loaded %s (%lu tags, %lu bytes of runtime tags)", name,
         (unsigned long)runtime->report.tag_count, (unsigned long)runtime->used);
+    mcc_timing_report(name);
     return (struct cache_file_tag_header *)runtime->tags;
 failed:
+    mcc_timing_report(name);
     error(_error_silent, "mcc: refused %s: %s", name ? name : "(unnamed)", problem);
     if (runtime->failure[0]) error(_error_silent,"mcc: %s",runtime->failure);
     {
