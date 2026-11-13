@@ -155,6 +155,8 @@ static struct
 	long slots[MAXIMUM_HOST_ROWS];
 	long slot_count;
 	long chosen_slot;
+	/* the first of them shown: a window kept about the chosen one */
+	long players_top;
 	/* B pressed once: until when a second stops hosting */
 	unsigned long confirm_until;
 	char status[96];
@@ -772,6 +774,28 @@ static void host_arrow(
 	}
 }
 
+/* a triangle pointing up or down, its tip at (x, y): a list's rows hidden
+past its top or its bottom */
+static void host_marker(
+	short x,
+	short y,
+	short size,
+	boolean up,
+	pixel32 color)
+{
+	short row;
+	rectangle2d strip;
+
+	for (row = 0; row < size; row++)
+	{
+		strip.x0 = (short)(x - row);
+		strip.x1 = (short)(x + row + 1);
+		strip.y0 = (short)(up ? y + row : y - row - 1);
+		strip.y1 = (short)(strip.y0 + 1);
+		draw_quad(&strip, color);
+	}
+}
+
 static char const *host_state_text(
 	short state)
 {
@@ -1282,7 +1306,23 @@ void host_dashboard_draw(
 			host_text(small_font_index, inside.x0, line, inside.x1, small_line_height, _host_text_left,
 				&host_lavender, "WAITING FOR PLAYERS TO JOIN");
 		}
-		for (column = 0; column < host.slot_count && line + row_height <= inside.y1; column++)
+		/* (the rows that fit, a window kept about the player chosen) */
+		{
+			long visible = MAX(1, (inside.y1 - line + HOST_ROW_GAP) / (row_height + HOST_ROW_GAP));
+			long chosen_row = 0;
+
+			for (column = 0; column < host.slot_count; column++)
+			{
+				if (host.slots[column] == host.chosen_slot)
+					chosen_row = column;
+			}
+			if (chosen_row < host.players_top)
+				host.players_top = chosen_row;
+			if (chosen_row >= host.players_top + visible)
+				host.players_top = chosen_row - visible + 1;
+			host.players_top = PIN(host.players_top, 0, MAX(0, host.slot_count - visible));
+		}
+		for (column = (short)host.players_top; column < host.slot_count && line + row_height <= inside.y1; column++)
 		{
 			char name[16];
 			char value[32];
@@ -1327,6 +1367,17 @@ void host_dashboard_draw(
 					small_line_height, _host_text_right, &host_lavender, value);
 			}
 			line = (short)(line + row_height + HOST_ROW_GAP);
+		}
+		/* (more players above or below the rows shown: a marker in the
+		panel's margin over or under them) */
+		{
+			short centre = (short)((inside.x0 + inside.x1) / 2);
+			pixel32 marker = HOST_COLOR(0xFF, 0xFF, 0xFF, 0xFF);
+
+			if (host.players_top > 0)
+				host_marker(centre, (short)(inside.y0 - HOST_PADDING * 2 + 3), HOST_PADDING, TRUE, marker);
+			if (column < host.slot_count)
+				host_marker(centre, (short)(line - HOST_ROW_GAP + HOST_PADDING * 2 - 3), HOST_PADDING, FALSE, marker);
 		}
 	}
 

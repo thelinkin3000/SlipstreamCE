@@ -7960,12 +7960,15 @@ unsigned char ui_widget_port_pointer_steps_with_stick(void *instance)
 }
 
 static short host_list_hidden(struct widget_instance const *list, boolean forward);
+static short lobby_list_hidden(struct widget_instance const *list, boolean forward);
 
 /* halo_linux_source_fixups.h: the items past a list's rows (the server
-browser's, the Host screens'), for a touch drag to go on through */
+browser's, the lobby's players, the Host screens'), for a touch drag to go
+on through */
 short ui_widget_port_list_hidden(void *instance, unsigned char forward)
 {
 	struct widget_instance *widget = instance;
+	size_t length = widget && widget->name ? strlen(widget->name) : 0;
 
 	if (!widget || !widget->name)
 		return 0;
@@ -7974,6 +7977,8 @@ short ui_widget_port_list_hidden(void *instance, unsigned char forward)
 		return (short)MAX(0, forward ? lobby_browser.count - lobby_browser.first - BROWSER_ROWS :
 			lobby_browser.first);
 	}
+	if (length >= 10 && !strcmp(widget->name + length - 10, "lobby_list"))
+		return lobby_list_hidden(widget, forward);
 	return host_list_hidden(widget, forward);
 }
 
@@ -10322,6 +10327,13 @@ enum
 };
 
 static void map_vote_lobby_check(void);
+
+/* the lobby's players past its rows, before or after them (ui_widget_port_list_hidden) */
+static short lobby_list_hidden(struct widget_instance const *list, boolean forward)
+{
+	(void)list;
+	return (short)MAX(0, forward ? lobby_player_count - multiplayer.lobby_first - LOBBY_ROWS : multiplayer.lobby_first);
+}
 
 /* "port lobby update" */
 static void lobby_update(struct widget_instance *list)
