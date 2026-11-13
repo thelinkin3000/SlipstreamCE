@@ -40,6 +40,7 @@ Called from the main loop every frame (main.c).
 #include "network_map_vote.h"
 #include "server_director.h"
 #include "bots.h" /* port: port/linux/game/bots.c */
+#include "mcc_server.h"
 #include "server_gametypes.h"
 
 #include "../src/p2p.h" /* port: port/linux/src/p2p.c, p2p_lobby.c */
@@ -68,6 +69,7 @@ unsigned long system_milliseconds(void);
 extern boolean debug_no_drawing;
 /* (menu_functions.c's) */
 extern boolean ui_widget_port_cooperative_level_choose(char const *map_name, short difficulty);
+extern boolean ui_widget_port_mcc_cooperative_level_choose(char const *map_name, short difficulty);
 extern void ui_widget_port_cooperative_settings_apply(void);
 /* (port/linux/src/updater.c's) */
 int updater_server_check(void);
@@ -1021,6 +1023,8 @@ void server_director_reload(
 		server_log(_server_log_warning, "server", "config.toml cannot be read again: nothing changed");
 		return;
 	}
+	/* MCC discovery waits for pregame; legacy rotation resolution is unchanged. */
+	mcc_server_request_rescan();
 	/* (server.vpn_list's file, vpn_allow.txt and vpn_block.txt too) */
 	server_netlist_reload();
 	server_read_rotation(&scratch, config_string("server.rotation"));
@@ -2419,6 +2423,8 @@ void server_update(
 
 	network_server = global_network_game_server_get();
 	network_state = server_network_state();
+	mcc_server_update((network_state == SERVER_PREGAME && server.state != _server_state_loading &&
+        server.state != _server_state_playing) || (!network_server && main_menu_loaded));
 	server.state_seconds += seconds;
 	server_mode_set_idle(!network_server ||
 		(network_state == SERVER_PREGAME && !network_game_server_port_remote_machine_count(network_server, FALSE)));

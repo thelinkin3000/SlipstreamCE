@@ -15,6 +15,7 @@ A dedicated server's rotation and gametype rules (server_rotation.h).
 #include "platform.h"
 #include "port_config.h"
 #include "posix.h"
+#include "../game/mcc_server.h"
 #endif
 
 /* ---------- the rules */
@@ -379,8 +380,7 @@ int server_rotation_parse_entry(const char *text, int length, struct server_entr
 	{
 		char *map = copy;
 		size_t map_length;
-		char prefix[12] = "";
-		char mcc_prefix[9] = "";
+		char prefix[12] = "", mcc_prefix[9] = "";
 
 		while (is_space(*map))
 			map++;
@@ -402,42 +402,15 @@ int server_rotation_parse_entry(const char *text, int length, struct server_entr
 		/* (custom_maps\ in any case) */
 		if (map_length >= 12 && map[11] == '\\')
 			snprintf(prefix, sizeof(prefix), "%.11s", map);
-		/* (an MCC map, mcc_maps\[package\]name in any case: its package a
-		folder of mcc_maps, or none) */
-		if (map_length >= 10 && map[8] == '\\')
+		/* Explicit MCC names are resolved by the MCC adapter. Bare names
+		retain their Xbox/CE lookup order. */
+		if (map_length >= 9 && map[8] == '\\')
 			snprintf(mcc_prefix, sizeof(mcc_prefix), "%.8s", map);
 		if (text_equal_case(mcc_prefix, "mcc_maps"))
 		{
-			const char *rest = map + 9, *slash = strchr(rest, '\\');
-			char package[SERVER_MAP_SIZE] = "";
-			const char *name = rest;
-			int written;
-
 			entry->map_kind = _server_map_mcc;
-			memcpy(entry->map, "mcc_maps", 8);
-			if (slash)
-			{
-				if ((size_t)(slash - rest) >= sizeof(package))
-				{
-					snprintf(entry->rejected, sizeof(entry->rejected), "the map's name is too long");
-					return 1;
-				}
-				snprintf(package, sizeof(package), "%.*s", (int)(slash - rest), rest);
-				name = slash + 1;
-			}
-			if ((slash && !plain_name(package)) || strchr(name, '\\') || !plain_name(name))
-			{
-				snprintf(entry->rejected, sizeof(entry->rejected), "\"%s\" is not an MCC map's name", map);
-				return 1;
-			}
-			snprintf(entry->map_name, sizeof(entry->map_name), "%s", name);
-			written = slash ? snprintf(entry->level, sizeof(entry->level), "mcc_maps\\%s\\%s", package, name) :
-				snprintf(entry->level, sizeof(entry->level), "mcc_maps\\%s", name);
-			if (written < 0 || written >= (int)sizeof(entry->level))
-			{
-				snprintf(entry->rejected, sizeof(entry->rejected), "the map's name is too long");
-				return 1;
-			}
+			snprintf(entry->level, sizeof(entry->level), "%s", map);
+			snprintf(entry->map_name, sizeof(entry->map_name), "%s", strrchr(map, '\\') + 1);
 		}
 		else if (text_equal_case(prefix, "custom_maps"))
 		{
@@ -759,11 +732,6 @@ static void custom_maps_folder(char *folder, int size)
 		platform_translate_path("d:\\custom_maps", folder, (unsigned long)size);
 }
 
-/* (the MCC catalog's, port/linux/game/mcc_maps.c: a level's index, NONE (-1)
-for none; whether a campaign level) */
-short mcc_maps_find(char const *level_name);
-unsigned char mcc_maps_campaign(short index);
-
 void server_rotation_resolve(struct server_entry *entry)
 {
 	char path[1024];
@@ -772,23 +740,9 @@ void server_rotation_resolve(struct server_entry *entry)
 
 	if (entry->rejected[0])
 		return;
-	/* an MCC map: the catalog's (mcc_maps and its packages, and the Steam
-	Workshop's), a campaign level only as co-op and a multiplayer map never so */
 	if (entry->map_kind == _server_map_mcc)
 	{
-		short index = mcc_maps_find(entry->level);
-		int coop = !strcmp(entry->gametype, "coop");
-
-		if (index < 0)
-		{
-			snprintf(entry->rejected, sizeof(entry->rejected), "there is no MCC map %s (mcc_maps)", entry->level);
-			entry->map_missing = 1;
-		}
-		else if (mcc_maps_campaign(index) && !coop)
-			snprintf(entry->rejected, sizeof(entry->rejected), "%s is an MCC campaign level (as co-op: %s:coop)",
-				entry->map_name, entry->map);
-		else if (!mcc_maps_campaign(index) && coop)
-			snprintf(entry->rejected, sizeof(entry->rejected), "%s is not a campaign level, for co-op", entry->map_name);
+		mcc_server_resolve(entry);
 		return;
 	}
 	custom_maps_folder(folder, sizeof(folder));
@@ -896,6 +850,7 @@ int server_maps_each(void (*each)(void *context, const char *name, const char *l
 	count = maps_in_folder(folder, 0, each, context);
 	custom_maps_folder(folder, sizeof(folder));
 	count += maps_in_folder(folder, 1, each, context);
+	count += mcc_server_maps_each(each, context);
 	return count;
 }
 
