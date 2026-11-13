@@ -204,6 +204,7 @@ symbols in this file:
 /* port/linux/game/network_distributed.c's */
 void network_distributed_handle_message(long machine_index, word const *message, word size);
 boolean network_replay_playing(void);
+boolean network_replay_game_size_taken(unsigned long size);
 
 /* ---------- constants */
 
@@ -968,7 +969,10 @@ static boolean network_game_client_receive_game_settings_piece(
 {
 	boolean result = TRUE;
 
-	if (piece->total_size != sizeof(network_game_client_settings_staging) || /* port: one complete versioned record */
+	/* port: one complete versioned record (or, in a replay, one recorded
+	before the game had its MCC identities: network_replay_game_size_taken,
+	the rest left zero) */
+	if (!network_replay_game_size_taken(piece->total_size) ||
 		!piece->length ||
 		piece->length > sizeof(piece->data) ||
 		piece->offset + piece->length > piece->total_size)

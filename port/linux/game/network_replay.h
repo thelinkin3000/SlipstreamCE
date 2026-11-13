@@ -134,6 +134,10 @@ boolean network_replay_watch(char const *path, char *why, long why_size);
 older one whose messages are this one's but for the kinds
 network_replay_skips_message leaves out (port/linux/network_format.txt) */
 boolean network_replay_network_version_playable(unsigned long network_version);
+/* whether a whole game record (struct network_game) of size bytes is taken:
+this build's, or, while a replay plays, a build's from before the game had
+its MCC identities (network_replay_playback.c) */
+boolean network_replay_game_size_taken(unsigned long size);
 
 /* whether a distributed message of the kind is not read from the replay
 being played: one whose layout changed since its network version

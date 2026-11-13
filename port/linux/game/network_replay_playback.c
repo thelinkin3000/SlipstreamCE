@@ -213,6 +213,14 @@ read from a replay older than the version that changed them
 (port/linux/network_format.txt's fingerprints; 40 changed only a client's
 join request, which no replay has) */
 #define REPLAY_OLDEST_NETWORK_VERSION 39
+/* The game (struct network_game) as builds before its MCC identities
+(mcc_content_sha256, mcc_metadata_sha256: its last 64 bytes, the MCC
+support merge) recorded it: the replay's first record, and each settings
+update's whole record. Everything before them is laid out as it was, and
+an Xbox or Custom Edition game's identities are zero: such a game is taken
+with them zero (network_replay_game_size_taken). Without this every replay
+recorded before the merge said "This replay has no game to play." */
+#define REPLAY_GAME_SIZE_BEFORE_MCC (sizeof(struct network_game) - 64)
 static struct
 {
 	unsigned long changed_in;
@@ -1149,18 +1157,21 @@ boolean network_replay_watch(
 		return FALSE;
 	}
 	playback.network_version = network_version;
-	/* (its first record is the game) */
+	/* (its first record is the game: as this build's, or as a build's before
+	the game had its MCC identities, network_replay_game_size_taken) */
 	record = playback_record((long)header_size, &record_size);
-	if (!record || record[0] != _network_replay_game || record_size != sizeof(game))
+	if (!record || record[0] != _network_replay_game ||
+		(record_size != sizeof(game) && record_size != REPLAY_GAME_SIZE_BEFORE_MCC))
 	{
 		free(header);
 		snprintf(why, (size_t)why_size, "This replay has no game to play.");
 		playback_free();
 		return FALSE;
 	}
-	csmemcpy(&game, record + REPLAY_RECORD_HEADER_SIZE, sizeof(game));
+	csmemset(&game, 0, sizeof(game));
+	csmemcpy(&game, record + REPLAY_RECORD_HEADER_SIZE, record_size);
 	playback.start_tick = (long)replay_get_long(header + 24);
-	playback.next = (long)(header_size + REPLAY_RECORD_HEADER_SIZE + sizeof(game));
+	playback.next = (long)(header_size + REPLAY_RECORD_HEADER_SIZE + record_size);
 	playback_find_recorders(format, header, header_size);
 	free(header);
 	playback_index_facings();
@@ -1181,6 +1192,13 @@ boolean network_replay_watch(
 	playback.starting = TRUE;
 	error(_error_log, "replay: playing %s (%s), from tick %ld", path, game.map.name, playback.start_tick);
 	return TRUE;
+}
+
+boolean network_replay_game_size_taken(
+	unsigned long size)
+{
+	return size == sizeof(struct network_game) ||
+		(network_replay_playing() && size == REPLAY_GAME_SIZE_BEFORE_MCC);
 }
 
 boolean network_replay_network_version_playable(
