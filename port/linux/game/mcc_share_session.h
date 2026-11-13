@@ -132,6 +132,12 @@ struct mcc_share_env {
     /* Optional: a transfer the host gave up before offering it (the reply says only
      * its result), and why, for the host's log. */
     void (*host_refused)(void *user, long machine, char const *level, int result, char const *why);
+    /* Optional: a file's SHA-256 and size worked out elsewhere (the host's
+     * threads), not a slice a frame here. begin: a job, or -1 (hashed here);
+     * poll: 1 done, 0 not yet, -1 failed; cancel releases a job not done. */
+    int (*hash_begin)(void *user, char const *path);
+    int (*hash_poll)(void *user, int job, uint8_t digest[32], uint64_t *size);
+    void (*hash_cancel)(void *user, int job);
     /* joiner: the bytes free where the package will go, or 0 when that is not known */
     uint64_t (*free_bytes)(void *user);
     /* No files are written before accept. NULL retains automatic acceptance for callers
@@ -162,6 +168,11 @@ struct mcc_share_host_transfer {
     uint32_t hash_offset;
     struct mcc_sha256 hash;
     FILE *hash_stream;
+    /* hash_begin's job for the file in hand (hash_job_active: there is one),
+     * and what releases it should the transfer end first */
+    int hash_job, hash_job_active;
+    void (*hash_job_cancel)(void *user, int job);
+    void *hash_job_user;
     /* the file being served, kept open between chunks (serve_file: its number, -1 none) */
     FILE *serve_stream;
     int serve_file;

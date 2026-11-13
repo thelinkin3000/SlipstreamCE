@@ -149,6 +149,9 @@ static struct {
     int verify_heartbeats;
     /* reuse_wait: its calls and answer; whether the held files have come in */
     int wait_calls, wait_answer, reuse_ready;
+    /* hash_begin's jobs: their files, polls each, cancels; a failing one */
+    char hash_paths[4][1024];
+    int hash_jobs, hash_polls[4], hash_cancels, hash_fail;
 } W;
 
 static uint32_t env_now(void *u) { (void)u; return W.clock; }
@@ -287,6 +290,31 @@ static int env_wait(void *u, struct mcc_share_file const *file, uint32_t host_ra
     W.wait_calls++;
     return W.wait_answer;
 }
+/* a file hashed elsewhere: done on its third poll */
+static int env_hash_begin(void *u, char const *path)
+{
+    (void)u;
+    if (W.hash_jobs>=4) return -1;
+    snprintf(W.hash_paths[W.hash_jobs],sizeof(W.hash_paths[0]),"%s",path);
+    return W.hash_jobs++;
+}
+static int env_hash_poll(void *u, int job, uint8_t digest[32], uint64_t *size)
+{
+    struct mcc_sha256 h;
+    unsigned char *data;
+    unsigned bytes;
+    (void)u;
+    if (job<0 || job>=W.hash_jobs) exit(93);
+    if (++W.hash_polls[job]<3) return 0;
+    if (W.hash_fail) return -1;
+    data=read_file(W.hash_paths[job],&bytes);
+    if (!data) return -1;
+    mcc_sha256_begin(&h);mcc_sha256_add(&h,data,(int)bytes);mcc_sha256_end(&h,digest);
+    free(data);
+    *size=bytes;
+    return 1;
+}
+static void env_hash_cancel(void *u, int job) { (void)u;(void)job; W.hash_cancels++; }
 static void env_finished(void *u, int ok, char const *text)
 {
     (void)u;
@@ -1274,6 +1302,29 @@ int main(int argc,char **argv)
         CHECK(W.finished && W.finished_ok && W.file_requests[1] && W.file_requests[2] && !W.have_requests);
         for (i=0;i<5;i++) step();
         CHECK(W.host_completions==1);
+        return 0;
+    }
+
+    if (!strcmp(argv[1],"hashed_elsewhere") || !strcmp(argv[1],"hashed_elsewhere_fails")) {
+        W.host.env.hash_begin=env_hash_begin;
+        W.host.env.hash_poll=env_hash_poll;
+        W.host.env.hash_cancel=env_hash_cancel;
+        W.hash_fail=!strcmp(argv[1],"hashed_elsewhere_fails");
+        CHECK(mcc_share_client_begin(&W.join,LEVEL,W.digest));
+        CHECK(run_until_finished(2000));
+        if (W.hash_fail) {
+            CHECK(!W.finished_ok && W.hash_jobs==1);
+            return 0;
+        }
+        /* each file hashed elsewhere, in turn, and the package the host's */
+        CHECK(W.finished_ok && W.hash_jobs==4 && !W.hash_cancels);
+        for (i=0;i<4;i++) CHECK(W.hash_polls[i]==3);
+        for (i=0;i<4;i++) {
+            char a[400],b[400];
+            snprintf(a,sizeof(a),"%smcc_maps/solar_flare/%s",H,names[i]);
+            snprintf(b,sizeof(b),"%smcc_maps/solar_flare/%s",J,names[i]);
+            CHECK(same_file(a,b));
+        }
         return 0;
     }
 

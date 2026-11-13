@@ -22,5 +22,10 @@ int host_sha256_file(char const *path, unsigned char digest[32], volatile int co
 int host_mcc_hash_start(unsigned int request);
 int host_mcc_hash_wait(int id, int milliseconds, unsigned int result);
 void host_mcc_hash_cancel(int id);
+/* a file's plain SHA-256 and size on a thread of its own: start (the path's
+ * guest address; -1 none free), poll (1 done, 0 reading, -1 failed), cancel */
+int host_sha256_start(unsigned int path);
+int host_sha256_poll(int id, unsigned int digest, unsigned int size);
+void host_sha256_cancel(int id);
 
 #endif

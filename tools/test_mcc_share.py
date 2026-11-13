@@ -25,7 +25,8 @@ CASES = ["list", "admit", "manifest", "redirect", "stage_cancel", "stage_hash_an
          "reuse_missing", "reuse_backpressure", "have_fields", "done_expired", "done_cancelled",
          "verify_success", "verify_recheck", "verify_heartbeat", "verify_cancel", "verify_disconnect", "verify_timeout",
          "verify_refused", "verify_invalid", "verify_metadata_failure", "verify_receipt_failure",
-         "verify_install_failure", "verify_bind_failure", "hold_reuse", "hold_limit", "hold_declined", "window"]
+         "verify_install_failure", "verify_bind_failure", "hold_reuse", "hold_limit", "hold_declined", "window", "hashed_elsewhere",
+         "hashed_elsewhere_fails"]
 
 
 @pytest.fixture(scope="module")
@@ -89,6 +90,9 @@ def test_share(share_tool, tmp_path, case):
     ("#define MCC_SHARE_HOLD_LIMIT 60000u", "#define MCC_SHARE_HOLD_LIMIT 200000u", "hold_limit"),
     ("while (share->outstanding<MCC_SHARE_CLIENT_WINDOW &&", "while (share->outstanding<MCC_SHARE_CLIENT_WINDOW+1 &&",
      "window"),
+    # a file hashed elsewhere is waited for, and its digest taken
+    ("                if (!status) return;\n                transfer->hash_job_active=0;",
+     "                transfer->hash_job_active=0;", "hashed_elsewhere"),
 ])
 def test_negative_controls(tmp_path, before, after, case):
     """Each selected check must detect its intended fault in the real code."""

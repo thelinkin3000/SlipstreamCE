@@ -240,6 +240,42 @@ void mcc_share_game_handle_message(
 
 /* ---------- the host's admission */
 
+/* (the host) a package's files hashed on the host's threads with the CPU's
+SHA-256 (host_mcc_hash.c's host_sha256_*), not a few megabytes a frame on
+the game's: hashed in the frame, a 360 MB package outlasted a joiner's wait
+for the offer on the Switch and took its frames */
+#if defined(HALO_ANDROID) || defined(HALO_PS5)
+int host_sha256_start(unsigned int path);
+int host_sha256_poll(int id, unsigned int digest, unsigned int size);
+void host_sha256_cancel(int id);
+
+static int mcc_share_hash_begin(void *user, char const *path)
+{
+    (void)user;
+    return host_sha256_start((unsigned int)(uintptr_t)path);
+}
+
+static int mcc_share_hash_poll(void *user, int job, uint8_t digest[32], uint64_t *size)
+{
+    static uint8_t done_digest[32];
+    static uint32_t done_size[2];
+    int status;
+    (void)user;
+    status=host_sha256_poll(job,(unsigned int)(uintptr_t)done_digest,(unsigned int)(uintptr_t)done_size);
+    if (status==1) {
+        memcpy(digest,done_digest,32);
+        *size=(uint64_t)done_size[0]|(uint64_t)done_size[1]<<32;
+    }
+    return status;
+}
+
+static void mcc_share_hash_cancel(void *user, int job)
+{
+    (void)user;
+    host_sha256_cancel(job);
+}
+#endif
+
 /* (the host) a transfer refused before it was offered: the joiner is told the
 result alone, so the reason is said here */
 static void mcc_share_host_refused(void *user, long machine, char const *level, int result, char const *why)
@@ -988,6 +1024,11 @@ void mcc_share_game_update(
 		env.upload_limit = mcc_share_upload_limit;
         env.host_finished = mcc_share_host_finished;
         env.host_refused = mcc_share_host_refused;
+#if defined(HALO_ANDROID) || defined(HALO_PS5)
+        env.hash_begin = mcc_share_hash_begin;
+        env.hash_poll = mcc_share_hash_poll;
+        env.hash_cancel = mcc_share_hash_cancel;
+#endif
 		env.free_bytes = mcc_share_free_bytes;
 		env.offered = mcc_share_offered;
 		env.destination = mcc_share_destination;

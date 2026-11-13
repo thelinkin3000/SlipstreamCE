@@ -988,14 +988,15 @@ struct guest_result {
 enum { JOBS = 4 };
 enum { JOB_FREE, JOB_RUNNING, JOB_DONE, JOB_FAILED, JOB_ABANDONED };
 
-/* a file's plain SHA-256, read a megabyte at a time (host_mcc_hash.h) */
-int host_sha256_file(char const *path, unsigned char digest[32], volatile int const *cancel)
+/* a file's plain SHA-256 and size, read a megabyte at a time into a buffer
+of the caller's */
+static int sha256_file_sized(char const *path, unsigned char digest[32], unsigned long long *size,
+	volatile int const *cancel, unsigned char *buffer, size_t buffer_size)
 {
-	static unsigned char buffer[1 << 20];
-	static pthread_mutex_t buffer_lock = PTHREAD_MUTEX_INITIALIZER;
 	struct sha sha;
 	FILE *file;
 	size_t got;
+	unsigned long long total = 0;
 	int ok = 1;
 
 	pthread_once(&hash_once, hash_setup);
@@ -1003,20 +1004,34 @@ int host_sha256_file(char const *path, unsigned char digest[32], volatile int co
 	if (!file)
 		return 0;
 	sha_begin(&sha);
-	pthread_mutex_lock(&buffer_lock);
-	while ((got = fread(buffer, 1, sizeof(buffer), file)) > 0) {
+	while ((got = fread(buffer, 1, buffer_size, file)) > 0) {
 		if (cancel && *cancel) {
 			ok = 0;
 			break;
 		}
 		sha_add(&sha, buffer, got);
+		total += got;
 	}
-	pthread_mutex_unlock(&buffer_lock);
 	if (ferror(file))
 		ok = 0;
 	fclose(file);
 	if (ok)
 		sha_end(&sha, digest);
+	if (size)
+		*size = total;
+	return ok;
+}
+
+/* a file's plain SHA-256, read a megabyte at a time (host_mcc_hash.h) */
+int host_sha256_file(char const *path, unsigned char digest[32], volatile int const *cancel)
+{
+	static unsigned char buffer[1 << 20];
+	static pthread_mutex_t buffer_lock = PTHREAD_MUTEX_INITIALIZER;
+	int ok;
+
+	pthread_mutex_lock(&buffer_lock);
+	ok = sha256_file_sized(path, digest, NULL, cancel, buffer, sizeof(buffer));
+	pthread_mutex_unlock(&buffer_lock);
 	return ok;
 }
 
@@ -1159,5 +1174,104 @@ void host_mcc_hash_cancel(int id)
 		jobs[id].state = JOB_ABANDONED;
 	} else if (jobs[id].state != JOB_ABANDONED)
 		jobs[id].state = JOB_FREE;
+	pthread_mutex_unlock(&jobs_lock);
+}
+
+/* ---------- a file's plain SHA-256 for the guest, on a thread of its own
+(host_sha256_start/_poll/_cancel: an MCC package's files, which a host
+hashes before it offers them to a joiner, mcc_share_session.c; in the game's
+frame, a few megabytes at a time in software, a 360 MB package outlasted a
+joiner's wait for the offer on the Switch, and took the frames with it) */
+
+enum { SHA_JOBS = 4 };
+
+struct sha_job {
+	int state;
+	volatile int cancel;
+	char path[1024];
+	unsigned char digest[32];
+	unsigned long long size;
+};
+
+static struct sha_job sha_jobs[SHA_JOBS];
+
+static void *sha_job_main(void *parameter)
+{
+	struct sha_job *job = parameter;
+	unsigned char *buffer = malloc(1 << 20);
+	int ok;
+
+#if defined(__SWITCH__)
+	host_thread_place_on_helper_core();
+#endif
+	ok = buffer && sha256_file_sized(job->path, job->digest, &job->size, &job->cancel, buffer, 1 << 20);
+	free(buffer);
+	pthread_mutex_lock(&jobs_lock);
+	job->state = job->state == JOB_ABANDONED ? JOB_FREE : ok ? JOB_DONE : JOB_FAILED;
+	pthread_cond_broadcast(&jobs_changed);
+	pthread_mutex_unlock(&jobs_lock);
+	return NULL;
+}
+
+int host_sha256_start(unsigned int path_address)
+{
+	char const *path = (char const *)(uintptr_t)path_address;
+	pthread_t thread;
+	int id;
+
+	if (!path || !path[0] || strlen(path) >= sizeof(sha_jobs[0].path))
+		return -1;
+	pthread_mutex_lock(&jobs_lock);
+	for (id = 0; id < SHA_JOBS && sha_jobs[id].state != JOB_FREE; id++) {
+	}
+	if (id == SHA_JOBS) {
+		pthread_mutex_unlock(&jobs_lock);
+		return -1;
+	}
+	memset(&sha_jobs[id], 0, sizeof(sha_jobs[id]));
+	sha_jobs[id].state = JOB_RUNNING;
+	strcpy(sha_jobs[id].path, path);
+	pthread_mutex_unlock(&jobs_lock);
+	if (pthread_create(&thread, NULL, sha_job_main, &sha_jobs[id]) != 0) {
+		pthread_mutex_lock(&jobs_lock);
+		sha_jobs[id].state = JOB_FREE;
+		pthread_mutex_unlock(&jobs_lock);
+		return -1;
+	}
+	pthread_detach(thread);
+	return id;
+}
+
+/* 1 done (the digest and the size, low and high, written: the job freed), 0
+still reading, -1 failed (freed) */
+int host_sha256_poll(int id, unsigned int digest_address, unsigned int size_address)
+{
+	int status;
+
+	if (id < 0 || id >= SHA_JOBS)
+		return -1;
+	pthread_mutex_lock(&jobs_lock);
+	status = sha_jobs[id].state == JOB_DONE ? 1 : sha_jobs[id].state == JOB_RUNNING ? 0 : -1;
+	if (status == 1) {
+		memcpy((void *)(uintptr_t)digest_address, sha_jobs[id].digest, 32);
+		((uint32_t *)(uintptr_t)size_address)[0] = (uint32_t)sha_jobs[id].size;
+		((uint32_t *)(uintptr_t)size_address)[1] = (uint32_t)(sha_jobs[id].size >> 32);
+	}
+	if (status != 0 && sha_jobs[id].state != JOB_FREE && sha_jobs[id].state != JOB_ABANDONED)
+		sha_jobs[id].state = JOB_FREE;
+	pthread_mutex_unlock(&jobs_lock);
+	return status;
+}
+
+void host_sha256_cancel(int id)
+{
+	if (id < 0 || id >= SHA_JOBS)
+		return;
+	pthread_mutex_lock(&jobs_lock);
+	if (sha_jobs[id].state == JOB_RUNNING) {
+		sha_jobs[id].cancel = 1;
+		sha_jobs[id].state = JOB_ABANDONED;
+	} else if (sha_jobs[id].state != JOB_ABANDONED)
+		sha_jobs[id].state = JOB_FREE;
 	pthread_mutex_unlock(&jobs_lock);
 }

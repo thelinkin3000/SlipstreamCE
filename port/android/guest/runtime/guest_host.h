@@ -255,6 +255,10 @@ does; the guest's side is port/linux/game/mcc_resource_check.inl's) */
 int host_mcc_hash_start(unsigned int request);
 int host_mcc_hash_wait(int id, int milliseconds, unsigned int result);
 void host_mcc_hash_cancel(int id);
+/* a file's plain SHA-256 and size, on the host's threads (an MCC package a host offers) */
+int host_sha256_start(unsigned int path);
+int host_sha256_poll(int id, unsigned int digest, unsigned int size);
+void host_sha256_cancel(int id);
 /* the Steam Workshop screen, whose Steam client is the host's (port/android/host/steam_downloads.c, which
 says what each does; the guest's wrappers are port/linux/src/steam_screen.c's) */
 void host_steam_open(unsigned int data_root);

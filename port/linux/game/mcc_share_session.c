@@ -195,6 +195,8 @@ static struct mcc_share_host_transfer *host_find(struct mcc_share *share, long m
 
 static void host_free(struct mcc_share_host_transfer *transfer)
 {
+    if (transfer->hash_job_active && transfer->hash_job_cancel)
+        transfer->hash_job_cancel(transfer->hash_job_user,transfer->hash_job);
     if (transfer->hash_stream) fclose(transfer->hash_stream);
     if (transfer->serve_stream) fclose(transfer->serve_stream);
     memset(transfer,0,sizeof(*transfer));
@@ -377,6 +379,35 @@ static void host_hash(struct mcc_share *share, struct mcc_share_host_transfer *t
     static uint8_t block[16384];                       /* (static: this runs in the game's frame, on its stack) */
     while (budget && transfer->hash_file<transfer->package.count) {
         struct mcc_share_file *file=&transfer->files[transfer->hash_file];
+        /* (elsewhere when it can be: the host's threads, not a slice a frame) */
+        if (!transfer->hash_stream && share->env.hash_begin) {
+            int status;
+            uint64_t size=0;
+            if (!transfer->hash_job_active) {
+                transfer->hash_job=share->env.hash_begin(share->env.user,transfer->package.files[transfer->hash_file].path);
+                if (transfer->hash_job>=0) {
+                    transfer->hash_job_active=1;
+                    transfer->hash_job_cancel=share->env.hash_cancel;
+                    transfer->hash_job_user=share->env.user;
+                }
+            }
+            if (transfer->hash_job_active) {
+                status=share->env.hash_poll(share->env.user,transfer->hash_job,file->sha256,&size);
+                if (!status) return;
+                transfer->hash_job_active=0;
+                if (status<0) {
+                    host_fail(share,transfer,MCC_SHARE_RESULT_UNAVAILABLE,"a file could not be read to be hashed");
+                    return;
+                }
+                if (!size || size>MCC_SHARE_MAXIMUM_FILE_BYTES) {
+                    host_fail(share,transfer,MCC_SHARE_RESULT_UNAVAILABLE,"a file is empty or too large");
+                    return;
+                }
+                file->size=(uint32_t)size;
+                transfer->hash_file++;
+                continue;
+            }
+        }
         if (!transfer->hash_stream) {
             long size;
             transfer->hash_stream=share_open_native(share,transfer->package.files[transfer->hash_file].path);
