@@ -24,6 +24,10 @@ from start to end; missing ranges (a file of zeros) are written as zeros.
 #include "steam_cm.h"
 
 #include <pthread.h>
+
+#if defined(__SWITCH__)
+void host_thread_place_on_helper_core(void);
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -580,6 +584,12 @@ static void *fetcher(void *context)
 {
 	struct fetch_job *job = context;
 	struct steam_http http;
+
+#if defined(__SWITCH__)
+	/* (off the game's core: its chunks' decompression is the download's
+	heaviest work, port/switch/host/host_thread.c) */
+	host_thread_place_on_helper_core();
+#endif
 
 	steam_http_init(&http);
 	for (;;)

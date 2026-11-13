@@ -551,6 +551,8 @@ static void mcc_share_fetch_begin(void)
 #endif
 }
 
+static int mcc_share_fetch_readable(int index,char const *path,uint32_t size);
+
 static int mcc_share_reuse_file(void *user,struct mcc_share_file const *file,char path[1024])
 {
     char root[1024];
@@ -577,6 +579,7 @@ static int mcc_share_reuse_file(void *user,struct mcc_share_file const *file,cha
         mcc_share_fetch_state(index)!=MCC_FETCH_READY) return 0;
     memset(path,0,1024);
     snprintf(path,1024,"%s",mcc_share_fetch.status.path);
+    if (!mcc_share_fetch_readable(index,path,file->size)) { memset(path,0,1024); return 0; }
     if (!mcc_share_fetch.taken[index]) {
         mcc_share_fetch.taken[index]=1;
         mcc_share_fetch.workshop_bytes+=file->size;
@@ -623,6 +626,39 @@ static int mcc_share_reuse_wait(void *user,struct mcc_share_file const *file,uin
     snprintf(why,sizeof(why),"the Workshop %llu s, the host %llu s",(unsigned long long)(workshop_ms/1000u),
         host_rate ? (unsigned long long)(host_ms/1000u) : 0ull);
     mcc_share_fetch_skip(index,why);
+    return 0;
+}
+
+/* the session's reads of a package's files (the host's hashing and serving,
+the joiner's copies of a resource it has): mcc_share_storage.c's opener,
+and when it cannot, why, in debug.txt (a path its safety check refuses, the
+system's error, or something there that is not a file) */
+static FILE *mcc_share_open_native_said(char const *path)
+{
+    FILE *file=mcc_share_open_native(path);
+    if (!file) {
+        int error_number=errno,safe=posix_mcc_share_path_safe(path);
+        struct posix_file_information information;
+        int present=!posix_stat(path,&information);
+        error(_error_silent,"mcc share: cannot read %s: %s (errno %d, %s, %lu bytes)",path,
+            safe ? "the system would not open it" : "its path is not one the downloads may read",error_number,
+            !present ? "not there" : information.flags&_posix_file_is_directory ? "a folder" : "a file",
+            present ? (unsigned long)information.size_low : 0ul);
+    }
+    return file;
+}
+
+/* a Workshop file the session is to copy: one it can open, of the host's
+size; else the host sends it (rather than the whole download failing) */
+static int mcc_share_fetch_readable(int index,char const *path,uint32_t size)
+{
+    FILE *file=mcc_share_open_native_said(path);
+    long end=-1;
+    if (file && !fseek(file,0,SEEK_END)) end=ftell(file);
+    if (file) fclose(file);
+    if (end==(long)size) return 1;
+    if (file) error(_error_silent,"mcc share: %s is %ld bytes, not the host's %lu",path,end,(unsigned long)size);
+    mcc_share_fetch_skip(index,"the Workshop's copy could not be read here");
     return 0;
 }
 
@@ -953,7 +989,7 @@ void mcc_share_game_update(
 		env.io.delete_file = mcc_share_io_delete;
 		env.io.path_safe = mcc_share_io_safe;
 		env.io.publish_directory = mcc_share_io_publish;
-        env.io.open_native_read = mcc_share_open_native;
+        env.io.open_native_read = mcc_share_open_native_said;
 #ifdef HALO_WEB
         web_mcc_share_io(&env.io);
 #endif

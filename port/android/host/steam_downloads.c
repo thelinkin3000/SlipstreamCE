@@ -60,6 +60,14 @@ links the port's, but not its host, and Android's guest has none) */
 #pragma GCC diagnostic pop
 
 #include <pthread.h>
+#if defined(__SWITCH__)
+/* (port/switch/host/host_thread.c's: off the game's core, which every thread
+made lands on otherwise) */
+void host_thread_place_on_helper_core(void);
+#define STEAM_THREAD_PLACE() host_thread_place_on_helper_core()
+#else
+#define STEAM_THREAD_PLACE() ((void)0)
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1100,6 +1108,7 @@ static void do_updates(void)
 static void *session_thread(void *unused)
 {
 	(void)unused;
+	STEAM_THREAD_PLACE();
 	for (;;)
 	{
 		int resume, sign_in, password, sign_out, page, updates;
@@ -1601,6 +1610,7 @@ static void remove_package(char const *folder)
 static void *files_thread(void *unused)
 {
 	(void)unused;
+	STEAM_THREAD_PLACE();
 	for (;;)
 	{
 		int what, refresh;
@@ -1894,6 +1904,7 @@ static void fetch_run(unsigned generation, uint64_t id, int count, struct fetch_
 static void *fetch_thread(void *unused)
 {
 	(void)unused;
+	STEAM_THREAD_PLACE();
 	for (;;)
 	{
 		struct fetch_file wanted[FETCH_FILES];
@@ -2009,6 +2020,8 @@ static uint32_t *preview_decode(unsigned char const *data, unsigned long size)
 static void *preview_thread(void *unused)
 {
 	struct steam_http http;
+
+	STEAM_THREAD_PLACE();
 
 	(void)unused;
 	steam_http_init(&http);
