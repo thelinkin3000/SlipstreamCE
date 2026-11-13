@@ -821,6 +821,10 @@ static const struct config_setting config_settings[] =
 	{ "game.mcc_campaigns", _config_boolean, "true", "HALO_MCC_CAMPAIGNS", _environment_value, _platform_all,
 		"Use explicit MCC campaign manifests for mission discovery, ordering and\n"
 		"progression. Reopen the map list after changing this." },
+	{ "game.mcc_host_conversion", _config_boolean, "true", "HALO_MCC_HOST_CONVERSION", _environment_value, _platform_all,
+		"Convert an MCC map's sounds and textures on the host's threads as it loads,\n"
+		"keeping its converted sounds in the host's memory. false converts them on the\n"
+		"game's own thread, one after another, as before." },
 	{ "game.workshop_maps", _config_boolean, "true", "HALO_WORKSHOP_MAPS", _environment_value, _platform_desktop,
 		"Discover installed Halo CE Steam Workshop maps. Read-only desktop\n"
 		"discovery; manually installed mcc_maps packages always remain available." },

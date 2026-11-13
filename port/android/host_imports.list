@@ -75,6 +75,15 @@ host_mcc_import_progress
 host_mcc_import_question
 host_mcc_import_answer
 host_mcc_import_finish
+# an MCC map's conversion on the host's threads (port/android/host/host_mcc_convert.c)
+host_mcc_convert_workers
+host_mcc_convert_submit
+host_mcc_convert_wait
+host_mcc_convert_output_size
+host_mcc_convert_release
+host_mcc_audio_append
+host_mcc_audio_read
+host_mcc_convert_reset
 # the Steam Workshop screen (port/android/host/steam_downloads.c)
 host_steam_open
 host_steam_close

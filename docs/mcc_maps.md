@@ -1048,6 +1048,54 @@ the legacy texture cache's size policy is unchanged. Each bitmap tag has
 its own virtual stream with exact tag-handle checks, allowing the total
 decoded texture storage to exceed the former single 512 MiB offset range.
 
+## Where the tags lie, and conversion on the host's threads
+
+**The tag window moves where its base is taken.** A map's tags are linked to
+its base (MCC Tool's is `0x50000000`). On the Switch the launcher places the
+program's main stack or its own code at random below `0x80000000`, often in
+`0x50000000`'s 64 MiB, before the program runs; no hold made at the start of
+`main` can win that. Where the base cannot be had (or `debug.mcc_elsewhere`
+is set), `mcc_cache.c` puts the 64 MiB elsewhere, clear of every linked range
+(the map's own, Custom Edition's and the window's), and `platform_mcc_shift`
+says how far. As for Custom Edition's tag cache (6e31ff1ed):
+
+- `halo_port_window.h`'s `PORT_WINDOW_REBASE` moves an address in the map's
+  linked range by the shift, so the game's rebasing accessors follow the tags;
+- `mcc_runtime_pointer` takes either form of an address during conversion, and
+  `mcc_tag_validate.c` moves every block, data, root, name and BSP root
+  pointer in place as it first reads it;
+- the hosts keep `0x50000000`'s range out of the window, the pools and their
+  own mappings for the whole run (Switch: `range_claimed`; Android:
+  `crosses_custom_edition`), so a value in it is always one still to move;
+- the Switch's host hands the moved tags out of the guest's pools
+  (`host_mcc_memory_reserve(0, ...)`): the guest's own 64 MiB `mmap` is given
+  the window's reserved range there;
+- a saved game records the shift (`mcc_tag_shift`, in the header's unused
+  words; 0 in older saves) and its MCC tag addresses move by the difference
+  (`game_state_relocate`, and the script string constants'
+  `game_state_relocation_tag_delta`).
+
+The Switch's host still maps the base at the start of `main` where it is free,
+and holds it for the run.
+
+**Sounds and textures convert on the host's threads.** On a Switch, a
+campaign map's 87 s load was 62 s of sounds and 18 s of textures, one piece
+after another on the game's thread. Now `mcc_audio.c` and `mcc_bitmaps.c`
+plan each piece and read its input in the map's order, the host converts it
+(`port/android/host/host_mcc_convert.c`: two workers on the Switch's spare
+cores, three elsewhere, and the game's own thread while it waits), and the
+loader takes each result in the order it asked. What it writes into the tags,
+the per-sound and total limits and the messages are what one thread
+converting in turn produces. The codecs are shared, with no game state:
+`mcc_audio_kernels.h`, `mcc_bitmap_kernels.h` and `mcc_vorbis.c`. A sound's
+converted samples stay in the host's memory (`host_mcc_audio_read`), not the
+guest's heap. A texture's packed pixels are written into the guest's memory,
+where the game draws them from. `game.mcc_host_conversion` set to `false`
+converts on the game's thread as before. Geometry (about 4% of that load)
+still converts on the game's thread. `tools/test_mcc_convert.py` checks that
+the host's results are the bytes the codecs give converting the same input on
+one thread.
+
 ## Current boundaries
 
 - Modern uncompressed version-13 maps are the target. Earlier Anniversary
@@ -1056,8 +1104,9 @@ decoded texture storage to exceed the former single 512 MiB offset range.
   when matching files are installed as described above.
 - The portable inspector accepts files up to `INT32_MAX`; runtime raw files
   must be smaller than `0x50000000` bytes because higher offsets identify
-  MCC virtual resources. Runtime tag windows must be free, 64 KiB-aligned,
-  64 MiB allocations based between `0x42000000` and `0x70000000` inclusive.
+  MCC virtual resources. Runtime tag windows are 64 KiB-aligned, 64 MiB
+  allocations based between `0x42000000` and `0x70000000` inclusive, at that
+  base where it is free and elsewhere otherwise (see above).
   The observed MCC base is `0x50000000`.
   Windows delay-loads `SDL3.dll` and reserves this address range at constructor
   priority 101, before CE's settings read (priority 102) first calls SDL.

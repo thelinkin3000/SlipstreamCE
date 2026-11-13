@@ -98,6 +98,8 @@ TOMLC17_DIR = Path("port/third_party/tomlc17")
 # memory, host_replay.c; and the map lists' IMPORT, host_mcc_import.c)
 SHARED_HOST_FILES = ("host_arch.c", "host_common.c", "host_loader.c", "host_thread.c", "host_watch_hash.c",
                      "host_https.c", "host_replay.c", "host_mcc_import.c",
+                     # (an MCC map's conversion on the host's threads)
+                     "host_mcc_convert.c",
                      # (the Steam Workshop screen's Steam client: steam_downloads.h)
                      "steam_cm.c", "steam_crypto.c", "steam_depot.c", "steam_downloads.c", "steam_net.c",
                      "steam_seal.c", "steam_unpack.c")
@@ -722,6 +724,10 @@ def _generate(n: Writer, sln: Any, config_path: Path) -> None:
         # decoders, whose warnings are not ours)
         if source.name == "steam_unpack.c":
             cflags += " -w"
+        # (an MCC map's conversion: the guest's codecs, whose bcdec shifts
+        # signed values as the guest's -fwrapv defines)
+        if source.name == "host_mcc_convert.c":
+            cflags += " -fwrapv"
         if source.name == "tomlc17.c":
             # (the SDK's math.h: its isnan's _Generic names volatile types,
             # which an lvalue never has; the warning is the header's, in a

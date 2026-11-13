@@ -704,6 +704,8 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
         ANDROID_PORT_DIR / "host" / "host_replay.c",
         # the map lists' IMPORT, as Android's and the PS5's, and its JSON reader
         ANDROID_PORT_DIR / "host" / "host_mcc_import.c", LINUX_DIR / "src" / "server_json.c",
+        # an MCC map's conversion on the host's threads, as Android's and the PS5's
+        ANDROID_PORT_DIR / "host" / "host_mcc_convert.c",
         # the Steam Workshop screen's Steam client, as Android's and the PS5's
         *(ANDROID_PORT_DIR / "host" / f"{name}.c" for name in STEAM_HOST_FILES),
     ]
@@ -752,6 +754,10 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
         # decoders, whose warnings are not ours)
         if source.name == "steam_unpack.c":
             cflags = f"{host_cflags} -I{ZLIB_DIR} -w"
+        # (an MCC map's conversion: the guest's codecs, whose bcdec shifts
+        # signed values as the guest's -fwrapv defines)
+        if source.name == "host_mcc_convert.c":
+            cflags = f"{host_cflags} -fwrapv"
         n.build(outputs=obj, rule="switch_host_cc", inputs=source, variables={"cflags": cflags},
                 implicit=[syscall_h])
         host_objects.append(obj)

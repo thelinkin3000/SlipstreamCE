@@ -239,6 +239,16 @@ int host_mcc_import_question(unsigned int title, unsigned int title_size, unsign
 	unsigned int destination_size);
 void host_mcc_import_answer(int question, int replace);
 int host_mcc_import_finish(unsigned int report, unsigned int size);
+/* an MCC map's conversion on the host's threads (port/android/host/host_mcc_convert.c, which says
+what each does; the guest's side is port/linux/game/mcc_convert.c's) */
+int host_mcc_convert_workers(void);
+int host_mcc_convert_submit(unsigned int request);
+int host_mcc_convert_wait(int id, int milliseconds);
+unsigned int host_mcc_convert_output_size(int id);
+void host_mcc_convert_release(int id);
+long long host_mcc_audio_append(int id, unsigned int slot);
+int host_mcc_audio_read(unsigned int slot, unsigned int offset, unsigned int size, unsigned int destination);
+void host_mcc_convert_reset(void);
 /* the Steam Workshop screen, whose Steam client is the host's (port/android/host/steam_downloads.c, which
 says what each does; the guest's wrappers are port/linux/src/steam_screen.c's) */
 void host_steam_open(unsigned int data_root);
