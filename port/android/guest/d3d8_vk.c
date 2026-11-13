@@ -35,6 +35,7 @@ host's Vulkan backend (port/android/host/host_vk.c).
 #include "plasma_occlusion.h"
 #include "vk_device.h"
 #include "hud_hires.h"
+#include "loading_widescreen.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -1960,6 +1961,16 @@ static void front_buffer_take(void)
 	if (width > back_buffer.pixel_width)
 		width = back_buffer.pixel_width;
 	left = (back_buffer.pixel_width - width) / 2;
+	/* The widescreen loading screen (display.widescreen_loading) draws the
+	effect across the whole width: all of it is captured back into the
+	feedback texture, as d3d8_gl.c's front_buffer_take does. Its centre alone,
+	drawn again across the width, stretched each frame's trail sideways by
+	the screen's width over 640, and the picture smeared. */
+	if (loading_widescreen_active())
+	{
+		left = 0;
+		width = back_buffer.pixel_width;
+	}
 	command = stream_command(VK_COMMAND_BLIT, sizeof(*command));
 	command->source = back_buffer;
 	command->destination = front;
