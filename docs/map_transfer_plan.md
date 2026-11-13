@@ -78,69 +78,43 @@ then metadata and credits; the resource maps are most of a package.
   hold_declined, window, with negative controls; `tools/test_steam_client.py`
   builds the host code with -Werror.
 
-## Part B: CE map sharing on the native host
+## Part B: CE map sharing off the frame
 
-Today `map_share.c` (guest, ~3600 lines) runs the connections, the torrent
-logic, the pacing and the file I/O from `map_share_update`, once a frame. The
-plan splits it: the transfer engine moves to the native host; the game's side
-(offers, sources, admission, UI, catalog) stays in the guest and talks to the
-engine through host imports. The wire stays byte for byte the same, so OpenCE
-players still download from us, seed to us and take seeds from us.
+Built as the same engine on a thread of its own, not a port to native-host
+code. On Android, the Switch and the PS5 the guest is the game's image in
+the app's own process, and its threads are the system's (host_thread_create:
+the internet play tunnel and the CE maps' hashing already run on them). What
+tied map sharing to the frame rate was that its connections were read,
+served and written from map_share_update, once a frame, not where its code
+lives; a port to native-host code would have rewritten ~3600 lines of a
+protocol OpenCE players must still speak byte for byte. The thread keeps the
+very code that sends, so the wire cannot change.
 
-### B1. Split the engine out, still in the guest
-
-- A `map_share_engine.c` with no engine headers: connections, frames, hello,
-  state/have/request/block/refuse, piece choice (rarest first), piece SHA-256
-  checks, `.part` files, the upload token bucket. `map_share.c` keeps the
-  distributed messages, the tracker, the catalog and the UI, and calls the
-  engine through a small interface (catalog in, download job in, sources in,
-  progress and completion out).
-- Harness: the engine against the current `map_share.c` frames, byte for byte
-  (a recorded session, both directions), before anything moves.
-
-### B2. The engine on the native host
-
-- `host_share.c`, shared by Android, Switch and PS5 as `host_mcc_hash.c` is:
-  one thread, a listener on 5153, outgoing connections, poll/select, blocking
-  sends paced by the token bucket at the cap (host or seed cap, as the guest
-  says), receives unpaced. File reads and writes with pread/pwrite. Piece
-  hashing with the host's SHA-256 (the CPU instructions `host_mcc_hash.c`
-  uses).
-- Imports: `host_share_start(cap, role)`, `host_share_catalog(files: path,
-  size, hash)`, `host_share_download(job: files, hashes, sizes, destination)`,
-  `host_share_source(address, port, identity)`, `host_share_poll(events)`,
-  `host_share_set_cap`, `host_share_stop`.
-- Platforms: Android (kernel sockets, same as the guest's), Switch (libnx
-  sockets beside `host_net.c`; mind its socket buffer limits), PS5.
-
-### B3. Addresses through the tunnel
-
-- A native-host socket bypasses `xnet.c`, so the guest does the translation:
-  - outgoing: the guest calls `p2p_outgoing(stream=1, ...)` for a peer's
-    virtual address and hands the engine the local stand-in address/port;
-  - incoming: the guest registers the engine's listener port with p2p
-    (`p2p_socket_port`) so tunnel streams to 5153 land on it; the engine
-    reports each accepted connection's local address/port, the guest maps it
-    to the peer (`p2p_incoming`) and says which machine it is, or to close it.
-- LAN machines are connected directly.
-
-### B4. The guest's side
-
-- `map_share.c` keeps offers, sources and the tracker on distributed
-  messages, admission, the lobby hold, the UI and the catalog rescan; it feeds
-  the engine and reads its events each frame (a copy under a lock, as
-  `steam_downloads.c` does). A finished download is installed by the engine
-  into custom_maps; the guest rescans and joins the game in progress.
-- `map_share_files.c`'s hashing thread moves to the host with the engine.
-- Guest image: the engine's code and buffers leave the guest (headroom).
-
-### B tests
-
-- Harness: engine-to-engine and engine-to-old-`map_share.c` transfers,
-  several sources, a lying source, a `.part` resumed, cap pacing measured
-  (sent bytes per second within a few % of the cap).
-- Device: Switch host to Android joiner and back, over LAN and the internet;
-  an OpenCE (upstream build) joiner taking a map from us and seeding to us.
+- map_share.c: `map_share_connections_thread` waits on the listener and the
+  connections (select, 3 ms while pieces go either way, 25 ms when quiet),
+  then accepts, reads, answers, serves (the upload's allowance by the clock)
+  and writes. The game's thread keeps the messages over the game's
+  connection, the host's offers, sources and tracker, a download's start,
+  end and install, and the screen.
+- One recursive lock (`map_share_lock`) is held by each side while it looks
+  at what they share; every entry point takes it, and the catalog's changes
+  (map_share_files.c) too.
+- What the thread needs of the game (host or not, sending or not, the
+  upload's cap, the game's machines' addresses) the game's thread writes down
+  at each entry (`map_share_facts`).
+- The thread uses plain sockets (xnet.c's Winsock: thread-local errors, its
+  socket port cache by socket), not the game's transport endpoints, which
+  allocate from the game's allocator (no lock). xnet.c's accept still turns
+  a tunnel stand-in into the peer's address.
+- What only the game's thread may do it leaves for it: a write that fails
+  (download_fail sends on the game's connection, aborts the game) is a
+  reason the next update fails the download with; a file whose pieces'
+  hashes came (opening it may start the hashing thread) is `_file_opening`,
+  opened by the next update.
+- If the thread cannot be started, the game's thread runs the connections
+  each frame as before.
+- Tests: the map sharing harness (read, restart, trust, names) follows the
+  sockets, the deferred open and the locked entries.
 
 ## Part C: the tunnel does not cap map sharing
 
@@ -183,7 +157,7 @@ only its own sending, so no OpenCE player sees a difference but speed.
 
 1. A1-A6 (Workshop + host for MCC): the largest gain, all joiner side.
 2. C1 (tunnel settings for 5153): small, lifts CE over the internet now.
-3. B1 (engine split in the guest, byte-for-byte test), then B2-B4.
+3. B (the connections on their own thread).
 4. C2-C3 (back-off, game first), before raising the default caps.
 
 Each stage: its own commit, Android/Switch/PS5 builds, the harness compared

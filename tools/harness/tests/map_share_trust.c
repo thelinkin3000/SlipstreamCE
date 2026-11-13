@@ -12,6 +12,8 @@ structures (config.inc) and the code (under_test.inc).
 #include "harness.h"
 
 typedef unsigned short word;
+/* (a connection's socket: xnet.c's Winsock) */
+typedef int SOCKET;
 
 #include "config.inc"
 
@@ -158,6 +160,10 @@ static void connection_close(struct connection *connection, char const *reason)
 
 #include "under_test.inc"
 
+/* (map_share.c's entries take its lock and call these) */
+#define map_share_machine_downloading map_share_machine_downloading_unlocked
+#define map_share_machine_needs_map map_share_machine_needs_map_unlocked
+
 #define ADDRESS(a, b, c, d) \
 	((unsigned long)(a) << 24 | (unsigned long)(b) << 16 | (unsigned long)(c) << 8 | (unsigned long)(d))
 
@@ -300,7 +306,7 @@ int main(int argc, char **argv)
 		return 0;
 	}
 	/* a hashes frame that brings none keeps nothing alive; the rest are
-	taken in order, and the file opened once they all came */
+	taken in order, and the file left to be opened once they all came */
 	CASE("hashes-frames")
 	{
 		struct download *download = &map_share_globals.download;
@@ -329,7 +335,9 @@ int main(int argc, char **argv)
 		hashes_frame(connection, 256, 45);
 		CHECK(file->hashes_received == 256, "more hashes than the file's pieces were taken");
 		hashes_frame(connection, 256, 44);
-		CHECK(file->piece_hashes && fake_opened == 1, "the whole list was not taken");
+		/* (opened by the game's thread: map_share.c's download_update, not the
+		connections' thread, which may not start the hashing thread) */
+		CHECK(file->piece_hashes && file->state == _file_opening && !fake_opened, "the whole list was not taken");
 		return 0;
 	}
 	/* a client whose progress stops is not taken for downloading once an
