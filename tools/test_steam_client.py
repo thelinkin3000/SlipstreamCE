@@ -22,7 +22,9 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 ZLIB = ROOT / "port/third_party/zlib"
 HOST = ROOT / "port/android/host"
-STEAM_SOURCES = ["steam_cm.c", "steam_crypto.c", "steam_depot.c", "steam_net.c", "steam_seal.c", "steam_unpack.c"]
+STEAM_SOURCES = ["steam_cm.c", "steam_crypto.c", "steam_depot.c", "steam_net.c", "steam_seal.c", "steam_unpack.c",
+                 # (an installed package's maps fingerprinted: steam_downloads.c)
+                 "host_mcc_hash.c"]
 TOKEN = "eyJhbGciOiJFZERTQSJ9.eyJzdWIiOiI3NjU2MTE5OTAwMDAwMDAwMSJ9.c2lnbmF0dXJl"
 
 

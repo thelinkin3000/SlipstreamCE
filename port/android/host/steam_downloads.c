@@ -35,6 +35,7 @@ cut at their buffers on purpose, the way snprintf is made) */
 #include "steam_depot.h"
 #include "steam_net.h"
 #include "steam_seal.h"
+#include "host_mcc_hash.h"
 #include "posix.h"
 
 /* (the QR encoder, a copy of its own under other names: the PS5's guest
@@ -75,6 +76,10 @@ enum
 	PREVIEWS = 12,
 	PREVIEW_SIDE = 256,
 	QR_VERSION = 10,
+	/* how often a download's speed is measured */
+	SPEED_MILLISECONDS = 1000,
+	/* how long a download's error stays on the screen */
+	ERROR_SHOWN_MILLISECONDS = 2000,
 	STEAM_HALO1_DEPOT = 976733,
 	TEXT_SIZE = 128,
 	/* the downloads waiting their turn behind the one under way */
@@ -231,6 +236,11 @@ static struct
 	uint64_t downloading_id;
 	uint64_t done;
 	uint64_t size;
+	/* the download's speed (bytes a second; 0 until measured), and the
+	bytes and time it was last measured from */
+	uint64_t speed;
+	uint64_t speed_bytes;
+	unsigned long speed_clock;
 	char downloading_name[96];
 	int rescan;
 	/* -1 not known, 0 no, 1 yes */
@@ -255,6 +265,11 @@ static struct
 	unsigned long session_since;
 	char files_activity[96];
 	unsigned long files_since;
+	/* a download's error, shown for ERROR_SHOWN_MILLISECONDS whatever
+	message follows it (a content server's refusal, the next download's
+	start), and gone then */
+	char held_error[256];
+	unsigned long held_until;
 
 	/* the screen's: the list shown, the hub's place kept while another is,
 	and the row whose A asked to be pressed again (-1: none) */
@@ -653,6 +668,23 @@ static void say(char const *format, char const *detail)
 	snprintf(steam.message, sizeof(steam.message), format, detail ? detail : "");
 	pthread_mutex_unlock(&steam.state_lock);
 	steam_log("steam: %s", steam.message);
+}
+
+/* a download's error: said, and kept on the screen for
+ERROR_SHOWN_MILLISECONDS at least */
+static void say_error(char const *format, char const *detail)
+{
+	say(format, detail);
+	pthread_mutex_lock(&steam.state_lock);
+	snprintf(steam.held_error, sizeof(steam.held_error), "%s", steam.message);
+	steam.held_until = steam_milliseconds() + ERROR_SHOWN_MILLISECONDS;
+	pthread_mutex_unlock(&steam.state_lock);
+}
+
+/* steam_depot.c's: a content server refused, another is tried after a wait */
+static void depot_notice(char const *text)
+{
+	say_error("%s", text);
 }
 
 static void set_state(enum session_state state)
@@ -1135,7 +1167,33 @@ static void download_progress(uint64_t done, void *context)
 
 	pthread_mutex_lock(&steam.state_lock);
 	steam.done = base + done;
+	/* (the speed over each second or more, smoothed) */
+	{
+		unsigned long now = steam_milliseconds();
+		unsigned long elapsed = now - steam.speed_clock;
+
+		if (steam.done < steam.speed_bytes)
+		{
+			steam.speed_bytes = steam.done;
+			steam.speed_clock = now;
+		}
+		else if (elapsed >= SPEED_MILLISECONDS)
+		{
+			uint64_t measured = (steam.done - steam.speed_bytes) * 1000 / elapsed;
+
+			steam.speed = steam.speed ? (steam.speed + measured) / 2 : measured;
+			steam.speed_bytes = steam.done;
+			steam.speed_clock = now;
+		}
+	}
 	pthread_mutex_unlock(&steam.state_lock);
+}
+
+/* (state_lock held) a download's start: its speed not yet known */
+static void speed_reset(void)
+{
+	steam.speed = steam.speed_bytes = 0;
+	steam.speed_clock = steam_milliseconds();
 }
 
 static int download_cancelled(void *context)
@@ -1240,7 +1298,7 @@ static void download_shared(void)
 		if (strstr(error, "no key"))
 			steam.owns_halo1 = 0;
 		pthread_mutex_unlock(&steam.state_lock);
-		say("The shared files could not be downloaded: %s", error);
+		say_error("The shared files could not be downloaded: %s", error);
 		return;
 	}
 	pthread_mutex_lock(&steam.state_lock);
@@ -1262,6 +1320,7 @@ static void download_shared(void)
 	pthread_mutex_lock(&steam.state_lock);
 	steam.size = total;
 	steam.done = 0;
+	speed_reset();
 	pthread_mutex_unlock(&steam.state_lock);
 	for (i = 0; i < SHARED_FILES; i++)
 	{
@@ -1280,8 +1339,8 @@ static void download_shared(void)
 		if (!steam_depot_download(STEAM_HALO1_DEPOT, key, file, path, &progress, error, sizeof(error)))
 		{
 			steam_depot_manifest_free(&files);
-			say(strcmp(error, "cancelled") ? "The shared files could not be downloaded: %s" : "The download was %s.",
-				error);
+			(strcmp(error, "cancelled") ? say_error : say)(strcmp(error, "cancelled") ?
+				"The shared files could not be downloaded: %s" : "The download was %s.", error);
 			return;
 		}
 		base += file->size;
@@ -1335,6 +1394,8 @@ static int item_path(char const *name, char *path, size_t size)
 	return 0;
 }
 
+static void fingerprint_progress(unsigned long long done, unsigned long long total, void *context);
+
 static void download_item(struct steam_workshop_file const *item)
 {
 	char error[256];
@@ -1353,7 +1414,7 @@ static void download_item(struct steam_workshop_file const *item)
 	steam_log("steam: downloading item %llu (%s)", (unsigned long long)item->id, item->title);
 	if (!depot_open(STEAM_APP_MCC, item->manifest, key, &files, error, sizeof(error)))
 	{
-		say("The item could not be downloaded: %s", error);
+		say_error("The item could not be downloaded: %s", error);
 		return;
 	}
 	for (i = 0; i < files.file_count; i++)
@@ -1381,6 +1442,7 @@ static void download_item(struct steam_workshop_file const *item)
 		snprintf(existing, sizeof(existing), "%s", package_of(item->id)->folder);
 	steam.size = total;
 	steam.done = 0;
+	speed_reset();
 	pthread_mutex_unlock(&steam.state_lock);
 	data_path(staging, sizeof(staging), "mcc_staging/steam_");
 	strncat(staging, folder, sizeof(staging) - strlen(staging) - 1);
@@ -1407,7 +1469,8 @@ static void download_item(struct steam_workshop_file const *item)
 		{
 			steam_depot_manifest_free(&files);
 			remove_tree(staging);
-			say(strcmp(error, "cancelled") ? "The item could not be downloaded: %s" : "The download was %s.", error);
+			(strcmp(error, "cancelled") ? say_error : say)(strcmp(error, "cancelled") ?
+				"The item could not be downloaded: %s" : "The download was %s.", error);
 			return;
 		}
 		base += file->size;
@@ -1442,7 +1505,7 @@ static void download_item(struct steam_workshop_file const *item)
 		if (!move_folder(previous, old))
 		{
 			remove_tree(staging);
-			say("The older copy in mcc_maps/%s could not be replaced.", existing);
+			say_error("The older copy in mcc_maps/%s could not be replaced.", existing);
 			return;
 		}
 	}
@@ -1457,7 +1520,7 @@ static void download_item(struct steam_workshop_file const *item)
 			move_folder(old, previous);
 		}
 		remove_tree(staging);
-		say("The item could not be put in mcc_maps/%s.", folder);
+		say_error("The item could not be put in mcc_maps/%s.", folder);
 		return;
 	}
 	remove_tree(old);
@@ -1466,7 +1529,34 @@ static void download_item(struct steam_workshop_file const *item)
 	steam.rescan = 1;
 	pthread_mutex_unlock(&steam.state_lock);
 	installed_save();
+	/* (its maps' fingerprints now, kept on the card: the lobby then takes
+	them at once, host_mcc_hash.c) */
+	{
+		int fingerprinted;
+
+		activity(1, "fingerprinting the maps");
+		fingerprinted = host_mcc_hash_package(steam.data_root, destination, &steam.cancel_download,
+			fingerprint_progress, NULL);
+		activity(1, "");
+		if (fingerprinted < 0)
+			steam_log("steam: %s's maps were not fingerprinted", folder);
+	}
 	say("Installed in mcc_maps/%s.", folder);
+}
+
+/* host_mcc_hash_package's progress, on the files thread's line (not logged) */
+static void fingerprint_progress(unsigned long long done, unsigned long long total, void *context)
+{
+	static unsigned shown = 101;
+	unsigned percent = total ? (unsigned)(done * 100 / total) : 0;
+
+	(void)context;
+	if (percent == shown)
+		return;
+	shown = percent;
+	pthread_mutex_lock(&steam.state_lock);
+	snprintf(steam.files_activity, sizeof(steam.files_activity), "fingerprinting the maps: %u%%", percent);
+	pthread_mutex_unlock(&steam.state_lock);
 }
 
 static void remove_package(char const *folder)
@@ -1793,6 +1883,8 @@ void steam_downloads_open(char const *data_root)
 	steam.threads_started = 1;
 	pthread_mutex_unlock(&steam.state_lock);
 	if (start)
+		steam_depot_set_notice(depot_notice);
+	if (start)
 	{
 		pthread_t thread;
 		char root[1024];
@@ -1968,7 +2060,20 @@ static void progress_text(char *text, int size)
 	}
 	size_text(steam.done, done, sizeof(done));
 	size_text(steam.size, total, sizeof(total));
-	snprintf(text, (size_t)size, "Downloading %s: %s of %s. A cancels.", steam.downloading_name, done, total);
+	if (steam.speed)
+	{
+		char speed[32];
+
+		/* (to a tenth of a megabyte) */
+		if (steam.speed >= 1024 * 1024)
+			snprintf(speed, sizeof(speed), "%.1f MB", (double)steam.speed / (1024.0 * 1024));
+		else
+			snprintf(speed, sizeof(speed), "%.0f KB", (double)steam.speed / 1024.0);
+		snprintf(text, (size_t)size, "Downloading %s: %s of %s (%s/s). A cancels.", steam.downloading_name, done,
+			total, speed);
+	}
+	else
+		snprintf(text, (size_t)size, "Downloading %s: %s of %s. A cancels.", steam.downloading_name, done, total);
 	if (steam.queue_count)
 	{
 		size_t used = strlen(text);
@@ -2293,6 +2398,21 @@ static void details_build(int place, char *title, int title_size, char *text, in
 		unsigned long now = steam_milliseconds();
 
 		snprintf(text, (size_t)text_size, "%s", body);
+		/* (a download's error goes once its time is up: from the message too,
+		if nothing has taken its place) */
+		if (steam.held_error[0] && (long)(steam.held_until - now) <= 0)
+		{
+			if (!strcmp(steam.message, steam.held_error))
+				steam.message[0] = 0;
+			steam.held_error[0] = 0;
+		}
+		/* (a download's error first while it is held, if another message
+		has taken its place) */
+		if (steam.held_error[0] && (long)(steam.held_until - now) > 0 && strcmp(steam.held_error, steam.message))
+		{
+			used = strlen(text);
+			snprintf(text + used, (size_t)text_size - used, "\n\n%s", steam.held_error);
+		}
 		if (steam.message[0])
 		{
 			used = strlen(text);

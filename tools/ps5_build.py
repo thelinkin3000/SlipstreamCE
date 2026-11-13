@@ -100,6 +100,8 @@ SHARED_HOST_FILES = ("host_arch.c", "host_common.c", "host_loader.c", "host_thre
                      "host_https.c", "host_replay.c", "host_mcc_import.c",
                      # (an MCC map's conversion on the host's threads)
                      "host_mcc_convert.c",
+                     # (an MCC package's fingerprint on the host's threads)
+                     "host_mcc_hash.c",
                      # (the Steam Workshop screen's Steam client: steam_downloads.h)
                      "steam_cm.c", "steam_crypto.c", "steam_depot.c", "steam_downloads.c", "steam_net.c",
                      "steam_seal.c", "steam_unpack.c")

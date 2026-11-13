@@ -706,6 +706,8 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
         ANDROID_PORT_DIR / "host" / "host_mcc_import.c", LINUX_DIR / "src" / "server_json.c",
         # an MCC map's conversion on the host's threads, as Android's and the PS5's
         ANDROID_PORT_DIR / "host" / "host_mcc_convert.c",
+        # an MCC package's fingerprint on the host's threads, as Android's and the PS5's
+        ANDROID_PORT_DIR / "host" / "host_mcc_hash.c",
         # the Steam Workshop screen's Steam client, as Android's and the PS5's
         *(ANDROID_PORT_DIR / "host" / f"{name}.c" for name in STEAM_HOST_FILES),
     ]

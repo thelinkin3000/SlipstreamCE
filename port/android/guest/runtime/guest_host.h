@@ -249,6 +249,12 @@ void host_mcc_convert_release(int id);
 long long host_mcc_audio_append(int id, unsigned int slot);
 int host_mcc_audio_read(unsigned int slot, unsigned int offset, unsigned int size, unsigned int destination);
 void host_mcc_convert_reset(void);
+/* an MCC package's fingerprint (SHA-256 and CRC32) on the host's threads, with the CPU's
+instructions, and kept on the card (port/android/host/host_mcc_hash.c, which says what each
+does; the guest's side is port/linux/game/mcc_resource_check.inl's) */
+int host_mcc_hash_start(unsigned int request);
+int host_mcc_hash_wait(int id, int milliseconds, unsigned int result);
+void host_mcc_hash_cancel(int id);
 /* the Steam Workshop screen, whose Steam client is the host's (port/android/host/steam_downloads.c, which
 says what each does; the guest's wrappers are port/linux/src/steam_screen.c's) */
 void host_steam_open(unsigned int data_root);
