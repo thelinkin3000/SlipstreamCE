@@ -41,6 +41,7 @@ Called from the main loop every frame (main.c).
 #include "server_director.h"
 #include "bots.h" /* port: port/linux/game/bots.c */
 #include "mcc_server.h"
+#include "mcc_ui_network.h" /* port: port/linux/game/mcc_ui_network.h */
 #include "server_gametypes.h"
 
 #include "../src/p2p.h" /* port: port/linux/src/p2p.c, p2p_lobby.c */
@@ -1937,7 +1938,10 @@ static void server_lobby(
 		struct network_game *game = server_game();
 
 		server.map_checked_seconds = server.lobby_seconds;
-		if (game && csstrcasecmp(game->map.name, server.current.level) && !network_game_server_port_start_sent(network_server))
+		/* (not while an MCC map waits for its package's validation: the lobby
+		shows a stock map until then, port/linux/game/mcc_ui_network.inl) */
+		if (game && csstrcasecmp(game->map.name, server.current.level) && !network_game_server_port_start_sent(network_server) &&
+			!mcc_ui_network_map_pending(network_server))
 		{
 			server_log(_server_log_warning, "lobby", "the lobby's map became %s: %s set again", game->map.name,
 				server.current.level);

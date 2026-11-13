@@ -6,6 +6,7 @@
 #include "mcc_loading.h"
 #include "mcc_load_network.h"
 #include "interface/progress_bar.h"
+#include "../src/server_mode.h" /* port: halo_server_hosting */
 #include <xtl.h>
 #include "rasterizer/xbox/rasterizer_xbox.h"
 #include <string.h>
@@ -75,6 +76,10 @@ int mcc_loading_begin(char const *name)
     mcc_load_network_begin(name);
     if (!mcc_level_name(name) || !global_d3d_device ||
         config_boolean("debug.null_renderer") || progress_bar_is_active()) return 0;
+    /* Hosting from the menus, the host's screen stays up: a Xbox or CE map's
+     * loading screen is drawn in the frame under it (render.c, interface.c),
+     * but this one presents on its own, with nothing over it. */
+    if (halo_server_hosting()) return 0;
     memset(&mcc_loading, 0, sizeof(mcc_loading));
     mcc_loading.active = 1;
     mcc_loading.stage = -1;
