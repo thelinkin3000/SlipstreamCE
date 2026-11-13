@@ -119,6 +119,18 @@ enum
 	STREAM_CHUNK_SIZE = 1024,
 	/* the most unacknowledged messages a stream sends ahead */
 	STREAM_WINDOW = 128,
+	/* a map-sharing stream's (port P2P_MAP_SHARE_PORT): its window sized to
+	the upload's cap over the round trip, within these; all of them together
+	within BULK_WINDOW_BUDGET messages (each is a KCP segment kept until it
+	is acknowledged: about 1.2 KB); its receive window, and the received
+	data it holds for the local connection */
+	BULK_WINDOW_MINIMUM = 32,
+	BULK_WINDOW_MAXIMUM = 1024,
+	BULK_WINDOW_BUDGET = 4096,
+	BULK_RECEIVE_WINDOW = 1024,
+	BULK_BUFFER_SIZE = 256 * 1024,
+	/* the chunks it reads from the local connection a pass */
+	BULK_READS = 64,
 	KCP_MTU = 1200,
 
 	/* milliseconds */
@@ -294,6 +306,18 @@ struct stream
 	int remote_closed;
 	unsigned long created_time;
 	unsigned long closed_time;
+	/* a map-sharing stream (stream_tune): its window now, the share of the
+	ideal it may have (per mille: halved when the round trip grows or
+	resends rise, grown back slowly), the least round trip seen, the
+	resends counted at the last look, and when it was looked at; its larger
+	buffer for received data (pending's in its place) */
+	int bulk;
+	int window;
+	int share;
+	IINT32 base_rtt;
+	IUINT32 seen_xmit;
+	unsigned long tuned_time;
+	unsigned char *bulk_buffer;
 	unsigned char pending[STREAM_BUFFER_SIZE];
 	int pending_size;
 };
@@ -2227,6 +2251,82 @@ static struct stream *stream_new(int peer_index, IUINT32 conversation)
 	return NULL;
 }
 
+/* where a stream holds the data received for its local connection, and how much */
+static unsigned char *stream_buffer(struct stream *stream)
+{
+	return stream->bulk_buffer ? stream->bulk_buffer : stream->pending;
+}
+
+static int stream_capacity(struct stream const *stream)
+{
+	return stream->bulk_buffer ? BULK_BUFFER_SIZE : STREAM_BUFFER_SIZE;
+}
+
+/* a map-sharing stream: its larger receive window and buffer (kept small
+when the buffer cannot be had); its send window is stream_tune's */
+static void stream_make_bulk(struct stream *stream)
+{
+	if (stream->bulk)
+		return;
+	stream->bulk = 1;
+	stream->window = STREAM_WINDOW;
+	stream->share = 1000;
+	stream->tuned_time = p2p_now();
+	stream->bulk_buffer = malloc(BULK_BUFFER_SIZE);
+	if (stream->bulk_buffer && stream->pending_size)
+		memcpy(stream->bulk_buffer, stream->pending, (size_t)stream->pending_size);
+	ikcp_wndsize(stream->kcp, BULK_WINDOW_MAXIMUM, stream->bulk_buffer ? BULK_RECEIVE_WINDOW : 256);
+}
+
+/* (each pass) a map-sharing stream's send window: what its upload's cap
+needs over twice the round trip, within BULK_WINDOW_MINIMUM..MAXIMUM and its
+part of BULK_WINDOW_BUDGET, times its share. The uploader paces what it
+sends at the cap (KCP's congestion control is off: nodelay), so a larger
+window only stops limiting it; a round trip well above the least seen (the
+path's buffers filling) or resends climbing halve the share, once a round
+trip, and it grows back a twentieth a round trip */
+static void stream_tune(struct stream *stream, int bulk_count)
+{
+	unsigned long now = p2p_now();
+	IINT32 rtt = stream->kcp->rx_srtt > 0 ? stream->kcp->rx_srtt : 100;
+	long kilobytes = p2p.hosting ? config_integer("network.map_share_upload") : config_integer("network.map_seed_upload");
+	long ideal, budget, window;
+	IUINT32 resent = stream->kcp->xmit - stream->seen_xmit;
+
+	if (!elapsed(stream->tuned_time, (unsigned long)(rtt > 50 ? rtt : 50)))
+		return;
+	stream->tuned_time = now;
+	stream->seen_xmit = stream->kcp->xmit;
+	if (stream->kcp->rx_srtt > 0 && (!stream->base_rtt || stream->kcp->rx_srtt < stream->base_rtt))
+		stream->base_rtt = stream->kcp->rx_srtt;
+	if (stream->base_rtt && (rtt > stream->base_rtt * 2 && rtt > stream->base_rtt + 50))
+		stream->share = stream->share / 2 > 125 ? stream->share / 2 : 125;
+	else if (resent > (IUINT32)(stream->window / 8 + 2))
+		stream->share = stream->share / 2 > 125 ? stream->share / 2 : 125;
+	else if (stream->share < 1000)
+		stream->share = stream->share + 50 < 1000 ? stream->share + 50 : 1000;
+	/* (the cap in KCP messages a second, over twice the round trip) */
+	ideal = (kilobytes > 0 ? kilobytes : 1024) * 1024 / STREAM_CHUNK_SIZE * 2 * rtt / 1000;
+	budget = BULK_WINDOW_BUDGET / (bulk_count > 0 ? bulk_count : 1);
+	window = ideal < budget ? ideal : budget;
+	if (window > BULK_WINDOW_MAXIMUM)
+		window = BULK_WINDOW_MAXIMUM;
+	window = window * stream->share / 1000;
+	if (window < BULK_WINDOW_MINIMUM)
+		window = BULK_WINDOW_MINIMUM;
+	if (window != stream->window)
+	{
+		stream->window = (int)window;
+		ikcp_wndsize(stream->kcp, (int)window, 0);
+	}
+}
+
+/* the messages a stream may have waiting to be acknowledged before it reads more */
+static int stream_window(struct stream const *stream)
+{
+	return stream->bulk ? stream->window : STREAM_WINDOW;
+}
+
 static void stream_free(struct stream *stream)
 {
 	/* (the game may not have taken the connection made for it yet) */
@@ -2235,6 +2335,7 @@ static void stream_free(struct stream *stream)
 	close_socket(&stream->socket);
 	if (stream->kcp)
 		ikcp_release(stream->kcp);
+	free(stream->bulk_buffer);
 	p2p.finished[p2p.finished_next++ % 16] = stream->conversation;
 	memset(stream, 0, offsetof(struct stream, pending));
 	stream->pending_size = 0;
@@ -2302,6 +2403,8 @@ static void listener_readable(struct listener *listener)
 		}
 		stream->socket = socket;
 		stream->state = _stream_open_state;
+		if (listener->remote_port == network_short(P2P_MAP_SHARE_PORT))
+			stream_make_bulk(stream);
 		put_short(open, listener->remote_port);
 		put_short(open + 2, from.sin_port);
 		stream_message(stream, _stream_open, open, sizeof(open));
@@ -2316,6 +2419,8 @@ static void stream_opened(struct stream *stream, const unsigned char *data, int 
 	if (stream->state != _stream_awaiting_open || size < 4)
 		return;
 	stream->remote_port = get_short(data + 2);
+	if (get_short(data) == network_short(P2P_MAP_SHARE_PORT))
+		stream_make_bulk(stream);
 	/* only to where the game listens: nothing else here is the peer's to
 	reach */
 	if (game_port_open(1, get_short(data)))
@@ -2376,9 +2481,11 @@ static void stream_received(struct peer *peer, const unsigned char *data, int si
 
 static void stream_flush_pending(struct stream *stream)
 {
+	unsigned char *buffer = stream_buffer(stream);
+
 	while (stream->pending_size > 0 && stream->socket >= 0 && stream->state == _stream_open_state)
 	{
-		int sent = posix_socket_send(stream->socket, stream->pending, stream->pending_size, 0);
+		int sent = posix_socket_send(stream->socket, buffer, stream->pending_size, 0);
 
 		if (sent < 0)
 		{
@@ -2386,7 +2493,7 @@ static void stream_flush_pending(struct stream *stream)
 				stream_local_closed(stream);
 			return;
 		}
-		memmove(stream->pending, stream->pending + sent, (size_t)(stream->pending_size - sent));
+		memmove(buffer, buffer + sent, (size_t)(stream->pending_size - sent));
 		stream->pending_size -= sent;
 	}
 }
@@ -2411,7 +2518,7 @@ static void stream_update(struct stream *stream)
 		}
 		if (size <= 0)
 			break;
-		if (size - 1 > STREAM_BUFFER_SIZE - stream->pending_size)
+		if (size - 1 > stream_capacity(stream) - stream->pending_size)
 			break;
 		size = ikcp_recv(stream->kcp, (char *)message, size);
 		if (size <= 0)
@@ -2424,7 +2531,7 @@ static void stream_update(struct stream *stream)
 		case _stream_data:
 			if (stream->socket >= 0)
 			{
-				memcpy(stream->pending + stream->pending_size, message + 1, (size_t)(size - 1));
+				memcpy(stream_buffer(stream) + stream->pending_size, message + 1, (size_t)(size - 1));
 				stream->pending_size += size - 1;
 			}
 			break;
@@ -2454,7 +2561,8 @@ static void stream_readable(struct stream *stream)
 	unsigned char buffer[STREAM_CHUNK_SIZE];
 	int count;
 
-	for (count = 0; count < 8 && ikcp_waitsnd(stream->kcp) < STREAM_WINDOW && stream->socket >= 0; count++)
+	for (count = 0; count < (stream->bulk ? BULK_READS : 8) && ikcp_waitsnd(stream->kcp) < stream_window(stream) &&
+		stream->socket >= 0; count++)
 	{
 		int size = posix_socket_recv(stream->socket, buffer, sizeof(buffer), 0);
 
@@ -3779,7 +3887,7 @@ static DWORD WINAPI p2p_thread(void *unused)
 				continue;
 			/* (not while the tunnel's window is full, which stream_readable
 			waits out, or the wait would return at once) */
-			if (stream->state == _stream_open_state && ikcp_waitsnd(stream->kcp) < STREAM_WINDOW)
+			if (stream->state == _stream_open_state && ikcp_waitsnd(stream->kcp) < stream_window(stream))
 			{
 				read_owners[read_count] = _owner_stream | index << 8;
 				read[read_count++] = stream->socket;
@@ -3902,10 +4010,18 @@ static DWORD WINAPI p2p_thread(void *unused)
 #ifdef HALO_PROFILE
 		profile_trace_begin(p2p_profile_names.kcp_update);
 #endif
-		for (index = 0; index < MAXIMUM_STREAMS; index++)
 		{
-			if (p2p.streams[index].used)
-				stream_update(&p2p.streams[index]);
+			int bulk_count = 0;
+
+			for (index = 0; index < MAXIMUM_STREAMS; index++)
+				bulk_count += p2p.streams[index].used && p2p.streams[index].bulk;
+			for (index = 0; index < MAXIMUM_STREAMS; index++)
+			{
+				if (p2p.streams[index].used && p2p.streams[index].bulk)
+					stream_tune(&p2p.streams[index], bulk_count);
+				if (p2p.streams[index].used)
+					stream_update(&p2p.streams[index]);
+			}
 		}
 #ifdef HALO_PROFILE
 		profile_trace_end(p2p_profile_names.kcp_update);

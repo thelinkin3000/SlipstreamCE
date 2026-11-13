@@ -964,6 +964,12 @@ static const struct config_setting config_settings[] =
 		_platform_all,
 		"Playing in another's game: the most kilobytes a second this machine\n"
 		"sends of maps to other players (16 to 10240: 10 MB/s)." },
+	{ "network.map_upload_in_game", _config_integer, "25", "HALO_NET_MAP_UPLOAD_IN_GAME", _environment_value,
+		_platform_all,
+		"While a game is being played on this machine, the part of\n"
+		"network.map_share_upload and network.map_seed_upload that map uploads\n"
+		"take, in percent (10 to 100), so that the game's own traffic comes\n"
+		"first; in the lobby and after a game, the whole of it." },
 	{ "network.map_download", _config_boolean, "true", "HALO_NET_MAP_DOWNLOAD", _environment_value, _platform_all,
 		"Allow map downloads when joining. MCC asks before downloading from\n"
 		"the host; Custom Edition downloads from the game's players.\n"

@@ -682,6 +682,17 @@ static unsigned long map_share_host_address(
 	return cached_address;
 }
 
+/* (map_share.h) the part of an upload's cap map uploads take now: all of it
+in the lobby and after a game, network.map_upload_in_game while one is
+being played here */
+long map_share_upload_percent(
+	void)
+{
+	if (!game_in_progress() || main_menu_is_active())
+		return 100;
+	return PIN(config_integer("network.map_upload_in_game"), 10, 100);
+}
+
 static long upload_limit(
 	void)
 {
@@ -689,7 +700,7 @@ static long upload_limit(
 	long kilobytes = host ? config_integer("network.map_share_upload") : config_integer("network.map_seed_upload");
 
 	return PIN(kilobytes, MINIMUM_UPLOAD_KILOBYTES, host ? MAXIMUM_HOST_UPLOAD_KILOBYTES : MAXIMUM_SEED_UPLOAD_KILOBYTES) *
-		1024;
+		1024 / 100 * map_share_upload_percent();
 }
 
 /* whether this machine sends the game's files to the others: in a game on

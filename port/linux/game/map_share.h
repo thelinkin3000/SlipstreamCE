@@ -235,4 +235,8 @@ boolean map_share_pieces_hashed(
 void map_share_files_update(
 	void);
 
+/* the part of an upload's cap (percent) map uploads take now: 100 but while a
+game is being played on this machine (network.map_upload_in_game) */
+long map_share_upload_percent(void);
+
 #endif

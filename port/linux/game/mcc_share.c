@@ -23,6 +23,7 @@
 #include "mcc_maps.h"
 #include "mcc_package.h"
 #include "mcc_share.h"
+#include "map_share.h"
 #include "mcc_share_session.h"
 #include "mcc_share_package.h"
 #include "mcc_share_storage.h"
@@ -252,7 +253,7 @@ static uint32_t mcc_share_upload_limit(
 	long kilobytes = config_integer("network.map_share_upload");
 
 	(void)user;
-	return (uint32_t)PIN(kilobytes, 16, 20480) * 1024;
+	return (uint32_t)PIN(kilobytes, 16, 20480) * 1024 / 100 * (uint32_t)map_share_upload_percent();
 }
 
 static uint64_t mcc_share_free_bytes(
