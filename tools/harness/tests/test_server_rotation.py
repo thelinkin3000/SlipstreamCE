@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from harness import CHECK_FAILED, build, mutated, read, run  # noqa: E402
 
 CASES = [
-    "names", "custom-maps", "paths", "gametypes", "rules", "whitespace-comments", "quotes", "long", "ui",
+    "names", "custom-maps", "mcc-maps", "paths", "gametypes", "rules", "whitespace-comments", "quotes", "long", "ui",
     "rotation-separators", "rotation-limits", "round-trip", "rule-find", "rule-values", "check-kind", "map-header",
     "resolve", "maps-each",
     "long-map-level",

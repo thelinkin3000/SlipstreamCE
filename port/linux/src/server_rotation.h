@@ -96,6 +96,9 @@ enum
 	_server_map_name,
 	_server_map_custom,
 	_server_map_path,
+	/* an MCC map, mcc_maps\[package\]name: the MCC catalog's
+	(port/linux/game/mcc_maps.c), not a file in the maps folders */
+	_server_map_mcc,
 };
 
 struct server_entry

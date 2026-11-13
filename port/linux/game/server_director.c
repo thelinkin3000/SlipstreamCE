@@ -655,7 +655,9 @@ static boolean server_apply_entry(
 		}
 		if (difficulty == (short)NUMBEROF(difficulties))
 			difficulty = 1;
-		if (!ui_widget_port_cooperative_level_choose(entry->level, difficulty))
+		/* (an MCC campaign level as Create Game's MCC list chooses one) */
+		if (entry->map_kind == _server_map_mcc ? !ui_widget_port_mcc_cooperative_level_choose(entry->level, difficulty) :
+			!ui_widget_port_cooperative_level_choose(entry->level, difficulty))
 		{
 			server_log(_server_log_warning, "lobby", "%s cannot be played as co-op", entry->level);
 			return FALSE;
@@ -676,6 +678,11 @@ static boolean server_apply_entry(
 			return FALSE;
 		}
 		main_set_multiplayer_map_name(entry->level);
+		/* (an MCC map by its full path, as Create Game's MCC list chooses it:
+		ui_widget_port_mcc_multiplayer_map_choose, less the player's last
+		map remembered, which a server is not) */
+		if (entry->map_kind == _server_map_mcc)
+			game_engine_override_map_name(entry->level);
 		network_game_server_change_map_name(network_server, entry->level);
 		player_ui_set_game_variant(&variant);
 		player_ui_set_game_variant_options(&options);

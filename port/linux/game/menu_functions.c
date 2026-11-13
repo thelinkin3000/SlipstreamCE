@@ -12228,9 +12228,10 @@ enum
 	HOST_MAP_ROWS = 8,
 	HOST_ENTRY_ROWS = 5,
 	HOST_GAMETYPE_ROWS = 10,
-	/* the Builder's maps: the stock maps', or Custom Edition's */
+	/* the Builder's maps: the stock maps', Custom Edition's, or MCC's */
 	_host_maps_multiplayer = 0,
 	_host_maps_custom,
+	_host_maps_mcc,
 	HOST_DETAILS_LENGTH = 1024,
 	/* the text fields' lengths: the server's name as the game's names
 	(15), its password, its message of the day */
@@ -12278,6 +12279,9 @@ struct host_menu_globals
 	folders, the main menu's map lists' map_browse) and its row there, and
 	whether their scan is still going (custom_edition_maps_scan_start) */
 	short map_kind;
+	/* MCC's multiplayer maps (mcc_maps and its packages, the Steam
+	Workshop's), as Create Game's MCC list browses them: a package a folder */
+	struct mcc_map_browser mcc_browser;
 	char map_category[CUSTOM_EDITION_MAP_CATEGORY_LENGTH];
 	short map_category_entry;
 	boolean custom_maps_waiting;
@@ -12777,6 +12781,11 @@ static void host_builder_begin(short index)
 	host_menu.map_first = host_menu.map_chosen = 0;
 	host_menu.map_category[0] = 0;
 	host_menu.map_category_entry = 0;
+	/* (MCC's maps at the top of mcc_maps, read again) */
+	host_menu.mcc_browser.package[0] = 0;
+	host_menu.mcc_browser.collection = FALSE;
+	if (host_menu.map_kind == _host_maps_mcc)
+		mcc_map_browser_open(&host_menu.mcc_browser, FALSE);
 	host_menu.entry_first = host_menu.entry_chosen = 0;
 	host_menu.grabbed = FALSE;
 	host_menu.removing_all = FALSE;
@@ -12920,6 +12929,8 @@ static boolean host_maps_init(void)
 folders (the folder open's maps), none while they are looked for */
 static short host_maps_shown(void)
 {
+	if (host_menu.map_kind == _host_maps_mcc)
+		return host_menu.mcc_browser.count;
 	if (host_menu.map_kind != _host_maps_custom)
 		return host_menu.map_count;
 	if (host_menu.custom_maps_waiting)
@@ -12933,6 +12944,8 @@ static char const *host_map_level(short item)
 {
 	short flat;
 
+	if (host_menu.map_kind == _host_maps_mcc)
+		return mcc_maps_level_name(mcc_map_browser_index(&host_menu.mcc_browser, item));
 	if (host_menu.map_kind != _host_maps_custom)
 		return item >= 0 && item < host_menu.map_count ? host_menu.maps[item] : NULL;
 	flat = map_browse_flat(FALSE, host_menu.map_category, item);
@@ -12942,8 +12955,16 @@ static char const *host_map_level(short item)
 static void host_map_row_text(short item, wchar_t *text)
 {
 	char title[CUSTOM_EDITION_MAP_CATEGORY_LENGTH + 8];
-	char const *level = host_map_level(item);
+	char const *level;
 
+	/* (an MCC map by its own title, a package's folder in brackets: as
+	Create Game's MCC list shows them) */
+	if (host_menu.map_kind == _host_maps_mcc)
+	{
+		mcc_map_browser_text(&host_menu.mcc_browser, item, text);
+		return;
+	}
+	level = host_map_level(item);
 	if (level)
 		host_map_title(level, title, sizeof(title));
 	else
@@ -13002,7 +13023,16 @@ static void host_maps_update(struct widget_instance *list)
 		map_browse_forget();
 		host_maps_focus(list, host_menu.map_category_entry);
 	}
-	if (host_menu.map_kind != _host_maps_custom)
+	if (host_menu.map_kind == _host_maps_mcc)
+	{
+		if (host_menu.mcc_browser.package[0])
+			snprintf(kind, sizeof(kind), "MCC/%s", host_menu.mcc_browser.package);
+		else
+			snprintf(kind, sizeof(kind), "MAPS: MCC");
+		for (index = 0; kind[index]; index++)
+			kind[index] = kind[index] >= 'a' && kind[index] <= 'z' ? (char)(kind[index] - 32) : kind[index];
+	}
+	else if (host_menu.map_kind != _host_maps_custom)
 		snprintf(kind, sizeof(kind), "MAPS: MULTIPLAYER");
 	else if (host_menu.map_category[0])
 	{
@@ -13059,18 +13089,36 @@ static short host_list_hidden(struct widget_instance const *list, boolean forwar
 }
 
 /* "port host map kind" (A on the touchscreens' row, a shoulder on the maps):
-MULTIPLAYER's maps, or CUSTOM MAPS' (when there are any, or while they are
-looked for), custom_maps itself first */
+the next of MULTIPLAYER's maps, CUSTOM MAPS' (when there are any, or while
+they are looked for) and MCC's (when it has multiplayer maps), each at its
+top folder */
 static boolean host_map_kind(void)
 {
-	if (host_menu.map_kind == _host_maps_multiplayer && !host_menu.custom_maps_waiting &&
-		!custom_edition_maps_count(FALSE))
+	short kind = host_menu.map_kind, tried;
+
+	for (tried = 0; tried < 2; tried++)
 	{
-		snprintf(host_menu.builder_status, sizeof(host_menu.builder_status), "NO CUSTOM MAPS IN CUSTOM_MAPS.");
+		kind = kind == _host_maps_multiplayer ? _host_maps_custom : kind == _host_maps_custom ? _host_maps_mcc :
+			_host_maps_multiplayer;
+		if (kind == _host_maps_custom && !host_menu.custom_maps_waiting && !custom_edition_maps_count(FALSE))
+			continue;
+		if (kind == _host_maps_mcc && !mcc_maps_count(TRUE))
+			continue;
+		break;
+	}
+	if (tried == 2)
+	{
+		snprintf(host_menu.builder_status, sizeof(host_menu.builder_status), "NO CUSTOM OR MCC MAPS TO ADD.");
 		ui_play_audio_feedback_sound(SOUND_ERROR);
 		return TRUE;
 	}
-	host_menu.map_kind = host_menu.map_kind == _host_maps_custom ? _host_maps_multiplayer : _host_maps_custom;
+	host_menu.map_kind = kind;
+	if (kind == _host_maps_mcc)
+	{
+		host_menu.mcc_browser.package[0] = 0;
+		host_menu.mcc_browser.collection = FALSE;
+		mcc_map_browser_open(&host_menu.mcc_browser, FALSE);
+	}
 	host_menu.map_first = host_menu.map_chosen = 0;
 	host_menu.map_category[0] = 0;
 	host_menu.map_category_entry = 0;
@@ -13086,6 +13134,14 @@ static boolean host_map_folder_back(struct widget_instance *screen)
 {
 	struct widget_instance *list = screen ? screen->focused_child : NULL;
 
+	/* (an MCC package's folder: back to mcc_maps itself, on its row) */
+	if (host_menu.map_kind == _host_maps_mcc && list && !strcmp(list->name, "map_list") &&
+		mcc_map_browser_back(&host_menu.mcc_browser))
+	{
+		host_maps_focus(list, host_menu.mcc_browser.chosen);
+		ui_play_audio_feedback_sound(SOUND_BACK);
+		return TRUE;
+	}
 	if (host_menu.map_kind != _host_maps_custom || !host_menu.map_category[0] || !list ||
 		strcmp(list->name, "map_list"))
 	{
@@ -13108,6 +13164,16 @@ static boolean host_map_choose(struct widget_instance *row)
 	if (host_menu.map_chosen < 0 || host_menu.map_chosen >= count)
 		return FALSE;
 	level = host_map_level(host_menu.map_chosen);
+	/* (an MCC package's folder: opened) */
+	if (!level && host_menu.map_kind == _host_maps_mcc)
+	{
+		if (!mcc_map_browser_enter(&host_menu.mcc_browser, host_menu.map_chosen))
+			return FALSE;
+		host_maps_focus(row ? row->parent : NULL, host_menu.mcc_browser.chosen);
+		host_menu.builder_status[0] = 0;
+		ui_play_audio_feedback_sound(SOUND_FORWARD);
+		return FALSE;
+	}
 	if (!level)
 	{
 		char const *folder = map_browse_folder_name(FALSE, host_menu.map_category, host_menu.map_chosen);
@@ -13417,12 +13483,16 @@ static void host_entries_update(struct widget_instance *list)
 		struct widget_instance const *maps = screen->focused_child;
 
 		if (maps && maps->focused_child && !strcmp(maps->focused_child->name, "op_kind"))
-			snprintf(text, sizeof(text), "A SHOWS THE OTHER MAPS: MULTIPLAYER OR CUSTOM.");
+			snprintf(text, sizeof(text), "A SHOWS THE OTHER MAPS: MULTIPLAYER, CUSTOM OR MCC.");
 		else if (host_menu.map_kind == _host_maps_custom && host_menu.custom_maps_waiting)
 			snprintf(text, sizeof(text), "LOOKING FOR CUSTOM MAPS...");
 		else if (host_menu.map_kind == _host_maps_custom && host_menu.map_category[0])
 			snprintf(text, sizeof(text), "SELECT A MAP TO ADD IT; BACK RETURNS TO THE FOLDERS.");
 		else if (host_menu.map_kind == _host_maps_custom)
+			snprintf(text, sizeof(text), "SELECT A FOLDER TO OPEN IT, OR A MAP TO ADD IT.");
+		else if (host_menu.map_kind == _host_maps_mcc && host_menu.mcc_browser.package[0])
+			snprintf(text, sizeof(text), "SELECT A MAP TO ADD IT; BACK RETURNS TO THE FOLDERS.");
+		else if (host_menu.map_kind == _host_maps_mcc)
 			snprintf(text, sizeof(text), "SELECT A FOLDER TO OPEN IT, OR A MAP TO ADD IT.");
 		else
 			snprintf(text, sizeof(text), "A ON A MAP CHOOSES ITS GAMETYPE AND ADDS IT.");

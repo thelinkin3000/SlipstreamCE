@@ -44,6 +44,19 @@ const char *platform_custom_edition_root(void)
 	return custom_edition_root;
 }
 
+/* (the MCC catalog, port/linux/game/mcc_maps.c: none here) */
+short mcc_maps_find(char const *level_name)
+{
+	(void)level_name;
+	return -1;
+}
+
+unsigned char mcc_maps_campaign(short index)
+{
+	(void)index;
+	return 0;
+}
+
 void *posix_directory_open(const char *path)
 {
 	return opendir(path);
@@ -276,6 +289,25 @@ int main(int argc, char **argv)
 		CHECK(rejected_with("custom_maps\\a\\b", "is not a map's name"), "a folder in custom_maps was taken");
 		CHECK(rejected_with("custom_maps\\..", "is not a map's name"), "custom_maps\\.. was taken");
 		CHECK(rejected_with("custom_maps/../maps/x", "is not a map's name"), "a path out of custom_maps was taken");
+		return 0;
+	}
+	/* an MCC map, mcc_maps\[package\]name: the MCC catalog's, by its level
+	name; one folder of mcc_maps at most, nothing that leaves it */
+	CASE("mcc-maps")
+	{
+		CHECK(playable("mcc_maps\\2906110850\\spillway:slayer"), "an MCC package's map was rejected: %s", entry.rejected);
+		CHECK(entry.map_kind == _server_map_mcc, "kind %d", entry.map_kind);
+		CHECK(!strcmp(entry.level, "mcc_maps\\2906110850\\spillway") && !strcmp(entry.map_name, "spillway"),
+			"level %s, map %s", entry.level, entry.map_name);
+		CHECK(playable("MCC_MAPS/a10"), "a loose MCC map in capitals with a slash was rejected: %s", entry.rejected);
+		CHECK(entry.map_kind == _server_map_mcc && !strcmp(entry.level, "mcc_maps\\a10"), "level %s", entry.level);
+		CHECK(rejected_with("mcc_maps\\a\\b\\c", "is not an MCC map's name"), "two folders in mcc_maps were taken");
+		CHECK(rejected_with("mcc_maps\\..\\x", "is not an MCC map's name"), "mcc_maps\\.. was taken");
+		CHECK(rejected_with("mcc_maps\\pkg\\", "is not an MCC map's name"), "a package with no map was taken");
+		/* (the catalog has none here: missing, as a map file would be) */
+		CHECK(playable("mcc_maps\\pkg\\m:slayer"), "rejected: %s", entry.rejected);
+		server_rotation_resolve(&entry);
+		CHECK(entry.map_missing && strstr(entry.rejected, "there is no MCC map"), "resolved: %s", entry.rejected);
 		return 0;
 	}
 	/* a level's path: taken as is, its last part the map's file; nothing
