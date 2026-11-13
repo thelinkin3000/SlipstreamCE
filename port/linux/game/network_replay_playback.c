@@ -229,6 +229,18 @@ static struct
 	/* (41: a vote's status, with the vote to end the game's) */
 	{ 41, _distributed_message_votekick_status },
 };
+/* Network version 42 (the MCC support merge) put a checkpoint epoch, a
+long, after each distributed message's game time, the header 12 bytes where
+it was 8, and a client takes only a message of the epoch its host's boundary
+(_distributed_message_checkpoint) named. A replay older than that has neither:
+its records are read with the epoch put in (each of a batch's too,
+playback_message_upgrade), and a boundary of that epoch is handed over first
+(playback_bind_epoch). Without this every object, unit and player message was
+dropped, and the replay was a black screen. */
+#define REPLAY_EPOCH_NETWORK_VERSION 42
+#define REPLAY_OLD_DISTRIBUTED_HEADER_SIZE 8
+#define REPLAY_OLD_BATCHED_HEADER_SIZE (REPLAY_OLD_DISTRIBUTED_HEADER_SIZE - sizeof(message_header))
+#define REPLAY_OLD_EPOCH 1
 /* the largest replay file read, and the most of its records kept (inflated,
 in the host's memory: host_replay.c) */
 #define REPLAY_MAXIMUM_FILE_SIZE (256 * 1024 * 1024)
@@ -973,6 +985,8 @@ smoothly between (playback_eyes_facing). Counted, then kept; a facing older
 than one the player already had is dropped, as the client drops it
 (distributed_add_new_ticks), and a second one read at the same tick takes the
 first's place */
+static word playback_message_take(byte const *message, word size);
+
 struct playback_facing_scan
 {
 	boolean counting;
@@ -1035,9 +1049,24 @@ static void playback_scan_facings(
 		case _network_replay_datagram:
 		case _network_replay_reliable:
 		case _network_replay_reliable_to_machine:
-			network_distributed_replay_facings(record + REPLAY_RECORD_HEADER_SIZE, size, FALSE,
-				playback_facing_found, scan);
+		{
+			/* (as this build reads it, playback_message_take: a current
+			replay's where it is, uncopied) */
+			if (playback.network_version >= REPLAY_EPOCH_NETWORK_VERSION)
+			{
+				network_distributed_replay_facings(record + REPLAY_RECORD_HEADER_SIZE, size, FALSE,
+					playback_facing_found, scan);
+			}
+			else
+			{
+				word taken = playback_message_take(record + REPLAY_RECORD_HEADER_SIZE, size);
+
+				if (taken)
+					network_distributed_replay_facings((byte const *)playback.message, taken, FALSE,
+						playback_facing_found, scan);
+			}
 			break;
+		}
 		case _network_replay_own_actions:
 			network_distributed_replay_facings(record + REPLAY_RECORD_HEADER_SIZE, size, TRUE,
 				playback_facing_found, scan);
@@ -1385,6 +1414,121 @@ static long playback_next_player(
 	return first != NONE ? first : after;
 }
 
+/* a distributed message of a replay from before network version 42 as this
+build's (REPLAY_EPOCH_NETWORK_VERSION), into destination (of destination_size
+bytes): its size, 0 where it does not fit or is not whole */
+static word playback_message_upgrade(
+	byte const *message,
+	word size,
+	byte *destination,
+	long destination_size)
+{
+	static byte const epoch[4] = { REPLAY_OLD_EPOCH, 0, 0, 0 };
+	long used;
+	word header;
+
+	if (size < REPLAY_OLD_DISTRIBUTED_HEADER_SIZE ||
+		destination_size < REPLAY_OLD_DISTRIBUTED_HEADER_SIZE + (long)sizeof(epoch))
+	{
+		return 0;
+	}
+	csmemcpy(destination, message, REPLAY_OLD_DISTRIBUTED_HEADER_SIZE);
+	csmemcpy(destination + REPLAY_OLD_DISTRIBUTED_HEADER_SIZE, epoch, sizeof(epoch));
+	used = REPLAY_OLD_DISTRIBUTED_HEADER_SIZE + sizeof(epoch);
+	if (message[sizeof(message_header)] != _distributed_message_batch)
+	{
+		long rest = size - REPLAY_OLD_DISTRIBUTED_HEADER_SIZE;
+
+		if (used + rest > destination_size)
+			return 0;
+		csmemcpy(destination + used, message + REPLAY_OLD_DISTRIBUTED_HEADER_SIZE, rest);
+		used += rest;
+	}
+	else
+	{
+		/* (a batch: each message a length, then its header without the
+		message header, then its entries) */
+		long offset = REPLAY_OLD_DISTRIBUTED_HEADER_SIZE;
+
+		while (offset + (long)sizeof(word) <= size)
+		{
+			word length = (word)(message[offset] | message[offset + 1] << 8);
+			word upgraded;
+
+			offset += sizeof(word);
+			if (length > size - offset || length < REPLAY_OLD_BATCHED_HEADER_SIZE)
+				break;
+			if (used + (long)sizeof(word) + length + (long)sizeof(epoch) > destination_size)
+				return 0;
+			upgraded = (word)(length + sizeof(epoch));
+			destination[used] = (byte)upgraded;
+			destination[used + 1] = (byte)(upgraded >> 8);
+			used += sizeof(word);
+			csmemcpy(destination + used, message + offset, REPLAY_OLD_BATCHED_HEADER_SIZE);
+			used += REPLAY_OLD_BATCHED_HEADER_SIZE;
+			csmemcpy(destination + used, epoch, sizeof(epoch));
+			used += sizeof(epoch);
+			csmemcpy(destination + used, message + offset + REPLAY_OLD_BATCHED_HEADER_SIZE,
+				length - REPLAY_OLD_BATCHED_HEADER_SIZE);
+			used += length - REPLAY_OLD_BATCHED_HEADER_SIZE;
+			offset += length;
+		}
+	}
+	if (used > 0xFFFF)
+		return 0;
+	/* (its message header's size, as distributed_fill_header writes it) */
+	csmemcpy(&header, destination, sizeof(header));
+	header = (word)((header & 0xF) | ((used & 0xFFF) << 4));
+	csmemcpy(destination, &header, sizeof(header));
+	return (word)used;
+}
+
+/* a record's distributed message as this build reads it, in
+playback.message: its size, 0 if there is none to read */
+static word playback_message_take(
+	byte const *message,
+	word size)
+{
+	if (playback.network_version >= REPLAY_EPOCH_NETWORK_VERSION)
+	{
+		csmemcpy(playback.message, message, size);
+		return size;
+	}
+	return playback_message_upgrade(message, size, (byte *)playback.message, sizeof(playback.message));
+}
+
+/* (a replay from before network version 42) a message of the type with no
+entries, of the epoch its records are given, handed over as its host's
+reliable one */
+static void playback_hand_marker(
+	byte type)
+{
+	struct distributed_message_header marker;
+
+	csmemset(&marker, 0, sizeof(marker));
+	build_message_header(&marker.header, sizeof(marker), 2, 0);
+	marker.type = type;
+	marker.count = 0;
+	marker.game_time = game_time_get();
+	marker.checkpoint_epoch = REPLAY_OLD_EPOCH;
+	network_connection_port_set_last_read_unreliable(FALSE);
+	network_distributed_handle_message(NONE, (word const *)&marker, sizeof(marker));
+}
+
+/* (a replay from before network version 42, its game under way) the
+boundary its host's messages would have been of (REPLAY_OLD_EPOCH), as a
+client reads it once it has loaded the game */
+static void playback_bind_epoch(
+	void)
+{
+	if (playback.network_version >= REPLAY_EPOCH_NETWORK_VERSION || !game_in_progress() ||
+		network_distributed_checkpoint_epoch() != 0)
+	{
+		return;
+	}
+	playback_hand_marker(_distributed_message_checkpoint);
+}
+
 /* the records of the ticks the clock has reached, to the client's
 handlers as it reads them from its host */
 static void playback_feed(
@@ -1419,19 +1563,20 @@ static void playback_feed(
 		playback.next += REPLAY_RECORD_HEADER_SIZE + size;
 		if (size < sizeof(message_header))
 			continue;
-		csmemcpy(playback.message, record + REPLAY_RECORD_HEADER_SIZE, size);
 		switch (kind)
 		{
 		case _network_replay_datagram:
-			network_connection_port_set_last_read_unreliable(TRUE);
-			network_distributed_handle_message(NONE, playback.message, size);
-			break;
 		case _network_replay_reliable:
 		case _network_replay_reliable_to_machine:
-			network_connection_port_set_last_read_unreliable(FALSE);
+			playback_bind_epoch();
+			size = playback_message_take(record + REPLAY_RECORD_HEADER_SIZE, size);
+			if (!size)
+				break;
+			network_connection_port_set_last_read_unreliable(kind == _network_replay_datagram);
 			network_distributed_handle_message(NONE, playback.message, size);
 			break;
 		case _network_replay_game_message:
+			csmemcpy(playback.message, record + REPLAY_RECORD_HEADER_SIZE, size);
 			network_connection_port_set_last_read_unreliable(FALSE);
 			if (size == GET_MESSAGE_SIZE(playback.message[0]))
 				network_game_client_handle_message(client, playback.message, (short)size, &host);
@@ -1439,6 +1584,7 @@ static void playback_feed(
 		case _network_replay_own_actions:
 			/* (a client's recording: its own player's input, as the host
 			relays another's) */
+			csmemcpy(playback.message, record + REPLAY_RECORD_HEADER_SIZE, size);
 			network_distributed_own_actions((byte const *)playback.message, size);
 			break;
 		}
@@ -1908,7 +2054,20 @@ boolean network_replay_playback_idle(
 	/* (the host's objects, all of them, came at the game's first tick: as a
 	client is told once the host has sent it them all, its own objects the
 	host has not are let go, network_objects.c) */
-	if (!playback.synchronized)
+	/* (a replay from before network version 42 has none of the host's end
+	of its objects, which a client now takes the rest of its messages only
+	after: handed over once its game is under way, which tells the objects
+	too) */
+	if (!playback.synchronized && playback.network_version < REPLAY_EPOCH_NETWORK_VERSION)
+	{
+		if (game_in_progress())
+		{
+			playback.synchronized = TRUE;
+			playback_bind_epoch();
+			playback_hand_marker(_distributed_message_objects_synchronized);
+		}
+	}
+	else if (!playback.synchronized)
 	{
 		playback.synchronized = TRUE;
 		network_objects_handle_synchronized();

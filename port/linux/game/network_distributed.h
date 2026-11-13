@@ -331,6 +331,10 @@ void network_distributed_replay_facings(byte const *data, long size, boolean own
 machine's clock (the host's last message's) are now's again, not the
 keyframe's */
 void network_distributed_replay_restored(void);
+/* the checkpoint epoch the host's messages must carry; 0 before its boundary
+(a replay from before network version 42 has none: network_replay_playback.c
+gives it one) */
+unsigned long network_distributed_checkpoint_epoch(void);
 /* (the host) how long a message takes that client and its answer back, in
 ticks (and its jitter), as its players' input messages tell */
 real distributed_machine_round_trip_ticks(long machine_index);

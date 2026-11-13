@@ -1329,6 +1329,11 @@ boolean distributed_checkpoint_ready(void)
 	return distributed_checkpoint_synchronized;
 }
 
+unsigned long network_distributed_checkpoint_epoch(void)
+{
+	return distributed_checkpoint_epoch;
+}
+
 /* a packer's messages of the type, to the machine (or the host), each
 beginning with the prefix */
 static void distributed_packer_begin(
