@@ -338,6 +338,7 @@ void game_state_initialize_for_new_map(
 	game_state_globals.header->allocation_size_checksum = game_state_globals.allocation_size_checksum;
 	game_state_globals.header->layout_address = (unsigned long)game_state_globals.base_address;
 	game_state_globals.header->image_shift = PORT_IMAGE_SHIFT;
+	game_state_globals.header->mcc_tag_shift = PORT_MCC_SHIFT;
 
 	return;
 }
@@ -969,6 +970,25 @@ void game_state_relocate(
 		value += relocation->window_delta;
 		csmemcpy(field, &value, sizeof(value));
 	}
+	/* (an MCC map's tags, which may lie elsewhere in each run:
+	halo_port_window.h) */
+	else if (relocation->mcc_delta && value - relocation->mcc_from < PORT_MCC_LINKED_BYTES)
+	{
+		value += relocation->mcc_delta;
+		csmemcpy(field, &value, sizeof(value));
+	}
+}
+
+unsigned long game_state_relocation_tag_delta(
+	struct game_state_relocation const *relocation,
+	void const *live)
+{
+	if (relocation->mcc_delta &&
+		(unsigned long)live - (relocation->mcc_from + relocation->mcc_delta) < PORT_MCC_LINKED_BYTES)
+	{
+		return relocation->mcc_delta;
+	}
+	return relocation->window_delta;
 }
 
 void *game_state_relocation_element(
@@ -1055,6 +1075,7 @@ static boolean game_state_image_relocate(
 	}
 	header->layout_address = (unsigned long)game_state_globals.base_address;
 	header->image_shift = PORT_IMAGE_SHIFT;
+	header->mcc_tag_shift = PORT_MCC_SHIFT;
 
 	return TRUE;
 }
@@ -1070,7 +1091,8 @@ boolean game_state_image_accept(
 		return game_state_image_refuse("the image", "is of another size");
 	header = game_state_image_pointer(image, game_state_globals.header);
 	if (header->layout_address != (unsigned long)game_state_globals.base_address ||
-		header->image_shift != PORT_IMAGE_SHIFT)
+		header->image_shift != PORT_IMAGE_SHIFT ||
+		(PORT_MCC_LINKED_BASE && header->mcc_tag_shift != PORT_MCC_SHIFT))
 	{
 		struct game_state_relocation relocation;
 		unsigned long offset = (unsigned long)game_state_globals.base_address - PORT_WINDOW_BASE;
@@ -1079,9 +1101,16 @@ boolean game_state_image_accept(
 		relocation.window_from = header->layout_address - offset;
 		relocation.window_delta = PORT_WINDOW_BASE - relocation.window_from;
 		relocation.image_delta = PORT_IMAGE_SHIFT - header->image_shift;
+		/* (an MCC map's tags only: PORT_MCC_LINKED_BASE is its base while
+		one is loaded, and 0 otherwise) */
+		relocation.mcc_from = PORT_MCC_LINKED_BASE + header->mcc_tag_shift;
+		relocation.mcc_delta = PORT_MCC_LINKED_BASE ? PORT_MCC_SHIFT - header->mcc_tag_shift : 0;
 		error(_error_silent, "the saved game was written with the window at %08lx and the image shifted by %08lx; "
 			"moved to %08lx and %08lx", relocation.window_from, (unsigned long)header->image_shift,
 			(unsigned long)PORT_WINDOW_BASE, (unsigned long)PORT_IMAGE_SHIFT);
+		if (relocation.mcc_delta)
+			error(_error_silent, "and an MCC map's tags were at %08lx; moved to %08lx", relocation.mcc_from,
+				(unsigned long)(PORT_MCC_LINKED_BASE + PORT_MCC_SHIFT));
 		/* (a window starts on a whole number of 64 KB at least; one that
 		does not had its game state at another offset into it, in another
 		build) */

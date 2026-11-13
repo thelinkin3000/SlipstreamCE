@@ -114,7 +114,7 @@ def checkpoint_tool(tmp_path_factory):
     (work / "saved games/game_state.h").write_text(
         "#pragma once\n#include <stdint.h>\nstruct game_state_header {uint32_t allocation_checksum;"
         "char map_name[256],build_number[32];short player_count,difficulty;"
-        "uint32_t cache_file_checksum,layout_address,image_shift,unused[5],checksum;};\n")
+        "uint32_t cache_file_checksum,layout_address,image_shift,mcc_tag_shift,unused[4],checksum;};\n")
     data_header = (ROOT / "source/memory/data.h").read_text()
     (work / "memory/data.h").write_text("#pragma once\n#define TAG_STRING_LENGTH 31\n" + "\n".join(
         re.search(r"struct " + name + r"\s*\{.*?\n\};", data_header, re.S).group()
@@ -169,9 +169,12 @@ static unsigned char live[GAME_STATE_SIZE] __attribute__((aligned(65536))), save
 static struct {void *base_address;long cpu_allocation_size;int saved_game_valid;struct game_state_header *header;} game_state_globals;
 /* (this fork's window and image where the game is linked for: no saved game is moved;
 game_state.h's relocation of one written with the window elsewhere) */
-struct game_state_relocation {unsigned char *image;unsigned long window_from,window_delta,image_delta;};
+struct game_state_relocation {unsigned char *image;unsigned long window_from,window_delta,image_delta,mcc_from,mcc_delta;};
 #define PORT_WINDOW_BASE ((unsigned long)live)
 #define PORT_IMAGE_SHIFT 0UL
+/* (an MCC map's tags at the base they were written for: halo_port_window.h) */
+#define PORT_MCC_SHIFT 0UL
+#define PORT_MCC_LINKED_BASE 0UL
 static int game_state_image_relocate(struct game_state_relocation const *relocation) {(void)relocation;return TRUE;}
 enum {_game_state_allocation_data,_game_state_allocation_memory_pool,_game_state_allocation_lruv_cache};
 struct game_state_allocation {int kind;void *address;long maximum_count,element_size,size;};

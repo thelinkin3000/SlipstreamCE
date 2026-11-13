@@ -902,6 +902,8 @@ struct hs_runtime_relocation_strings
 	unsigned long size;
 	char const *constants;
 	unsigned long empty;
+	/* how far the constants moved (game_state_relocation_tag_delta) */
+	unsigned long delta;
 };
 
 static boolean hs_runtime_relocate_string(
@@ -912,12 +914,13 @@ static boolean hs_runtime_relocate_string(
 	unsigned long value;
 	unsigned long offset;
 
+	(void)relocation;
 	csmemcpy(&value, field, sizeof(value));
 	offset = value - strings->first;
 	if (value == strings->empty)
 		value = (unsigned long)_hs_type_string_default;
 	else if (offset < strings->size && (!offset || !strings->constants[offset - 1]))
-		value += relocation->window_delta;
+		value += strings->delta;
 	else
 		return FALSE;
 	csmemcpy(field, &value, sizeof(value));
@@ -939,7 +942,10 @@ boolean hs_runtime_port_relocate(
 
 	strings.constants = scenario ? (char const *)TAG_DATA_ADDRESS(scenario->hs_string_constants) : NULL;
 	strings.size = strings.constants ? (unsigned long)scenario->hs_string_constants.size : 0;
-	strings.first = (unsigned long)strings.constants - relocation->window_delta;
+	/* (in the window for the game's own maps; an MCC map's tags may lie
+	elsewhere: game_state_relocation_tag_delta) */
+	strings.delta = game_state_relocation_tag_delta(relocation, strings.constants);
+	strings.first = (unsigned long)strings.constants - strings.delta;
 	strings.empty = (unsigned long)_hs_type_string_default - relocation->image_delta;
 	for (index = 0; index < hs_thread_data->maximum_count; index++)
 	{

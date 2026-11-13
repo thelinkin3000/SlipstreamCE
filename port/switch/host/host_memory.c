@@ -271,11 +271,22 @@ thread's) landed in it on some runs before it was reserved, and Custom
 Edition maps could not run. 0 to 0 when nothing is held. */
 static uint64_t custom_edition_hold_base, custom_edition_hold_end;
 
+/* MCC's tag window (0x50000000, 64 MB: host_memory_hold_mcc_range), kept out
+of the window, the pools and every mapping of the port's own for the whole
+run, whether or not it could be mapped from the start: where the launcher
+put something there first, an MCC map's tags go elsewhere and their
+addresses move (halo_port_window.h), and that only works while nothing else
+of the guest's lies in the range they were written for, so that an address
+there is always one still to move. 0 to 0 before main. */
+static uint64_t mcc_claim_base, mcc_claim_end;
+
 static int range_claimed(uint64_t address, uint64_t size)
 {
 	int index;
 
 	if (address < image_hold_end && image_hold_base < address + size)
+		return 1;
+	if (address < mcc_claim_end && mcc_claim_base < address + size)
 		return 1;
 	if (address < window_hold_end && window_hold_base < address + size)
 		return 1;
@@ -562,6 +573,8 @@ static uint64_t find_gap_below(uint64_t size, uint64_t minimum, uint64_t alignme
 					move = image_hold_end;
 				if (custom_edition_hold_base <= move && move < custom_edition_hold_end)
 					move = custom_edition_hold_end;
+				if (mcc_claim_base <= move && move < mcc_claim_end)
+					move = mcc_claim_end;
 				for (int index = 0; index < reservation_count; index++)
 				{
 					if (reservations[index].base <= move &&
@@ -1554,11 +1567,18 @@ static pthread_mutex_t mcc_lock = PTHREAD_MUTEX_INITIALIZER;
 /* mapped at MCC_TAG_BASE; handed to the guest; used since it was zeroed */
 static int mcc_held, mcc_active, mcc_dirty;
 /* a window the guest asked for at another linked address (mcc_memory.c
-accepts 0x42000000-0x70000000), mapped for it alone */
+accepts 0x42000000-0x70000000), mapped for it alone; or, asked for at no
+address (0), anywhere in the guest's pools (host_low_map), where a map's
+tags go when their base is taken and their addresses move (halo_port_window.h):
+the guest's own mmap of 64 MB is given the window's reserved range by
+host_mman.c's find_free, which it cannot have */
 static void *mcc_other;
+static int mcc_other_low;
 
 void host_memory_hold_mcc_range(void)
 {
+	mcc_claim_base = MCC_TAG_BASE;
+	mcc_claim_end = (uint64_t)MCC_TAG_BASE + MCC_TAG_SIZE;
 	virtmemLock();
 	(void)virtmemAddReservation((void *)(uintptr_t)MCC_TAG_BASE, MCC_TAG_SIZE);
 	virtmemUnlock();
@@ -1572,12 +1592,27 @@ long long host_mcc_memory_reserve(unsigned int address, unsigned int size)
 {
 	long long result;
 
-	/* the MCC reader's allowed windows (mcc_memory.c) */
-	if ((address & 0xffffu) || size != MCC_TAG_SIZE || address < 0x42000000u || address > 0x70000000u)
+	/* the MCC reader's allowed windows (mcc_memory.c), or anywhere (0) */
+	if ((address & 0xffffu) || size != MCC_TAG_SIZE || (address && (address < 0x42000000u || address > 0x70000000u)))
 		return -EINVAL;
 	pthread_mutex_lock(&mcc_lock);
 	if (mcc_active || mcc_other)
 		result = -EBUSY;
+	else if (!address)
+	{
+		/* (the pools keep out of every range the game data is linked for,
+		held or claimed: range_claimed) */
+		void *allocation = host_low_map(size, PROT_READ | PROT_WRITE);
+
+		if (allocation)
+		{
+			mcc_other = allocation;
+			mcc_other_low = 1;
+			result = (long long)(uintptr_t)allocation;
+		}
+		else
+			result = -ENOMEM;
+	}
 	else if (address == MCC_TAG_BASE && mcc_held)
 	{
 		if (mcc_dirty)
@@ -1620,6 +1655,12 @@ int host_mcc_memory_release(unsigned int address, unsigned int size)
 		error = -EINVAL;
 	else if (address == MCC_TAG_BASE && mcc_held && mcc_active)
 		mcc_active = 0;
+	else if (mcc_other && mcc_other == (void *)(uintptr_t)address && mcc_other_low)
+	{
+		host_low_unmap(mcc_other, size);
+		mcc_other = NULL;
+		mcc_other_low = 0;
+	}
 	else if (mcc_other && mcc_other == (void *)(uintptr_t)address)
 	{
 		if (munmap(mcc_other, size))

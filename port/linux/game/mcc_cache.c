@@ -32,7 +32,13 @@
 #include <errno.h>
 
 void *mcc_memory_reserve(uint32_t address, uint32_t size);
+void *mcc_memory_reserve_elsewhere(uint32_t linked, uint32_t size);
 void mcc_memory_release(void *allocation, uint32_t size);
+/* (port/linux/src/mcc_memory.c: how far the tags are from their base, while
+they are elsewhere; halo_port_window.h) */
+extern unsigned long platform_mcc_shift;
+extern unsigned long platform_mcc_linked_base;
+int config_boolean(char const *name);
 int mcc_tags_prepare(struct mcc_runtime *runtime);
 int mcc_scripts_prepare(struct mcc_runtime *runtime);
 short mcc_geometry_part_palette(struct mcc_runtime *runtime, void const *buffer, byte const **nodes);
@@ -286,12 +292,36 @@ boolean mcc_cache_require(char const *name, unsigned long checksum)
     return FALSE;
 }
 
+/* An address in the tags, as the map was written for (at its base) or as it
+is where the tags are (the same where they are at their base; elsewhere once
+moved, or made by the loader: mcc_runtime_allocate). The offset into them, or
+NONE where it is neither. */
+static uint32_t mcc_runtime_offset(struct mcc_runtime const *runtime, uint32_t address)
+{
+    uint32_t actual = (uint32_t)(uintptr_t)runtime->tags;
+    if (runtime->tags && address - actual < runtime->capacity) return address - actual;
+    if (address - runtime->report.tag_base < runtime->capacity) return address - runtime->report.tag_base;
+    return 0xFFFFFFFFu;
+}
+
 void *mcc_runtime_pointer(struct mcc_runtime *runtime, uint32_t address, uint32_t bytes)
 {
-    uint32_t offset = address - runtime->report.tag_base;
-    if (address < runtime->report.tag_base || offset > runtime->used || bytes > runtime->used - offset)
+    uint32_t offset = mcc_runtime_offset(runtime, address);
+    if (offset > runtime->used || bytes > runtime->used - offset)
         return NULL;
     return runtime->tags + offset;
+}
+
+uint32_t mcc_runtime_linked(struct mcc_runtime const *runtime, uint32_t address)
+{
+    uint32_t offset = mcc_runtime_offset(runtime, address);
+    return offset == 0xFFFFFFFFu ? address : runtime->report.tag_base + offset;
+}
+
+void *mcc_runtime_actual(struct mcc_runtime const *runtime, uint32_t address)
+{
+    uint32_t offset = mcc_runtime_offset(runtime, address);
+    return offset == 0xFFFFFFFFu ? NULL : runtime->tags + offset;
 }
 
 int mcc_runtime_read(struct mcc_runtime *runtime, uint32_t offset, uint32_t bytes, void *out)
@@ -352,6 +382,8 @@ void mcc_cache_tags_unload(void)
     mcc_resources_dispose(&mcc_loaded_cache);
     mcc_validation_dispose(&mcc_loaded_cache);
     mcc_memory_release(mcc_loaded_cache.tags, mcc_loaded_cache.capacity);
+    platform_mcc_shift = 0;
+    platform_mcc_linked_base = 0;
     if (mcc_stream) fclose(mcc_stream);
     mcc_stream = NULL;
     memset(&mcc_loaded_cache, 0, sizeof(mcc_loaded_cache));
@@ -397,7 +429,28 @@ struct cache_file_tag_header *mcc_cache_tags_load(char const *name, void *header
     if (!mcc_identity_loaded(name,runtime)) goto failed;
     mcc_timing_mark(MCC_TIMING_RESOURCES);
     runtime->capacity = MCC_CACHE_TAG_CAPACITY;
-    runtime->tags = mcc_memory_reserve(runtime->report.tag_base, runtime->capacity);
+    /* At the base the map was written for, or where that is taken (on the
+    Switch, by the program's main stack or its own code, which the launcher
+    placed before it ran), elsewhere, its addresses then moved there
+    (halo_port_window.h). debug.mcc_elsewhere moves them where the base is
+    free, for testing. */
+    if (!config_boolean("debug.mcc_elsewhere"))
+        runtime->tags = mcc_memory_reserve(runtime->report.tag_base, runtime->capacity);
+    if (!runtime->tags) {
+        int reserve_error = errno;
+        runtime->tags = mcc_memory_reserve_elsewhere(runtime->report.tag_base, runtime->capacity);
+        if (runtime->tags) {
+            platform_mcc_linked_base = runtime->report.tag_base;
+            platform_mcc_shift = (unsigned long)(uintptr_t)runtime->tags - runtime->report.tag_base;
+            error(_error_silent, "mcc: the tags' base %08lx is %s; they are at %08lx, and their addresses are moved there",
+                (unsigned long)runtime->report.tag_base,
+                config_boolean("debug.mcc_elsewhere") ? "passed over (debug.mcc_elsewhere)" : strerror(reserve_error),
+                (unsigned long)(uintptr_t)runtime->tags);
+        } else errno = reserve_error;
+    }
+    /* (its base, wherever the tags are: saved games move their addresses by
+    the tags' distance from it, game_state.c) */
+    if (runtime->tags) platform_mcc_linked_base = runtime->report.tag_base;
     if (!runtime->tags) {
         snprintf(memory_problem, sizeof(memory_problem),
             "the MCC tag address window at %08lx (%lu MiB) is unavailable: %s",
@@ -497,13 +550,17 @@ boolean mcc_cache_bsp_load(struct scenario_structure_bsp_reference const *refere
     uint32_t i;
     for (i = 0; mcc_loaded && i < mcc_loaded_cache.report.bsp_count; ++i) {
         struct mcc_cache_bsp const *bsp = &mcc_loaded_cache.report.bsps[i];
+        void *address;
         if (bsp->tag_handle != (uint32_t)reference->structure_bsp.index) continue;
-        if (bsp->address != (uint32_t)(uintptr_t)reference->base_address ||
+        /* (the reference's address as the map was written for, or moved
+        with the tags: halo_port_window.h) */
+        if (bsp->address != mcc_runtime_linked(&mcc_loaded_cache, (uint32_t)(uintptr_t)reference->base_address) ||
             bsp->file_offset != (uint32_t)reference->file_offset || bsp->size != (uint32_t)reference->file_size)
             return FALSE;
-        if (!mcc_geometry_bsp_load(&mcc_loaded_cache, bsp->tag_handle, bsp->file_offset,
-            bsp->size, reference->base_address, structure)) return FALSE;
-        *header = reference->base_address;
+        address = mcc_runtime_actual(&mcc_loaded_cache, bsp->address);
+        if (!address || !mcc_geometry_bsp_load(&mcc_loaded_cache, bsp->tag_handle, bsp->file_offset,
+            bsp->size, address, structure)) return FALSE;
+        *header = address;
         if (!mcc_bsp_validate(&mcc_loaded_cache, (long)bsp->tag_handle, *header, (long)bsp->size)) {
             mcc_geometry_bsp_unload(&mcc_loaded_cache);
             return FALSE;
