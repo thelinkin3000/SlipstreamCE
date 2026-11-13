@@ -15,6 +15,43 @@ struct mcc_host_hash_request {uint32_t data_root;uint32_t paths[3];uint32_t crc;
 struct mcc_host_hash_result {uint32_t crc;unsigned char digest[32];};
 #endif
 
+static int mcc_resources_host_fingerprint(struct mcc_runtime *runtime,unsigned char digest[32])
+{
+#if defined(HALO_ANDROID)
+    static char paths[3][1024];
+    static struct mcc_host_hash_request request;
+    static struct mcc_host_hash_result result;
+    char xbox_path[128];
+    unsigned part;
+    int job,status;
+    memset(paths,0,sizeof(paths));
+    if (!mcc_package_map_path(runtime->level_name,xbox_path)) return 0;
+    platform_translate_path(xbox_path,paths[0],sizeof(paths[0]));
+    for (part=1;part<=2;part++) {
+        struct mcc_resource_file *resource;
+        if (!(part==1 ? runtime->report.external_bitmap_count : runtime->report.external_sound_count)) continue;
+        resource=mcc_resource_get(runtime,part);
+        if (!resource || !resource->path[0]) return 0;
+        platform_translate_path(resource->path,paths[part],sizeof(paths[part]));
+    }
+    memset(&request,0,sizeof(request));
+    request.data_root=(uint32_t)(uintptr_t)platform_data_root();
+    for (part=0;part<3;part++) request.paths[part]=paths[part][0] ? (uint32_t)(uintptr_t)paths[part] : 0;
+    job=host_mcc_hash_start((unsigned int)(uintptr_t)&request);
+    if (job<0) return 0;
+    /* (the loading screen kept alive while it waits) */
+    while (!(status=host_mcc_hash_wait(job,20,(unsigned int)(uintptr_t)&result)))
+        mcc_loading_pulse();
+    if (status<0) return 0;
+    memcpy(digest,result.digest,32);
+    return 1;
+#else
+    (void)runtime;
+    (void)digest;
+    return 0;
+#endif
+}
+
 struct mcc_resource_check {
     struct mcc_runtime runtime;
     struct mcc_sha256 hash;
