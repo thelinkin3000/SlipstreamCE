@@ -2040,6 +2040,12 @@ static char *config_read_file(const char *path, size_t *size)
 #endif
 }
 
+#ifdef HALO_GUEST
+/* (msvc_crt.c's: the file made 0666; by its host path, if it is there) */
+void platform_share_file(FILE *file);
+void platform_share_path(const char *path);
+#endif
+
 static int config_write_file(const char *path, const char *text)
 {
 #ifdef HALO_GUEST
@@ -2048,6 +2054,8 @@ static int config_write_file(const char *path, const char *text)
 
 	if (!file)
 		return 0;
+	/* (0666: the player edits it from outside the game too) */
+	platform_share_file(file);
 	written = fwrite(text, 1, strlen(text), file) == strlen(text);
 	if (written)
 		fflush(file);
@@ -3189,6 +3197,27 @@ static void config_retire_values(void)
 }
 
 /* the file read, the first time a setting is asked for */
+#ifdef HALO_GUEST
+/* the files the player reads, edits or deletes from outside the game made
+0666 at each launch, whatever made them or with what mode (an older build, a
+umask): config.toml, debug.txt, gamestate.txt and halo.log. After the file is
+read, as d:\'s folder may be paths.data's */
+static void config_share_files(void)
+{
+	static char const *const files[] = { "d:\\debug.txt", "d:\\gamestate.txt", "d:\\halo.log" };
+	char path[1024];
+	size_t index;
+
+	config_path(path, sizeof(path));
+	platform_share_path(path);
+	for (index = 0; index < sizeof(files) / sizeof(files[0]); index++)
+	{
+		platform_translate_path(files[index], path, sizeof(path));
+		platform_share_path(path);
+	}
+}
+#endif
+
 static void config_ensure_loaded(void)
 {
 	int first = 0;
@@ -3204,6 +3233,10 @@ static void config_ensure_loaded(void)
 	/* (config_write takes the lock itself) */
 	if (first)
 		config_retire_values();
+#ifdef HALO_GUEST
+	if (first)
+		config_share_files();
+#endif
 }
 
 static const struct config_value *config_profile_value(int player, long index);

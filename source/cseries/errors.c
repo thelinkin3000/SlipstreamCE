@@ -129,6 +129,8 @@ char *error_get(
 /* port/linux/src/port_config.c's */
 int config_boolean(const char *name);
 unsigned long config_changes(void);
+/* port: debug.txt made 0666 (port/linux/src/msvc_crt.c) */
+void platform_share_file(FILE *file);
 
 /* port: config.toml's debug.log_files (read again as the settings change):
 false writes no debug.txt, not even opened */
@@ -248,6 +250,7 @@ static void debug_file_port_write(
 			debug_file_port_unwritable = TRUE;
 			return;
 		}
+		platform_share_file(file);
 		fseek(file, 0, SEEK_END);
 		debug_file_port_size = ftell(file);
 		if (debug_file_port_size < 0)
@@ -272,6 +275,7 @@ static void debug_file_port_write(
 		{
 			return;
 		}
+		platform_share_file(file);
 		debug_file_port = file;
 		debug_file_port_size = 0;
 		debug_file_port_rolled = TRUE;

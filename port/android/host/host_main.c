@@ -116,12 +116,14 @@ static void data_log_begin(const char *data_root_path)
 	char path[600];
 
 	snprintf(path, sizeof(path), "%s/halo.log", data_root_path);
-	data_log = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0664);
+	data_log = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0666);
 	if (data_log < 0)
 	{
 		host_logf(HOST_LOG_WARN, "cannot write %s (%s); the log is logcat's only", path, strerror(errno));
 		return;
 	}
+	/* (0666 whatever the umask, as config.toml and debug.txt are: msvc_crt.c's platform_share_file) */
+	fchmod(data_log, 0666);
 	host_log_set_sink(log_to_logcat_and_files);
 	host_logf(HOST_LOG_INFO, "the log goes to %s too (debug.halo_log)", path);
 }

@@ -104,6 +104,8 @@ symbols in this file:
 #include "coop_vehicles.h" /* port: preserve replacement-vehicle homes across reverts */
 #include "network_coop.h" /* port: checkpoint roster restoration and host team-wipe policy */
 #include "game.h"
+#include <stdio.h>
+void platform_share_file(FILE *file); /* port: port/linux/src/msvc_crt.c */
 #include "tag_files.h"
 #include "cache_files.h"
 #include "scenario.h"
@@ -610,6 +612,7 @@ static void game_state_allocation_record(
 	if (!file)
 	{
 		file = fopen("d:\\gamestate.txt", "w");
+		platform_share_file(file); /* port: 0666 (port/linux/src/msvc_crt.c) */
 		bss_004d27b0 = file;
 	}
 
