@@ -408,7 +408,7 @@ void server_status_identity(
 	server_json_integer(json, "started", (long long)server_mode_started());
 	server_json_string(json, "instance", instance);
 	server_json_string(json, "region", config_string("server.region"));
-	server_json_integer(json, "tunnel_port", config_boolean("network.online") ? config_integer("network.tunnel_port") : 0);
+	server_json_integer(json, "tunnel_port", server_director_online() ? config_integer("network.tunnel_port") : 0);
 	server_json_string(json, "publisher_key_id", key_id);
 	server_json_integer(json, "web_port", config_integer("server.web_port"));
 }
@@ -469,8 +469,8 @@ void server_status_write(
 		server_json_null(json, "team_scores");
 	}
 	server_json_object_begin(json, "listing");
-	server_json_boolean(json, "online", config_boolean("network.online"));
-	server_json_boolean(json, "public", config_boolean("server.public"));
+	server_json_boolean(json, "online", server_director_online() != 0);
+	server_json_boolean(json, "public", server_director_public() != 0);
 	server_json_boolean(json, "password", config_string("server.password")[0] != 0);
 	{
 		char invite[P2P_LISTING_INVITE_SIZE] = "";

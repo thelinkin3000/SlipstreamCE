@@ -14067,6 +14067,10 @@ boolean pc_menu_event_function_invoke(
 		{
 			settings_each(screen_of(widget), setting_changed_save);
 			platform_display_apply();
+			/* (the Host Server's Server Settings while it hosts: its listing,
+			name and the rest applied now, as sv_set's are) */
+			if (halo_server_hosting())
+				server_director_apply_settings();
 		}
 		else if (!strcmp(name, "port settings defaults"))
 		{

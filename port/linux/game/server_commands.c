@@ -581,8 +581,8 @@ static boolean command_status(char const *line, long count, char **words)
 	}
 	if (next)
 		say("next: %s on %s", next->gametype, next->map_name);
-	say("listing: %s%s", !config_boolean("network.online") ? "internet play off (LAN only)" :
-		config_boolean("server.public") ? "public" : "by invite only", config_string("server.password")[0] ?
+	say("listing: %s%s", !server_director_online() ? "LAN only" :
+		server_director_public() ? "public" : "by invite only", config_string("server.password")[0] ?
 		", with a password" : "");
 	if (server_commands.role >= _server_role_admin && p2p_invite_link(invite, sizeof(invite)) && invite[0])
 		say("invite: %s", invite);
@@ -742,7 +742,7 @@ static boolean command_bans(char const *line, long count, char **words)
 /* the settings sv_set may change: a prefix ends with a "." */
 static char const *const settable_settings[] =
 {
-	"server.name", "server.max_players", "server.min_players", "server.password", "server.public",
+	"server.name", "server.max_players", "server.min_players", "server.password", "server.public", "server.listing",
 	"server.rotation_fallback", "server.lobby_seconds", "server.postgame_seconds", "server.empty_seconds",
 	"server.idle_minutes", "server.team_start", "server.motd", "server.frame_rate", "server.web_password",
 	"server.web_moderator_password", "server.log_format", "server.log_addresses", "server.status_file",

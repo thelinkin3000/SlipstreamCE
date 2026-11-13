@@ -562,14 +562,35 @@ static void server_apply_game_settings(
 	network_game_server_port_set_cooperative_dedicated(TRUE);
 }
 
-/* the listing: internet play (network.online), public or by invite, and
-its password */
-/* whether the server is listed: server.public (hosting from the menus,
-Server Settings' LISTING) */
+/* the listing: internet play, public or by invite, and its password */
+/* (server_mode.h) Hosting from the menus, Host Server's Server Settings'
+LISTING (server.listing) says both, as Create Game's INTERNET and LAN do:
+its LAN keeps the server off the internet even with internet play on; a
+dedicated server goes by its config.toml's network.online and server.public */
+int server_director_online(
+	void)
+{
+	if (!config_boolean("network.online"))
+		return FALSE;
+	if (halo_server_hosting())
+		return strcmp(config_string("server.listing"), "lan") != 0;
+	return TRUE;
+}
+
+int server_director_public(
+	void)
+{
+	if (halo_server_hosting())
+		return !strcmp(config_string("server.listing"), "internet_public");
+	return config_boolean("server.public");
+}
+
+/* whether the server is listed (in everyone's server browser, once it is on
+the internet) */
 static boolean server_public(
 	void)
 {
-	return config_boolean("server.public");
+	return server_director_public() != 0;
 }
 
 static void server_apply_listing(
@@ -577,7 +598,7 @@ static void server_apply_listing(
 {
 	char const *password = config_string("server.password");
 
-	p2p_set_hosting_allowed(config_boolean("network.online"));
+	p2p_set_hosting_allowed(server_director_online());
 	p2p_set_hosting_password(password[0] ? password : NULL);
 	/* (withdrawn while a stop waits, whatever server.public says) */
 	p2p_set_hosting_public(server_public() && !server.drain_active);
@@ -2496,7 +2517,7 @@ void server_update(
 	if (!server.ready_said && server.state == _server_state_lobby && server.entry_applied)
 	{
 		server.ready_wait += seconds;
-		if (!config_boolean("server.public") || !config_boolean("network.online") || server.invite[0] ||
+		if (!server_director_public() || !server_director_online() || server.invite[0] ||
 			server.ready_wait >= 10.0f)
 		{
 			char web[64] = "off";
@@ -2505,8 +2526,8 @@ void server_update(
 			if (config_integer("server.web_port") > 0)
 				snprintf(web, sizeof(web), "%s:%ld", config_string("server.web_bind"), config_integer("server.web_port"));
 			server_log(_server_log_info, "server", "ready (tunnel %ld/udp, web %s, listing %s)",
-				config_boolean("network.online") ? config_integer("network.tunnel_port") : 0L, web,
-				!config_boolean("network.online") ? "LAN only" : config_boolean("server.public") ? "public" : "by invite");
+				server_director_online() ? config_integer("network.tunnel_port") : 0L, web,
+				!server_director_online() ? "LAN only" : server_director_public() ? "public" : "by invite");
 		}
 	}
 	server.status_file_seconds += seconds;

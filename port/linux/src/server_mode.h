@@ -51,6 +51,14 @@ int halo_server_headless(void);
 or this run is a dedicated server's), and ended (the director's, once the
 server has stopped: port/linux/game/server_director.c) */
 int halo_server_hosting(void);
+/* the server's listing (port/linux/game/server_director.c): whether it is on
+the internet, and whether it is in everyone's server browser there. Hosting
+from the menus, server.listing says (Host Server's LISTING: INTERNET: PUBLIC,
+INTERNET: PRIVATE or LAN, as Create Game's INTERNET and LAN choose); a
+dedicated server, network.online and server.public. The internet needs
+network.online either way (internet play: p2p.c) */
+int server_director_online(void);
+int server_director_public(void);
 int halo_server_host_begin(void);
 void halo_server_host_end(void);
 /* hosting from the menus stopping, as the host asked (server_director.c):

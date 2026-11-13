@@ -1143,6 +1143,12 @@ static const struct config_setting config_settings[] =
 	{ "server.public", _config_boolean, "true", "HALO_SERVER_PUBLIC", _environment_value, _platform_server | _platform_host,
 		"List the server in everyone's server browser (on the master servers,\n"
 		"with network.online); false: joined by its invite link and on the LAN." },
+	{ "server.listing", _config_string, "\"internet_public\"", "HALO_SERVER_LISTING", _environment_value, _platform_host,
+		"Hosting from the menus (Host Server's Server Settings, LISTING): where the\n"
+		"server is found, as Create Game's INTERNET and LAN choose. \"internet_public\":\n"
+		"in everyone's server browser; \"internet_private\": by its invite link and\n"
+		"on the LAN; \"lan\": on the LAN only. The internet's need network.online.\n"
+		"(A dedicated server goes by server.public and network.online instead.)" },
 	{ "server.rotation", _config_string, "\"bloodgulch:ctf, sidewinder:team_slayer, prisoner:slayer\"",
 		"HALO_SERVER_ROTATION", _environment_value, _platform_server | _platform_host,
 		"The games played one after another: map[:gametype[+rule=value...]],\n"
@@ -2728,6 +2734,7 @@ static const struct
 {
 	{ "display.mode", { "", "fullscreen", "borderless", "windowed", NULL }, "display.fullscreen's" },
 	{ "display.resolution_scaling", { "native", "original", NULL }, NULL },
+	{ "server.listing", { "internet_public", "internet_private", "lan", NULL }, NULL },
 	{ "display.anti_aliasing", { "off", "fxaa", "smaa", "ssaa2x", "msaa2x", "msaa4x", "msaa8x", NULL }, NULL },
 	{ "display.hud_button_style", { "classic", "gems", "menu_gems", NULL }, NULL },
 	{ "display.menus", { "pc", "xbox", NULL }, NULL },
