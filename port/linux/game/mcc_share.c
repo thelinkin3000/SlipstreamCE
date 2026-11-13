@@ -240,6 +240,14 @@ void mcc_share_game_handle_message(
 
 /* ---------- the host's admission */
 
+/* (the host) a transfer refused before it was offered: the joiner is told the
+result alone, so the reason is said here */
+static void mcc_share_host_refused(void *user, long machine, char const *level, int result, char const *why)
+{
+    (void)user;
+    error(_error_silent,"mcc share: machine #%ld's download of %s refused (result %d): %s",machine,level,result,why);
+}
+
 static void mcc_share_host_package_files(void *user, char const *level,
     struct mcc_share_host_package *package)
 {
@@ -979,6 +987,7 @@ void mcc_share_game_update(
 		env.host_package = mcc_share_host_package_files;
 		env.upload_limit = mcc_share_upload_limit;
         env.host_finished = mcc_share_host_finished;
+        env.host_refused = mcc_share_host_refused;
 		env.free_bytes = mcc_share_free_bytes;
 		env.offered = mcc_share_offered;
 		env.destination = mcc_share_destination;

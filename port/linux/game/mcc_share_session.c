@@ -340,6 +340,9 @@ static void host_request_manifest(struct mcc_share *share, long machine, struct 
         transfer->package.count>MCC_SHARE_STAGE_FILES) {
         enum mcc_share_result refusal=transfer->package.refusal!=MCC_SHARE_RESULT_OK ?
             transfer->package.refusal : MCC_SHARE_RESULT_NOT_SHAREABLE;
+        if (share->env.host_refused)
+            share->env.host_refused(share->env.user,machine,request->level,(int)refusal,
+                transfer->package.refusal!=MCC_SHARE_RESULT_OK ? "its admission refused it" : "it has no files");
         memset(transfer,0,sizeof(*transfer));
         host_reply(share,machine,MCC_SHARE_OP_MANIFEST,refusal,request->level,0,0,0,0,0,NULL,NULL,0);
         return;
@@ -359,8 +362,10 @@ static void host_request_manifest(struct mcc_share *share, long machine, struct 
 }
 
 static void host_fail(struct mcc_share *share, struct mcc_share_host_transfer *transfer,
-    enum mcc_share_result result)
+    enum mcc_share_result result, char const *why)
 {
+    if (share->env.host_refused)
+        share->env.host_refused(share->env.user,transfer->machine,transfer->level,(int)result,why);
     host_reply(share,transfer->machine,MCC_SHARE_OP_MANIFEST,result,transfer->level,0,0,0,0,0,NULL,NULL,0);
     host_free(transfer);
 }
@@ -377,7 +382,8 @@ static void host_hash(struct mcc_share *share, struct mcc_share_host_transfer *t
             transfer->hash_stream=share_open_native(share,transfer->package.files[transfer->hash_file].path);
             if (!transfer->hash_stream || fseek(transfer->hash_stream,0,SEEK_END) || (size=ftell(transfer->hash_stream))<=0 ||
                 (uint32_t)size>MCC_SHARE_MAXIMUM_FILE_BYTES || fseek(transfer->hash_stream,0,SEEK_SET)) {
-                host_fail(share,transfer,MCC_SHARE_RESULT_UNAVAILABLE);
+                host_fail(share,transfer,MCC_SHARE_RESULT_UNAVAILABLE,transfer->hash_stream ?
+                    "a file is empty or too large" : "a file would not open");
                 return;
             }
             file->size=(uint32_t)size;
@@ -391,7 +397,7 @@ static void host_hash(struct mcc_share *share, struct mcc_share_host_transfer *t
             if (want>budget) want=budget;
             got=fread(block,1,want,transfer->hash_stream);
             if (got!=want) {
-                host_fail(share,transfer,MCC_SHARE_RESULT_UNAVAILABLE);
+                host_fail(share,transfer,MCC_SHARE_RESULT_UNAVAILABLE,"a file read short");
                 return;
             }
             mcc_sha256_add(&transfer->hash,block,(int)got);
@@ -415,7 +421,7 @@ static void host_offer(struct mcc_share *share, struct mcc_share_host_transfer *
     char level_leaf[MCC_SHARE_LEAF_SIZE],folder[64];
     if (!share_level_split(transfer->level,folder,level_leaf) ||
         !mcc_share_manifest_valid(transfer->files,transfer->package.count,level_leaf)) {
-        host_fail(share,transfer,MCC_SHARE_RESULT_UNAVAILABLE);
+        host_fail(share,transfer,MCC_SHARE_RESULT_UNAVAILABLE,"its list of files is not a valid package");
         return;
     }
     if (hashed) {

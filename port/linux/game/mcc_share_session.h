@@ -129,6 +129,9 @@ struct mcc_share_env {
     /* Valid successful DONE, once after releasing its transfer slot. The
      * adapter may allow bounded time for the client's following AddPlayer. */
     void (*host_finished)(void *user, long machine);
+    /* Optional: a transfer the host gave up before offering it (the reply says only
+     * its result), and why, for the host's log. */
+    void (*host_refused)(void *user, long machine, char const *level, int result, char const *why);
     /* joiner: the bytes free where the package will go, or 0 when that is not known */
     uint64_t (*free_bytes)(void *user);
     /* No files are written before accept. NULL retains automatic acceptance for callers
