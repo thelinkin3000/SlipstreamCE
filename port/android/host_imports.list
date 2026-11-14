@@ -118,3 +118,5 @@ host_steam_fetch_skip
 host_steam_fetch_stop
 host_steam_shared_fetch
 host_steam_shared_state
+host_steam_install_start
+host_steam_install_status

@@ -1722,6 +1722,12 @@ static struct
 	int count;
 	struct fetch_file files[FETCH_FILES];
 	char reason[160];
+	/* a whole item installed for a joiner (a package with no resource maps of
+	its own, whose level the host could only send): asked, its id, and how it
+	went (0 under way, 1 installed, -1 not) */
+	int install_want;
+	uint64_t install_id;
+	int install_state;
 } fetch = { .wake = PTHREAD_COND_INITIALIZER };
 
 struct fetch_progress
@@ -1901,6 +1907,43 @@ static void fetch_run(unsigned generation, uint64_t id, int count, struct fetch_
 	steam_depot_manifest_free(&files);
 }
 
+/* a whole Workshop item installed in mcc_maps, as the screen's DOWNLOAD
+installs it (download_item: its maps fingerprinted then too) */
+static void install_run(uint64_t id)
+{
+	char error[256];
+	struct steam_workshop_file item;
+	int found = 0, have, installed;
+
+	pthread_mutex_lock(&steam.session_lock);
+	have = steam.token[0] != 0;
+	error[0] = 0;
+	memset(&item, 0, sizeof(item));
+	if (have && session_ensure(error, sizeof(error)))
+		found = steam_cm_workshop_details(steam.cm, id, &item);
+	pthread_mutex_unlock(&steam.session_lock);
+	if (!have || !found || !item.manifest)
+	{
+		steam_log("steam install: item %llu: %s", (unsigned long long)id, !have ? "no Steam sign-in" :
+			error[0] ? error : "not found on the Workshop");
+		pthread_mutex_lock(&steam.state_lock);
+		fetch.install_state = -1;
+		pthread_mutex_unlock(&steam.state_lock);
+		return;
+	}
+	pthread_mutex_lock(&steam.state_lock);
+	steam.cancel_download = 0;
+	pthread_mutex_unlock(&steam.state_lock);
+	download_item(&item);
+	pthread_mutex_lock(&steam.state_lock);
+	installed = item_installed(id, item.manifest);
+	fetch.install_state = installed ? 1 : -1;
+	steam.rescan = 1;
+	pthread_mutex_unlock(&steam.state_lock);
+	steam_log("steam install: item %llu (%s): %s", (unsigned long long)id, item.title,
+		installed ? "installed" : "not installed");
+}
+
 static void *fetch_thread(void *unused)
 {
 	(void)unused;
@@ -1913,8 +1956,17 @@ static void *fetch_thread(void *unused)
 		int count, cleanup;
 
 		pthread_mutex_lock(&steam.state_lock);
-		while (!fetch.want && !fetch.cleanup)
+		while (!fetch.want && !fetch.cleanup && !fetch.install_want)
 			pthread_cond_wait(&fetch.wake, &steam.state_lock);
+		if (fetch.install_want)
+		{
+			uint64_t install_id = fetch.install_id;
+
+			fetch.install_want = 0;
+			pthread_mutex_unlock(&steam.state_lock);
+			install_run(install_id);
+			continue;
+		}
 		cleanup = fetch.cleanup && !fetch.want;
 		fetch.cleanup = 0;
 		generation = fetch.generation;
@@ -3362,6 +3414,38 @@ int host_steam_shared_state(void)
 	pthread_mutex_lock(&steam.state_lock);
 	state = !steam.threads_started ? -1 : steam.downloading < 0 || queue_find(-1, 0) >= 0 ? 1 :
 		shared_missing() ? -1 : 0;
+	pthread_mutex_unlock(&steam.state_lock);
+	return state;
+}
+
+/* a whole Workshop item installed in mcc_maps for a joiner (its id as two
+halves, low first): 1 begun, 0 when there is no Steam sign-in */
+int host_steam_install_start(unsigned int data_root, unsigned int id_low, unsigned int id_high)
+{
+	int have;
+
+	threads_start((char const *)GUEST_POINTER(data_root));
+	pthread_mutex_lock(&steam.session_lock);
+	have = steam.token[0] != 0;
+	pthread_mutex_unlock(&steam.session_lock);
+	if (!have)
+		return 0;
+	pthread_mutex_lock(&steam.state_lock);
+	fetch.install_id = (uint64_t)id_low | (uint64_t)id_high << 32;
+	fetch.install_state = 0;
+	fetch.install_want = 1;
+	pthread_cond_signal(&fetch.wake);
+	pthread_mutex_unlock(&steam.state_lock);
+	return 1;
+}
+
+/* 0 under way, 1 installed, -1 not */
+int host_steam_install_status(void)
+{
+	int state;
+
+	pthread_mutex_lock(&steam.state_lock);
+	state = fetch.install_state;
 	pthread_mutex_unlock(&steam.state_lock);
 	return state;
 }

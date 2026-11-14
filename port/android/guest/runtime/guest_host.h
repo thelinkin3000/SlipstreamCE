@@ -290,5 +290,8 @@ void host_steam_fetch_stop(void);
 /* MCC's shared sets (the base resources no host sends): queued when missing */
 int host_steam_shared_fetch(unsigned int data_root);
 int host_steam_shared_state(void);
+/* a whole Workshop item installed in mcc_maps for a joiner (a package with no resource maps of its own) */
+int host_steam_install_start(unsigned int data_root, unsigned int id_low, unsigned int id_high);
+int host_steam_install_status(void);
 
 #endif
