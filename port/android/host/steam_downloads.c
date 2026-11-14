@@ -3449,3 +3449,18 @@ int host_steam_install_status(void)
 	pthread_mutex_unlock(&steam.state_lock);
 	return state;
 }
+
+/* nonzero once when files were put in mcc_maps since the last ask (an
+install for a joiner, the shared sets, the screen's downloads): the guest
+rescans its MCC catalog, the Workshop screen open or not */
+int host_steam_take_rescan(void)
+{
+	int rescan;
+
+	if (pthread_mutex_trylock(&steam.state_lock) != 0)
+		return 0;
+	rescan = steam.rescan;
+	steam.rescan = 0;
+	pthread_mutex_unlock(&steam.state_lock);
+	return rescan;
+}

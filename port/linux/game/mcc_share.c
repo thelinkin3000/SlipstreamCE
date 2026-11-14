@@ -957,7 +957,13 @@ boolean mcc_share_game_machine_needs_map(long machine_index)
 #if defined(HALO_ANDROID) || defined(HALO_PS5)
 int host_steam_install_start(unsigned int data_root, unsigned int id_low, unsigned int id_high);
 int host_steam_install_status(void);
+int host_steam_take_rescan(void);
 #endif
+/* the host's offer kept alive while the Workshop installs: asked again this
+often (a host gives an offer not taken up two minutes, and while it lives
+counts the joiner as fetching the package, starting the game without it) */
+#define MCC_SHARE_INSTALL_RENEW_MS 90000u
+static unsigned long mcc_share_install_renewed_at;
 
 /* (the host's offer in) a package that is a Workshop item, with a Steam
 sign-in: its whole item installed from the Workshop, MCC's shared sets too
@@ -991,7 +997,10 @@ static int mcc_share_install_begin(void)
     if (mcc_share_shared_asked)
         error(_error_silent,"mcc share: MCC's shared files are missing here: downloading them from Steam too");
     mcc_share_installing=TRUE;
-    mcc_share_client_cancel(&mcc_share_globals);
+    /* (the offer left waiting, not let go: while it lives the host counts this
+       machine as fetching the package, and starts the game without it, which
+       joins it once its package is in) */
+    mcc_share_install_renewed_at=system_milliseconds();
     return 1;
 #else
     return 0;
@@ -1017,8 +1026,17 @@ static void mcc_share_install_update(void)
     }
     status=host_steam_install_status();
     /* (the shared sets, which the check reads, in first too) */
-    if (!status || (status>0 && mcc_share_shared_pending())) return;
+    if (!status || (status>0 && mcc_share_shared_pending())) {
+        /* (the host's offer asked again before it lapses) */
+        if (system_milliseconds()-mcc_share_install_renewed_at>=MCC_SHARE_INSTALL_RENEW_MS) {
+            mcc_share_install_renewed_at=system_milliseconds();
+            mcc_share_client_cancel(&mcc_share_globals);
+            mcc_share_client_begin(&mcc_share_globals,mcc_share_install_tried,mcc_share_digest);
+        }
+        return;
+    }
     mcc_share_installing=FALSE;
+    mcc_share_client_cancel(&mcc_share_globals);
     mcc_maps_rescan();
     if (status>0) {
         error(_error_silent,"mcc share: %s installed from the Workshop: checking it against the host's",
@@ -1048,6 +1066,8 @@ static void mcc_share_offered(void *user,uint64_t bytes,char const *credit)
      * until the download is taken): the prompt only when the host is the only
      * source (mcc_share_workshop_decide). */
     mcc_share_workshop_declined=TRUE;
+    /* (an offer asked again while the Workshop installs: left waiting) */
+    if (mcc_share_installing && !strcmp(mcc_share_install_tried,mcc_share_globals.level)) return;
     if (mcc_share_install_begin()) return;
     /* (the host the only source: the player asked) */
     mcc_share_prompt_pending=TRUE;
@@ -1332,6 +1352,10 @@ void mcc_share_game_update(
     }
     mcc_share_host_lifecycle();
     mcc_share_update(&mcc_share_globals);
+#if defined(HALO_ANDROID) || defined(HALO_PS5)
+    /* (files the Steam downloader put in mcc_maps, whatever put them there) */
+    if (host_steam_take_rescan()) mcc_maps_rescan();
+#endif
     mcc_share_fast_host_update();
     mcc_share_fast_drain();
     mcc_share_workshop_decide();
