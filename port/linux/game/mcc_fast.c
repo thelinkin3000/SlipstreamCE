@@ -56,6 +56,11 @@ allocates and frees) */
 
 unsigned long system_milliseconds(void);
 
+/* (a connection quiet both ways this long is closed; shorter in its test) */
+#ifndef MCC_FAST_IDLE_TIMEOUT
+#define MCC_FAST_IDLE_TIMEOUT 30000
+#endif
+
 enum
 {
 	MCC_FAST_PORT = P2P_MCC_FAST_PORT,
@@ -66,7 +71,7 @@ enum
 	BLOCK_BYTES = 64 << 10,
 	CONNECT_TIMEOUT = 6000,
 	HELLO_TIMEOUT = 8000,
-	IDLE_TIMEOUT = 30000,
+	IDLE_TIMEOUT = MCC_FAST_IDLE_TIMEOUT,
 	BUSY_WAIT = 3,
 	QUIET_WAIT = 25,
 	IDLE_SLEEP = 20,
@@ -470,6 +475,10 @@ static void host_write(struct fast_host_connection *connection, unsigned long no
 		connection->block_sent += (unsigned long)sent;
 		entry->sent += (uint64_t)sent;
 		entry->advanced_at = now;
+		/* (sending is the connection's activity too: the joiner says nothing
+		while a file comes, and a file of more than IDLE_TIMEOUT's worth was
+		closed as silent at its end, before the joiner could ask for the next) */
+		connection->heard_at = now;
 		if (!connection->remaining && connection->block_sent == connection->block_size)
 		{
 			if (connection->file_end)

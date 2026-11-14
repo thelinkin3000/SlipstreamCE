@@ -1936,7 +1936,10 @@ static void install_run(uint64_t id)
 	pthread_mutex_unlock(&steam.state_lock);
 	download_item(&item);
 	pthread_mutex_lock(&steam.state_lock);
-	installed = item_installed(id, item.manifest);
+	/* (by its record, which download_item writes as it installs: the
+	screen's list of packages, item_installed's, is looked at again only by
+	the files thread) */
+	installed = recorded_manifest(id) == item.manifest;
 	fetch.install_state = installed ? 1 : -1;
 	steam.rescan = 1;
 	pthread_mutex_unlock(&steam.state_lock);
