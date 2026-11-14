@@ -84,11 +84,11 @@ static boolean mcc_share_prompt_download;
  * the host's, or no answer in MCC_SHARE_DECIDE_MS). Declined: the Workshop
  * was asked and could not, so it is not asked again for this offer. */
 static boolean mcc_share_deciding, mcc_share_workshop_declined;
-/* A package with no resource maps of its own (all its size the level's map,
- * which only the host may send in the protocol): its whole Workshop item
- * installed instead (mcc_share_install_begin), the host's offer let go, and
+/* A package that is a Workshop item, with a Steam sign-in: its whole item
+ * installed from Steam (mcc_share_install_begin), the host's offer let go, and
  * the package checked again once it is in; the level tried that way, so a
- * second offer of it (the Workshop's not the host's) asks the player. */
+ * second offer of it (the Workshop's not the host's) asks the player and the
+ * host sends it. */
 static boolean mcc_share_installing;
 static char mcc_share_install_tried[64];
 static unsigned long mcc_share_deciding_at;
@@ -849,18 +849,15 @@ int host_steam_install_start(unsigned int data_root, unsigned int id_low, unsign
 int host_steam_install_status(void);
 #endif
 
-/* (the host's offer in) a package with no resource maps of its own, a
-Workshop item, with a Steam sign-in: its whole item installed from the
-Workshop, and the host's offer let go; 1 when begun */
+/* (the host's offer in) a package that is a Workshop item, with a Steam
+sign-in: its whole item installed from the Workshop, MCC's shared sets too
+when they are missing (no host sends them), and the host's offer let go; 1
+when begun. The host sends it only when the Workshop cannot. */
 static int mcc_share_install_begin(void)
 {
 #if defined(HALO_ANDROID) || defined(HALO_PS5)
     struct mcc_workshop_item item;
     unsigned long long id;
-    int i;
-    for (i=0;i<mcc_share_globals.offer_count;i++)
-        if (mcc_share_globals.offer_files[i].kind==MCC_SHARE_FILE_BITMAPS ||
-            mcc_share_globals.offer_files[i].kind==MCC_SHARE_FILE_SOUNDS) return 0;
     if (!strcmp(mcc_share_install_tried,mcc_share_globals.level)) {
         error(_error_silent,"mcc share: %s from the Workshop was tried: asking the player (the host's alone)",
             mcc_share_globals.level);
@@ -878,8 +875,11 @@ static int mcc_share_install_begin(void)
         return 0;
     }
     snprintf(mcc_share_install_tried,sizeof(mcc_share_install_tried),"%s",mcc_share_globals.level);
-    error(_error_silent,"mcc share: %s has no resource maps of its own: installing Workshop item %s instead of "
-        "the host's download",mcc_share_globals.level,item.id);
+    error(_error_silent,"mcc share: installing Workshop item %s for %s from Steam instead of the host's download",
+        item.id,mcc_share_globals.level);
+    mcc_share_shared_asked=host_steam_shared_fetch(MCC_SHARE_HOST_ADDRESS(mcc_share_fetch.root))==1;
+    if (mcc_share_shared_asked)
+        error(_error_silent,"mcc share: MCC's shared files are missing here: downloading them from Steam too");
     mcc_share_installing=TRUE;
     mcc_share_client_cancel(&mcc_share_globals);
     return 1;
@@ -906,7 +906,8 @@ static void mcc_share_install_update(void)
         return;
     }
     status=host_steam_install_status();
-    if (!status) return;
+    /* (the shared sets, which the check reads, in first too) */
+    if (!status || (status>0 && mcc_share_shared_pending())) return;
     mcc_share_installing=FALSE;
     mcc_maps_rescan();
     if (status>0) {
@@ -936,15 +937,9 @@ static void mcc_share_offered(void *user,uint64_t bytes,char const *credit)
     /* The Workshop asked first (its files go to mcc_staging/steam_fetch alone
      * until the download is taken): the prompt only when the host is the only
      * source (mcc_share_workshop_decide). */
-    mcc_share_workshop_declined=FALSE;
+    mcc_share_workshop_declined=TRUE;
     if (mcc_share_install_begin()) return;
-    mcc_share_fetch_begin();
-    if (mcc_share_fetch.active) {
-        mcc_share_deciding=TRUE;
-        mcc_share_deciding_at=system_milliseconds();
-        error(_error_silent,"mcc share: asking the Workshop for %s before asking the player",mcc_share_globals.level);
-        return;
-    }
+    /* (the host the only source: the player asked) */
     mcc_share_prompt_pending=TRUE;
 }
 
