@@ -152,6 +152,8 @@ static struct {
     /* hash_begin's jobs: their files, polls each, cancels; a failing one */
     char hash_paths[4][1024];
     int hash_jobs, hash_polls[4], hash_cancels, hash_fail;
+    /* transfer_elsewhere's answer, and its asks */
+    int elsewhere, elsewhere_calls;
 } W;
 
 static uint32_t env_now(void *u) { (void)u; return W.clock; }
@@ -315,6 +317,7 @@ static int env_hash_poll(void *u, int job, uint8_t digest[32], uint64_t *size)
     return 1;
 }
 static void env_hash_cancel(void *u, int job) { (void)u;(void)job; W.hash_cancels++; }
+static int env_elsewhere(void *u) { (void)u; W.elsewhere_calls++; return W.elsewhere; }
 static void env_finished(void *u, int ok, char const *text)
 {
     (void)u;
@@ -1319,6 +1322,58 @@ int main(int argc,char **argv)
         /* each file hashed elsewhere, in turn, and the package the host's */
         CHECK(W.finished_ok && W.hash_jobs==4 && !W.hash_cancels);
         for (i=0;i<4;i++) CHECK(W.hash_polls[i]==3);
+        for (i=0;i<4;i++) {
+            char a[400],b[400];
+            snprintf(a,sizeof(a),"%smcc_maps/solar_flare/%s",H,names[i]);
+            snprintf(b,sizeof(b),"%smcc_maps/solar_flare/%s",J,names[i]);
+            CHECK(same_file(a,b));
+        }
+        return 0;
+    }
+
+    if (!strcmp(argv[1],"external") || !strcmp(argv[1],"external_early") || !strcmp(argv[1],"external_late")) {
+        W.join.env.transfer_elsewhere=env_elsewhere;
+        W.elsewhere=1;
+        CHECK(mcc_share_client_begin(&W.join,LEVEL,W.digest));
+        for (i=0;i<200 && W.join.state!=MCC_SHARE_CLIENT_TRANSFERRING;i++) step();
+        CHECK(W.join.state==MCC_SHARE_CLIENT_TRANSFERRING && W.elsewhere_calls);
+        for (i=0;i<5;i++) step();
+        CHECK(!W.file_requests[0] && !W.file_requests[1]);          /* no chunk asked of the host */
+        if (!strcmp(argv[1],"external_early")) {
+            /* the other way failed before any byte: the host's chunks from the start */
+            W.elsewhere=0;
+            CHECK(run_until_finished(2000) && W.finished_ok && W.file_requests[0]);
+            return 0;
+        }
+        {
+            char path[400];
+            unsigned char *data;
+            unsigned bytes;
+            int file;
+            for (file=0;file<4;file++) {
+                snprintf(path,sizeof(path),"%smcc_maps/solar_flare/%s",H,names[file]);
+                data=read_file(path,&bytes);CHECK(data);
+                if (!strcmp(argv[1],"external_late") && file==1) {
+                    /* half a file, then the connection lost */
+                    CHECK(mcc_share_client_external(&W.join,data,bytes/2)==1);
+                    free(data);
+                    mcc_share_client_external_fail(&W.join,"lost");
+                    CHECK(W.finished && !W.finished_ok && staging_gone());
+                    return 0;
+                }
+                /* (in two parts: a part may end anywhere in a file) */
+                CHECK(mcc_share_client_external(&W.join,data,bytes/3)==1);
+                CHECK(mcc_share_client_external(&W.join,data+bytes/3,bytes-bytes/3)==1);
+                free(data);
+            }
+        }
+        CHECK(W.join.state==MCC_SHARE_CLIENT_VERIFYING);
+        /* (the host's adapter marks the transfer fully asked for, as mcc_share.c does) */
+        W.host.transfers[0].request_file=W.host.transfers[0].package.count;
+        W.host.transfers[0].request_offset=0;
+        CHECK(run_until_finished(2000) && W.finished_ok);
+        for (i=0;i<5;i++) step();
+        CHECK(W.host_completions==1 && !W.file_requests[0]);
         for (i=0;i<4;i++) {
             char a[400],b[400];
             snprintf(a,sizeof(a),"%smcc_maps/solar_flare/%s",H,names[i]);

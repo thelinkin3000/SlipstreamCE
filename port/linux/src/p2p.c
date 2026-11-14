@@ -2079,8 +2079,9 @@ void p2p_socket_port(int socket, int stream, int listening, unsigned short port)
 		entry->listening |= (unsigned char)(listening != 0);
 	}
 	/* the game listens for connections while it hosts (on any port but map
-	sharing's, which every player of a game listens on) */
-	if (stream && listening && port != network_short(P2P_MAP_SHARE_PORT))
+	sharing's, which every player of a game listens on, and the MCC fast
+	path's, mcc_fast.c) */
+	if (stream && listening && port != network_short(P2P_MAP_SHARE_PORT) && port != network_short(P2P_MCC_FAST_PORT))
 		p2p.hosting_socket = socket;
 	/* (and no stand-in that closed has the port now) */
 	forget_closed(stream != 0, port);
@@ -2403,7 +2404,8 @@ static void listener_readable(struct listener *listener)
 		}
 		stream->socket = socket;
 		stream->state = _stream_open_state;
-		if (listener->remote_port == network_short(P2P_MAP_SHARE_PORT))
+		if (listener->remote_port == network_short(P2P_MAP_SHARE_PORT) ||
+			listener->remote_port == network_short(P2P_MCC_FAST_PORT))
 			stream_make_bulk(stream);
 		put_short(open, listener->remote_port);
 		put_short(open + 2, from.sin_port);
@@ -2419,7 +2421,7 @@ static void stream_opened(struct stream *stream, const unsigned char *data, int 
 	if (stream->state != _stream_awaiting_open || size < 4)
 		return;
 	stream->remote_port = get_short(data + 2);
-	if (get_short(data) == network_short(P2P_MAP_SHARE_PORT))
+	if (get_short(data) == network_short(P2P_MAP_SHARE_PORT) || get_short(data) == network_short(P2P_MCC_FAST_PORT))
 		stream_make_bulk(stream);
 	/* only to where the game listens: nothing else here is the peer's to
 	reach */

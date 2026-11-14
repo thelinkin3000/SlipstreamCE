@@ -688,6 +688,13 @@ static void client_pump(struct mcc_share *share)
 {
     int current=share->stage.current;
     if (share->reuse_stream || share->have_pending || current>=share->stage.count) return;
+    /* (the files coming another way: the host hears from us meanwhile) */
+    if (share->env.transfer_elsewhere && share->env.transfer_elsewhere(share->env.user)) {
+        uint32_t now=share_now(share);
+        if (share_elapsed(now,share->reported_at,MCC_SHARE_OFFER_HEARTBEAT) &&
+            client_send(share,MCC_SHARE_OP_MANIFEST,0,0,0,0)) share->reported_at=now;
+        return;
+    }
     if (share->reuse_checked_file!=current && share->request_file==current && !share->request_offset &&
         !share->outstanding) {
         struct mcc_share_file const *file=&share->stage.files[current];
@@ -936,6 +943,42 @@ static void client_chunk(struct mcc_share *share, struct mcc_share_response cons
         client_fail(share,"The files from the host could not be written. Nothing was installed.");
         break;
     }
+}
+
+int mcc_share_client_external(struct mcc_share *share, void const *data, uint32_t bytes)
+{
+    uint8_t const *at=data;
+    while (bytes) {
+        enum mcc_share_stage_result result;
+        uint32_t wanted;
+        if (share->state!=MCC_SHARE_CLIENT_TRANSFERRING) return 0;
+        wanted=mcc_share_stage_wanted(&share->stage);
+        if (!wanted) return 0;
+        if (wanted>bytes) wanted=bytes;
+        result=mcc_share_stage_write(&share->stage,at,wanted);
+        share->progress_at=share_now(share);
+        share->host_bytes+=wanted;
+        at+=wanted;
+        bytes-=wanted;
+        if (result==MCC_SHARE_STAGE_ALL_DONE) {
+            share->state=MCC_SHARE_CLIENT_VERIFYING;
+            return 1;
+        }
+        if (result==MCC_SHARE_STAGE_BAD_HASH) {
+            client_fail(share,"A file from the host did not match its SHA-256. Nothing was installed.");
+            return -1;
+        }
+        if (result!=MCC_SHARE_STAGE_OK && result!=MCC_SHARE_STAGE_FILE_DONE) {
+            client_fail(share,"The files from the host could not be written. Nothing was installed.");
+            return -1;
+        }
+    }
+    return 1;
+}
+
+void mcc_share_client_external_fail(struct mcc_share *share, char const *message)
+{
+    if (share->state==MCC_SHARE_CLIENT_TRANSFERRING) client_fail(share,message);
 }
 
 void mcc_share_client_response(struct mcc_share *share, void const *message, unsigned bytes)

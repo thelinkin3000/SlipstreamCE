@@ -32,6 +32,9 @@
 #include "tag_files/tag_groups.h"
 #include <stdlib.h>
 #include "mcc_workshop.h"
+#include "mcc_fast.h"
+#include "networking/network_connection.h"
+#include "bungie_net/network/transport.h"
 #include <xtl.h>
 #include <errno.h>
 #include <stdio.h>
@@ -292,6 +295,113 @@ static void mcc_share_hash_cancel(void *user, int job)
     host_sha256_cancel(job);
 }
 #endif
+
+/* ---------- two SlipstreamCE machines: the package over its own connection
+(mcc_fast.c); OpenCE's chunks over the game's connection otherwise */
+
+unsigned long network_game_server_machine_address(long machine_index);
+static uint32_t mcc_share_upload_limit(void *user);
+
+/* (the joiner) a download's fast connection asked for: once an accept */
+static int mcc_share_fast_tried;
+
+/* the host's address as this joiner's game connection has it (host byte
+order; 0 if none) */
+static unsigned long mcc_share_fast_host_address(void)
+{
+    struct network_game_client *client=global_network_game_client_get();
+    struct network_connection *connection=client ? network_game_client_get_connection(client) : NULL;
+    struct transport_address reliable,unreliable;
+    if (!connection || global_network_game_server_get()) return 0;
+    memset(&reliable,0,sizeof(reliable));
+    network_connection_get_address(connection,&reliable,&unreliable);
+    return reliable.address_length==IPV4_ADDRESS_LENGTH ? (unsigned long)reliable.address.long_words[0] : 0;
+}
+
+/* (the joiner, env transfer_elsewhere) the files from the host's own
+connection: asked for at the first ask after an accept; zero once it failed
+before any byte came (OpenCE's chunks then) */
+static int mcc_share_fast_elsewhere(void *user)
+{
+    enum mcc_fast_client_state state;
+    (void)user;
+    if (!mcc_share_fast_tried) {
+        uint32_t sizes[MCC_SHARE_STAGE_FILES];
+        int i;
+        unsigned long address=mcc_share_fast_host_address();
+        mcc_share_fast_tried=1;
+        for (i=0;i<mcc_share_globals.stage.count;i++) sizes[i]=mcc_share_globals.stage.files[i].size;
+        if (!address || mcc_share_globals.stage.current || mcc_share_globals.stage.written ||
+            !mcc_fast_client_begin(address,mcc_share_globals.session,mcc_share_globals.level,
+                mcc_share_globals.stage.count,sizes)) return 0;
+        return 1;
+    }
+    state=mcc_fast_client_state();
+    return state==MCC_FAST_CONNECTING || state==MCC_FAST_RECEIVING || state==MCC_FAST_DONE ||
+        state==MCC_FAST_FAILED_LATE;
+}
+
+/* (the joiner, each frame) what came over the host's own connection, into the
+staged download, a few milliseconds' worth a frame (it is hashed as it goes);
+lost after some came: the download fails */
+static void mcc_share_fast_drain(void)
+{
+    static unsigned char (*buffer)[65536];
+    enum mcc_fast_client_state state;
+    unsigned long began=system_milliseconds();
+    if (!mcc_share_fast_tried) return;
+    state=mcc_fast_client_state();
+    if (state==MCC_FAST_IDLE || state==MCC_FAST_FAILED_EARLY) return;
+    if (mcc_share_globals.state!=MCC_SHARE_CLIENT_TRANSFERRING) {
+        mcc_fast_client_stop();
+        return;
+    }
+    int empty=0;
+    if (!buffer && !(buffer=malloc(sizeof(*buffer)))) return;
+    while (system_milliseconds()-began<12u) {
+        uint32_t bytes=mcc_fast_client_take(*buffer,sizeof(*buffer));
+        if (!bytes) { empty=1; break; }
+        if (mcc_share_client_external(&mcc_share_globals,*buffer,bytes)<=0) break;
+    }
+    if (state==MCC_FAST_FAILED_LATE && mcc_share_globals.state==MCC_SHARE_CLIENT_TRANSFERRING && empty) {
+        char message[256];
+        snprintf(message,sizeof(message),"The host's connection was lost during the download (%s). Join again to retry.",
+            mcc_fast_client_why());
+        mcc_fast_client_stop();
+        mcc_share_client_external_fail(&mcc_share_globals,message);
+    }
+}
+
+/* (the host, each frame) its transfers offered whole published for a joiner's
+own connection, and what that connection sent counted as the transfer's
+progress: its timers and the joiner's DONE (every file asked for) as for
+OpenCE's chunks */
+static void mcc_share_fast_host_update(void)
+{
+    struct network_game_server *server=global_network_game_server_get();
+    struct network_game *game=network_game_get_game();
+    int hosting=server && game && config_boolean("network.map_share") && mcc_level_name(game->map.name);
+    int i;
+    mcc_fast_host_frame(hosting,(long)mcc_share_upload_limit(NULL));
+    for (i=0;hosting && i<MCC_SHARE_HOST_TRANSFERS;i++) {
+        struct mcc_share_host_transfer *transfer=&mcc_share_globals.transfers[i];
+        uint64_t sent;
+        int files_done;
+        unsigned long advanced_at;
+        if (!transfer->used) continue;
+        mcc_fast_host_publish(transfer,network_game_server_machine_address(transfer->machine));
+        if (!mcc_fast_host_progress(transfer->machine,transfer->session,&sent,&files_done,&advanced_at)) continue;
+        if ((uint32_t)sent!=transfer->sent_bytes) {
+            transfer->sent_bytes=(uint32_t)sent;
+            transfer->advanced_at=transfer->heard_at=(uint32_t)system_milliseconds();
+        }
+        if (files_done>=transfer->package.count && !transfer->queued) {
+            transfer->request_file=transfer->package.count;
+            transfer->request_offset=0;
+        }
+    }
+    mcc_fast_host_end_frame();
+}
 
 /* (the host) a transfer refused before it was offered: the joiner is told the
 result alone, so the reason is said here */
@@ -964,6 +1074,7 @@ static void mcc_share_workshop_decide(void)
         mcc_share_prompt_download=FALSE;
         error(_error_silent,"mcc share: the Workshop has %s's resource maps: downloading without asking",
             mcc_share_globals.level);
+        mcc_share_fast_tried=0;
         mcc_share_client_accept(&mcc_share_globals);
         return;
     }
@@ -1059,6 +1170,7 @@ void mcc_share_game_prompt_action(int action)
     }
     if (!manual && action==0 && download) {
         mcc_share_prompt_download=FALSE;
+        mcc_share_fast_tried=0;
         if (mcc_share_client_accept(&mcc_share_globals)) mcc_share_fetch_begin();
         return;
     }
@@ -1167,6 +1279,7 @@ void mcc_share_game_update(
 		env.upload_limit = mcc_share_upload_limit;
         env.host_finished = mcc_share_host_finished;
         env.host_refused = mcc_share_host_refused;
+        env.transfer_elsewhere = mcc_share_fast_elsewhere;
 #if defined(HALO_ANDROID) || defined(HALO_PS5)
         env.hash_begin = mcc_share_hash_begin;
         env.hash_poll = mcc_share_hash_poll;
@@ -1219,6 +1332,8 @@ void mcc_share_game_update(
     }
     mcc_share_host_lifecycle();
     mcc_share_update(&mcc_share_globals);
+    mcc_share_fast_host_update();
+    mcc_share_fast_drain();
     mcc_share_workshop_decide();
     mcc_share_install_update();
     if (mcc_share_fetch.active && !mcc_share_client_busy(&mcc_share_globals)) mcc_share_fetch_end();

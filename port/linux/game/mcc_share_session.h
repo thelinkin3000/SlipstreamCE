@@ -135,6 +135,11 @@ struct mcc_share_env {
     /* Optional: a file's SHA-256 and size worked out elsewhere (the host's
      * threads), not a slice a frame here. begin: a job, or -1 (hashed here);
      * poll: 1 done, 0 not yet, -1 failed; cancel releases a job not done. */
+    /* Optional, the joiner: nonzero while the files come another way (a
+     * SlipstreamCE host's own connection, mcc_fast.c): no chunks asked of the
+     * host, its transfer kept alive; the bytes are given with
+     * mcc_share_client_external. Zero again before any came: chunks as usual. */
+    int (*transfer_elsewhere)(void *user);
     int (*hash_begin)(void *user, char const *path);
     int (*hash_poll)(void *user, int job, uint8_t digest[32], uint64_t *size);
     void (*hash_cancel)(void *user, int job);
@@ -275,5 +280,11 @@ int mcc_share_client_busy(struct mcc_share const *share);
 int mcc_share_client_level(struct mcc_share const *share, char const *level);
 /* 0 to 100, or -1 when no download goes on */
 int mcc_share_client_percent(struct mcc_share const *share);
+/* The joiner's files' bytes from another way (env transfer_elsewhere), in
+ * order across the files from the first: staged and checked as the host's
+ * chunks are. 1 taken, 0 none wanted now, -1 the download failed. */
+int mcc_share_client_external(struct mcc_share *share, void const *data, uint32_t bytes);
+/* That way lost after some bytes came: the download fails with this. */
+void mcc_share_client_external_fail(struct mcc_share *share, char const *message);
 void mcc_share_refusal_text(enum mcc_share_result result, char const *level, char *text, unsigned size);
 #endif
