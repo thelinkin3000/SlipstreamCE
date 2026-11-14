@@ -734,15 +734,28 @@ static boolean map_share_host(
 	return map_share_globals.facts_host;
 }
 
-/* the host's address as this client's connection has it (host byte
-order; 0 if none) */
-static unsigned long map_share_host_address(
-	void)
+/* the host's address as this client's connection has it now (host byte
+order; 0 if none: not connected yet) */
+static unsigned long map_share_host_address_now(
+	struct network_connection *connection)
+{
+	struct transport_address reliable;
+	struct transport_address unreliable;
+
+	csmemset(&reliable, 0, sizeof(reliable));
+	network_connection_get_address(connection, &reliable, &unreliable);
+	return reliable.address_length == IPV4_ADDRESS_LENGTH ? reliable.address.long_words[0] : 0;
+}
+
+/* the host's address, as map_share_host_address_now has it, kept a second
+(fresh: asked again, for the address the download's connections are made
+to: kept, it could be none, from before the connection was made, or the last
+host's, and the host's offer comes within the second on a LAN) */
+static unsigned long map_share_host_address_fresh(
+	boolean fresh)
 {
 	struct network_game_client *client = global_network_game_client_get();
 	struct network_connection *connection = client ? network_game_client_get_connection(client) : NULL;
-	struct transport_address reliable;
-	struct transport_address unreliable;
 	/* (asked every frame, and each ask is two system calls, 2.5% of a Switch
 	client's game thread: kept for its connection, and asked again each second
 	so that a connection reused for another host is followed) */
@@ -755,14 +768,19 @@ static unsigned long map_share_host_address(
 		cached_connection = NULL;
 		return 0;
 	}
-	if (connection == cached_connection && now - cached_time < 1000)
+	if (!fresh && connection == cached_connection && now - cached_time < 1000)
 		return cached_address;
-	csmemset(&reliable, 0, sizeof(reliable));
-	network_connection_get_address(connection, &reliable, &unreliable);
-	cached_connection = connection;
 	cached_time = now;
-	cached_address = reliable.address_length == IPV4_ADDRESS_LENGTH ? reliable.address.long_words[0] : 0;
+	cached_address = map_share_host_address_now(connection);
+	/* (none is not kept) */
+	cached_connection = cached_address ? connection : NULL;
 	return cached_address;
+}
+
+static unsigned long map_share_host_address(
+	void)
+{
+	return map_share_host_address_fresh(FALSE);
 }
 
 /* (map_share.h) the part of an upload's cap map uploads take now: all of it
@@ -1813,10 +1831,13 @@ static void download_sources(
 	{
 		csmemset(&download->sources[0], 0, sizeof(download->sources[0]));
 		download->sources[0].host = TRUE;
-		download->sources[0].address = map_share_host_address();
+		download->sources[0].address = map_share_host_address_fresh(TRUE);
 		download->sources[0].connection = NONE;
 		download->source_count = 1;
 	}
+	/* (none then: source_address asks again) */
+	else if (!download->sources[0].address)
+		download->sources[0].address = map_share_host_address_fresh(TRUE);
 	for (index = 0; index < sources->count && index < MAXIMUM_SOURCES; index++)
 	{
 		struct distributed_map_share_source const *entry = &entries[index];
@@ -1864,6 +1885,10 @@ static boolean source_address(
 
 	if (source->host)
 	{
+		/* (none when the host first named the sources: the connection has
+		it by now) */
+		if (!source->address)
+			source->address = map_share_host_address_fresh(TRUE);
 		*address = source->address;
 		return *address != 0;
 	}
