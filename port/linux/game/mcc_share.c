@@ -94,6 +94,19 @@ static boolean mcc_share_deciding, mcc_share_workshop_declined;
  * host sends it. */
 static boolean mcc_share_installing;
 static char mcc_share_install_tried[64];
+/* Once it is in, the package is checked here against the host's identity, as
+ * a download from the host is (mcc_share_identity_check), not by asking the
+ * host for a second validation window: a host gives each machine one a join
+ * (mcc_admission.c: a closed lease is a tombstone), and the join's own check
+ * used it. Joining: the check passed and the players are no longer held; the
+ * host's offer is let go only once the host has this machine's player (or
+ * its request, a game in progress), since a machine with neither a player
+ * nor a transfer is refused. */
+static struct mcc_validation_check *mcc_share_install_check;
+static struct mcc_validation_proof mcc_share_install_proof;
+static boolean mcc_share_install_joining;
+static unsigned long mcc_share_install_joining_at;
+#define MCC_SHARE_INSTALL_JOIN_MS 3000u
 static unsigned long mcc_share_deciding_at;
 #define MCC_SHARE_DECIDE_MS 20000u
 /* Manual guidance outlives the refused join, but never a new session. */
@@ -919,7 +932,7 @@ boolean mcc_share_game_downloading(
 	if (mcc_identity_pending(level_name)) return TRUE;
 	return mcc_share_ready && mcc_share_manual==MCC_SHARE_MANUAL_NONE &&
         level_name && mcc_package_name(level_name, canonical) &&
-		(mcc_share_client_level(&mcc_share_globals, canonical) ||
+		((!mcc_share_install_joining && mcc_share_client_level(&mcc_share_globals, canonical)) ||
         (mcc_share_installing && !strcmp(canonical,mcc_share_install_tried)) ||
         ((mcc_share_prompt_pending || mcc_share_prompt_visible) && !strcmp(canonical,mcc_share_name)));
 }
@@ -928,7 +941,8 @@ boolean mcc_share_game_holds_players(
 	void)
 {
 	return mcc_identity_pending(NULL) || mcc_admission_client_pending() || mcc_share_installing ||
-        (mcc_share_ready && mcc_share_manual==MCC_SHARE_MANUAL_NONE && (mcc_share_client_busy(&mcc_share_globals) ||
+        (mcc_share_ready && mcc_share_manual==MCC_SHARE_MANUAL_NONE &&
+        ((mcc_share_client_busy(&mcc_share_globals) && !mcc_share_install_joining) ||
         mcc_share_prompt_pending || mcc_share_prompt_visible));
 }
 
@@ -1007,45 +1021,95 @@ static int mcc_share_install_begin(void)
 #endif
 }
 
-/* (each frame while installing) installed: the package checked again, as the
-join checks it (mcc_identity_accept); not: the host asked again, and the
-player asked (the level tried) */
+static void mcc_share_install_end(void)
+{
+    mcc_share_installing=FALSE;
+    mcc_share_install_joining=FALSE;
+    if (mcc_share_install_check) mcc_validation_check_end(mcc_share_install_check);
+    mcc_share_install_check=NULL;
+}
+
+/* (the host's offer asked again before it lapses) */
+static void mcc_share_install_renew(void)
+{
+#if defined(HALO_ANDROID) || defined(HALO_PS5)
+    if (system_milliseconds()-mcc_share_install_renewed_at<MCC_SHARE_INSTALL_RENEW_MS) return;
+    mcc_share_install_renewed_at=system_milliseconds();
+    mcc_share_client_cancel(&mcc_share_globals);
+    mcc_share_client_begin(&mcc_share_globals,mcc_share_install_tried,mcc_share_digest);
+#endif
+}
+
+/* (each frame while installing) installed: the package checked here against
+the host's identity, and, the host's, this machine's players let join, the
+offer let go once the host has one; not installed, or not the host's: the
+host asked again, and the player asked (the level tried) */
 static void mcc_share_install_update(void)
 {
 #if defined(HALO_ANDROID) || defined(HALO_PS5)
     struct network_game_client *client;
     struct network_game *game;
+    char const *why="could not be installed";
     int status;
-    if (!mcc_share_installing) return;
+    if (!mcc_share_installing && !mcc_share_install_joining) return;
     client=global_network_game_client_get();
     game=client ? network_game_client_get_game(client) : NULL;
     if (!game || global_network_game_server_get() || !mcc_share_name[0] ||
         memcmp(game->mcc_content_sha256,mcc_share_digest,32)) {
-        mcc_share_installing=FALSE;
+        mcc_share_install_end();
         return;
     }
-    status=host_steam_install_status();
-    /* (the shared sets, which the check reads, in first too) */
-    if (!status || (status>0 && mcc_share_shared_pending())) {
-        /* (the host's offer asked again before it lapses) */
-        if (system_milliseconds()-mcc_share_install_renewed_at>=MCC_SHARE_INSTALL_RENEW_MS) {
-            mcc_share_install_renewed_at=system_milliseconds();
+    if (mcc_share_install_joining) {
+        int i,joined=0;
+        for (i=0;i<NUMBEROF(game->players);i++)
+            joined|=network_player_is_valid(&game->players[i]) &&
+                game->players[i].machine_index==network_game_client_get_machine_index(client);
+        if (joined || system_milliseconds()-mcc_share_install_joining_at>=MCC_SHARE_INSTALL_JOIN_MS) {
+            mcc_share_install_joining=FALSE;
             mcc_share_client_cancel(&mcc_share_globals);
-            mcc_share_client_begin(&mcc_share_globals,mcc_share_install_tried,mcc_share_digest);
         }
         return;
     }
-    mcc_share_installing=FALSE;
-    mcc_share_client_cancel(&mcc_share_globals);
-    mcc_maps_rescan();
-    if (status>0) {
-        error(_error_silent,"mcc share: %s installed from the Workshop: checking it against the host's",
-            mcc_share_install_tried);
-        mcc_identity_accept(game);
-        return;
+    if (!mcc_share_install_check) {
+        status=host_steam_install_status();
+        /* (the shared sets, which the check reads, in first too) */
+        if (!status || (status>0 && mcc_share_shared_pending())) {
+            mcc_share_install_renew();
+            return;
+        }
+        mcc_maps_rescan();
+        if (status>0) {
+            error(_error_silent,"mcc share: %s installed from the Workshop: checking it against the host's",
+                mcc_share_install_tried);
+            mcc_share_install_check=mcc_validation_check_begin(mcc_share_install_tried,NULL);
+            mcc_validation_check_expect(mcc_share_install_check,mcc_share_digest);
+            if (mcc_share_install_check) return;
+        }
+    } else {
+        char reason[320];
+        status=mcc_validation_check_step(mcc_share_install_check,&mcc_share_install_proof,reason,sizeof(reason));
+        if (!status) {
+            mcc_share_install_renew();
+            return;
+        }
+        mcc_validation_check_end(mcc_share_install_check);
+        mcc_share_install_check=NULL;
+        why="is not the host's";
+        if (status>0 && !memcmp(mcc_share_install_proof.digest,mcc_share_digest,32) &&
+            (!game->map.version || mcc_share_install_proof.checksum==(uint32_t)game->map.version) &&
+            mcc_validation_publish(mcc_share_install_tried,&mcc_share_install_proof) &&
+            mcc_identity_accept_installed(mcc_share_name,mcc_share_digest,mcc_share_metadata,mcc_share_install_tried)) {
+            error(_error_silent,"mcc share: %s from the Workshop is the host's: joining",mcc_share_install_tried);
+            mcc_share_release_validation();
+            mcc_share_installing=FALSE;
+            mcc_share_install_joining=TRUE;
+            mcc_share_install_joining_at=system_milliseconds();
+            return;
+        }
     }
-    error(_error_silent,"mcc share: Workshop item for %s could not be installed: asking the host",
-        mcc_share_install_tried);
+    mcc_share_install_end();
+    mcc_share_client_cancel(&mcc_share_globals);
+    error(_error_silent,"mcc share: Workshop item for %s %s: asking the host",mcc_share_install_tried,why);
     mcc_share_client_begin(&mcc_share_globals,mcc_share_install_tried,mcc_share_digest);
 #endif
 }
@@ -1067,7 +1131,8 @@ static void mcc_share_offered(void *user,uint64_t bytes,char const *credit)
      * source (mcc_share_workshop_decide). */
     mcc_share_workshop_declined=TRUE;
     /* (an offer asked again while the Workshop installs: left waiting) */
-    if (mcc_share_installing && !strcmp(mcc_share_install_tried,mcc_share_globals.level)) return;
+    if ((mcc_share_installing || mcc_share_install_joining) &&
+        !strcmp(mcc_share_install_tried,mcc_share_globals.level)) return;
     if (mcc_share_install_begin()) return;
     /* (the host the only source: the player asked) */
     mcc_share_prompt_pending=TRUE;
@@ -1206,7 +1271,7 @@ void mcc_share_game_disconnect(void)
 {
     int manual=mcc_share_manual==MCC_SHARE_MANUAL_LEAVING;
     /* (a Workshop install of the level tried, or under way, is this session's) */
-    mcc_share_installing=FALSE;
+    mcc_share_install_end();
     mcc_share_install_tried[0]=0;
     mcc_admission_disconnect();
     mcc_load_network_disconnect();
@@ -1394,7 +1459,7 @@ void mcc_share_game_render(
 
 	/* The consent screen owns this space until the player accepts its offer. */
 	if (!mcc_share_ready || (!mcc_share_client_busy(&mcc_share_globals) && !mcc_share_installing) ||
-        mcc_share_prompt_pending || mcc_share_prompt_visible)
+        mcc_share_install_joining || mcc_share_prompt_pending || mcc_share_prompt_visible)
 		return;
 	font_tag_index = interface_get_tag_index(_interface_font_terminal);
 	if (font_tag_index == NONE)
