@@ -1414,7 +1414,7 @@ static int item_path(char const *name, char *path, size_t size)
 
 static void fingerprint_progress(unsigned long long done, unsigned long long total, void *context);
 
-static void download_item(struct steam_workshop_file const *item)
+static int download_item(struct steam_workshop_file const *item)
 {
 	char error[256];
 	unsigned char key[32];
@@ -1433,7 +1433,7 @@ static void download_item(struct steam_workshop_file const *item)
 	if (!depot_open(STEAM_APP_MCC, item->manifest, key, &files, error, sizeof(error)))
 	{
 		say_error("The item could not be downloaded: %s", error);
-		return;
+		return 0;
 	}
 	for (i = 0; i < files.file_count; i++)
 	{
@@ -1449,7 +1449,7 @@ static void download_item(struct steam_workshop_file const *item)
 	{
 		steam_depot_manifest_free(&files);
 		say("This item has no Halo 1 maps to install.%s", NULL);
-		return;
+		return 0;
 	}
 	snprintf(folder, sizeof(folder), "%llu", (unsigned long long)item->id);
 	pthread_mutex_lock(&steam.state_lock);
@@ -1489,7 +1489,7 @@ static void download_item(struct steam_workshop_file const *item)
 			remove_tree(staging);
 			(strcmp(error, "cancelled") ? say_error : say)(strcmp(error, "cancelled") ?
 				"The item could not be downloaded: %s" : "The download was %s.", error);
-			return;
+			return 0;
 		}
 		base += file->size;
 	}
@@ -1524,7 +1524,7 @@ static void download_item(struct steam_workshop_file const *item)
 		{
 			remove_tree(staging);
 			say_error("The older copy in mcc_maps/%s could not be replaced.", existing);
-			return;
+			return 0;
 		}
 	}
 	snprintf(destination, sizeof(destination), "%s/%s", root, folder);
@@ -1539,7 +1539,7 @@ static void download_item(struct steam_workshop_file const *item)
 		}
 		remove_tree(staging);
 		say_error("The item could not be put in mcc_maps/%s.", folder);
-		return;
+		return 0;
 	}
 	remove_tree(old);
 	pthread_mutex_lock(&steam.state_lock);
@@ -1560,6 +1560,7 @@ static void download_item(struct steam_workshop_file const *item)
 			steam_log("steam: %s's maps were not fingerprinted", folder);
 	}
 	say("Installed in mcc_maps/%s.", folder);
+	return 1;
 }
 
 /* host_mcc_hash_package's progress, on the files thread's line (not logged) */
@@ -1934,12 +1935,11 @@ static void install_run(uint64_t id)
 	pthread_mutex_lock(&steam.state_lock);
 	steam.cancel_download = 0;
 	pthread_mutex_unlock(&steam.state_lock);
-	download_item(&item);
+	/* (by what download_item says, not item_installed: the screen's list of
+	packages, which that asks, is looked at again only by the files thread;
+	nor by the item's record alone, which a folder removed by hand leaves) */
+	installed = download_item(&item);
 	pthread_mutex_lock(&steam.state_lock);
-	/* (by its record, which download_item writes as it installs: the
-	screen's list of packages, item_installed's, is looked at again only by
-	the files thread) */
-	installed = recorded_manifest(id) == item.manifest;
 	fetch.install_state = installed ? 1 : -1;
 	steam.rescan = 1;
 	pthread_mutex_unlock(&steam.state_lock);
