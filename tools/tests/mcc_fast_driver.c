@@ -69,7 +69,7 @@ int main(int argc, char **argv)
 	transfer.offer_complete = 1;
 	transfer.package.count = 2;
 	snprintf(transfer.level, sizeof(transfer.level), "mcc_maps\\pack\\level");
-	/* ("slow": each file takes longer than the 1 s idle timeout of this build to send) */
+	/* ("slow": the first file takes longer than the 1 s idle timeout of this build to send) */
 	mcc_fast_host_frame(1, !strcmp(argv[1], "slow") ? 1 << 20 : 50 << 20);
 	/* (the listener up) */
 	for (i = 0; i < 50; i++) { mcc_fast_host_publish(&transfer, LOOPBACK); mcc_fast_host_end_frame(); usleep(10000); }

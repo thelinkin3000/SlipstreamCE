@@ -48,17 +48,17 @@ def test_case(driver, tmp_path, case):
 
 
 def test_negative_control_idle(tmp_path):
-    """Without sending counting as the connection's activity, a file longer than the idle timeout is cut at its end."""
-    import re
+    """With a served connection closed for the joiner's silence, a file longer than the idle timeout is cut at its end."""
     clang = shutil.which("clang")
     if not clang:
         pytest.skip("clang required")
     if not port_free():
         pytest.skip("port 5154 in use")
     source = (GAME / "mcc_fast.c").read_text()
-    faulty, count = re.subn(r"\t\t/\* \(sending is the connection's activity too:.*?\*/\n\t\tconnection->heard_at = now;\n",
-                            "", source, flags=re.S)
-    assert count == 1
+    assert source.count("!connection->served && elapsed(connection->heard_at, now, IDLE_TIMEOUT)") == 1
+    faulty = source.replace("!connection->served && elapsed(connection->heard_at, now, IDLE_TIMEOUT)",
+                            "!connection->remaining && connection->block_sent == connection->block_size && "
+                            "elapsed(connection->heard_at, now, IDLE_TIMEOUT)")
     (tmp_path / "mcc_fast.c").write_text(faulty)
     exe = tmp_path / "driver"
     result = subprocess.run([clang, "-std=gnu99", "-D_GNU_SOURCE", "-Wall", "-Werror", "-Wno-unused-function",
@@ -71,3 +71,4 @@ def test_negative_control_idle(tmp_path):
     work.mkdir()
     result = subprocess.run([str(exe), "slow", str(work)], capture_output=True, text=True, timeout=60)
     assert result.returncode == 1, "the faulty code passed 'slow': the test cannot see it"
+    assert "mcc fast: lost the host" in result.stderr, result.stderr

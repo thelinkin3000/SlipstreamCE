@@ -56,7 +56,8 @@ allocates and frees) */
 
 unsigned long system_milliseconds(void);
 
-/* (a connection quiet both ways this long is closed; shorter in its test) */
+/* (a connection that says nothing this long before it is served is closed,
+and a joiner the host sends nothing this long fails; shorter in its test) */
 #ifndef MCC_FAST_IDLE_TIMEOUT
 #define MCC_FAST_IDLE_TIMEOUT 30000
 #endif
@@ -475,10 +476,6 @@ static void host_write(struct fast_host_connection *connection, unsigned long no
 		connection->block_sent += (unsigned long)sent;
 		entry->sent += (uint64_t)sent;
 		entry->advanced_at = now;
-		/* (sending is the connection's activity too: the joiner says nothing
-		while a file comes, and a file of more than IDLE_TIMEOUT's worth was
-		closed as silent at its end, before the joiner could ask for the next) */
-		connection->heard_at = now;
 		if (!connection->remaining && connection->block_sent == connection->block_size)
 		{
 			if (connection->file_end)
@@ -517,11 +514,14 @@ static void host_update(unsigned long now)
 			continue;
 		}
 		host_write(connection, now);
-		if (connection->used && elapsed(connection->heard_at, now, IDLE_TIMEOUT) && !connection->remaining &&
-			connection->block_sent == connection->block_size)
-		{
+		/* (one that has not said which transfer it is; one served lives as
+		long as its transfer, whose own timers, mcc_share_session.c, let go
+		of a joiner gone quiet: the joiner says nothing here while a file
+		comes, nor until all of it sent has reached it, so a count of its
+		silence cut a long file at its end, and one from the last byte sent
+		a joiner slower than 30 seconds to take in what was on its way) */
+		if (connection->used && !connection->served && elapsed(connection->heard_at, now, IDLE_TIMEOUT))
 			host_connection_close(connection, "silent");
-		}
 	}
 }
 
