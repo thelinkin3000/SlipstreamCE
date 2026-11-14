@@ -117,6 +117,14 @@ enum
 	MAXIMUM_STUN_SERVERS = 4,
 	STREAM_BUFFER_SIZE = 16384,
 	STREAM_CHUNK_SIZE = 1024,
+	/* a stream's message between two SlipstreamCE machines: a KCP segment's
+	whole room (KCP_MTU less its 24-byte header, less the message's type).
+	An OpenCE peer closes a stream on a message over 1 + STREAM_CHUNK_SIZE,
+	so only to a peer known to be SlipstreamCE; any peer's is taken */
+	STREAM_CHUNK_LARGE = 1200 - 24 - 1,
+	/* a ping's and a pong's capability tail (after the type and the clock):
+	the magic, and the version */
+	SLIPSTREAM_PING_SIZE = 5 + 5,
 	/* the most unacknowledged messages a stream sends ahead */
 	STREAM_WINDOW = 128,
 	/* a map-sharing stream's (port P2P_MAP_SHARE_PORT): its window sized to
@@ -234,6 +242,10 @@ struct peer
 	/* the pings answered, and the shortest round trip of them */
 	int pongs;
 	unsigned long shortest_round_trip;
+	/* a SlipstreamCE machine (its pings and pongs carry SLIPSTREAM_MAGIC,
+	which an OpenCE peer's pong does not echo): its streams take full-size
+	messages (stream_chunk_size) */
+	int slipstream;
 	/* a public game's host probed for its ping (p2p_probe_start): none of
 	its traffic is the game's */
 	int probe;
@@ -939,14 +951,26 @@ static void peer_send(struct peer *peer, const unsigned char *inner, int size)
 	peer->sent_time = p2p_now();
 }
 
+/* 'SLP' and the version, after a ping's or pong's clock: a SlipstreamCE
+machine's. An OpenCE peer reads only the first five bytes of either and
+echoes five, so its pongs never carry it */
+static unsigned char const slipstream_magic[5] = { 'S', 'L', 'P', 1, 0 };
+
 static void peer_ping(struct peer *peer, const struct p2p_candidate *to)
 {
-	unsigned char inner[5];
+	unsigned char inner[SLIPSTREAM_PING_SIZE];
 	unsigned int now = (unsigned int)p2p_now();
 
 	inner[0] = _packet_ping;
 	memcpy(inner + 1, &now, 4);
+	memcpy(inner + 5, slipstream_magic, sizeof(slipstream_magic));
 	peer_send_to(peer, to, inner, sizeof(inner));
+}
+
+/* (a ping's or pong's) whether it carries the SlipstreamCE tail */
+static int slipstream_tail(const unsigned char *inner, int inner_size)
+{
+	return inner_size >= SLIPSTREAM_PING_SIZE && !memcmp(inner + 5, slipstream_magic, 4);
 }
 
 static void stream_free(struct stream *stream);
@@ -2343,9 +2367,16 @@ static void stream_free(struct stream *stream)
 	stream->socket = -1;
 }
 
+/* the most a stream's message carries: full-size between two SlipstreamCE
+machines' map sharing streams, else what every peer takes */
+static int stream_chunk_size(struct stream const *stream)
+{
+	return stream->bulk && p2p.peers[stream->peer].slipstream ? STREAM_CHUNK_LARGE : STREAM_CHUNK_SIZE;
+}
+
 static void stream_message(struct stream *stream, unsigned char type, const void *data, int size)
 {
-	unsigned char message[1 + STREAM_CHUNK_SIZE];
+	unsigned char message[1 + STREAM_CHUNK_LARGE];
 
 	message[0] = type;
 	memcpy(message + 1, data, (size_t)size);
@@ -2502,7 +2533,7 @@ static void stream_flush_pending(struct stream *stream)
 
 static void stream_update(struct stream *stream)
 {
-	unsigned char message[1 + STREAM_CHUNK_SIZE];
+	unsigned char message[1 + STREAM_CHUNK_LARGE];
 
 	ikcp_update(stream->kcp, p2p_now());
 	/* what the peer sent */
@@ -2560,13 +2591,14 @@ static void stream_update(struct stream *stream)
 
 static void stream_readable(struct stream *stream)
 {
-	unsigned char buffer[STREAM_CHUNK_SIZE];
+	unsigned char buffer[STREAM_CHUNK_LARGE];
+	int chunk = stream_chunk_size(stream);
 	int count;
 
 	for (count = 0; count < (stream->bulk ? BULK_READS : 8) && ikcp_waitsnd(stream->kcp) < stream_window(stream) &&
 		stream->socket >= 0; count++)
 	{
-		int size = posix_socket_recv(stream->socket, buffer, sizeof(buffer), 0);
+		int size = posix_socket_recv(stream->socket, buffer, chunk, 0);
 
 		if (size == 0 || (size < 0 && !would_block()))
 		{
@@ -2636,11 +2668,21 @@ static void tunnel_received(const unsigned char *packet, int size, const struct 
 		if (inner_size >= 5)
 		{
 			struct p2p_candidate to;
+			unsigned char pong[SLIPSTREAM_PING_SIZE];
 
-			inner[0] = _packet_pong;
+			if (slipstream_tail(inner, inner_size) && !peer->slipstream)
+			{
+				peer->slipstream = 1;
+				platform_log("Internet play: %s is a SlipstreamCE machine", peer->name);
+			}
+			/* (the clock echoed, and this machine's tail: an OpenCE peer reads
+			five bytes) */
+			pong[0] = _packet_pong;
+			memcpy(pong + 1, inner + 1, 4);
+			memcpy(pong + 5, slipstream_magic, sizeof(slipstream_magic));
 			to.address = from->sin_addr.s_addr;
 			to.port = from->sin_port;
-			peer_send_to(peer, &to, inner, 5);
+			peer_send_to(peer, &to, pong, sizeof(pong));
 		}
 		break;
 	case _packet_pong:
@@ -2650,6 +2692,11 @@ static void tunnel_received(const unsigned char *packet, int size, const struct 
 			unsigned int sent;
 
 			memcpy(&sent, inner + 1, 4);
+			if (slipstream_tail(inner, inner_size) && !peer->slipstream)
+			{
+				peer->slipstream = 1;
+				platform_log("Internet play: %s is a SlipstreamCE machine", peer->name);
+			}
 			peer->round_trip = (unsigned int)p2p_now() - sent;
 			if (!peer->pongs++ || peer->round_trip < peer->shortest_round_trip)
 				peer->shortest_round_trip = peer->round_trip;
