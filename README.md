@@ -63,6 +63,7 @@ and to **deko3d**, the Switch's own GPU interface, on the Switch.
 ## Contents
 
 - [What works](#what-works) · [Known issues](#known-issues) · [What's improved](#whats-improved)
+- [Community forks](#community-forks): [GulchCE](#gulchce), [Halo: Content Evolved](#halo-content-evolved), [halo-ce-vita](#halo-ce-vita)
 - [Download](#download) · [Install](#install): [Android](#android), [Nintendo Switch](#nintendo-switch), [PlayStation 5](#playstation-5), [updating](#updating)
 - [Graphics: Vulkan, Turnip and deko3d](#graphics-vulkan-turnip-and-deko3d)
 - [Multiplayer](#multiplayer) · [Controls](#controls) · [The SlipstreamCE overlay](#the-slipstreamce-overlay)
@@ -158,6 +159,39 @@ Bodies can fall as ragdolls instead of playing the original death animations:
 choose in Settings > Gameplay, or set `game.ragdoll` in `config.toml`. A host
 keeps the original body physics, so it still plays with builds that have no
 ragdolls.
+
+## Community forks
+
+SlipstreamCE is one of several community forks of the Halo: Combat Evolved
+decompilation and [OpenCE](https://github.com/OpenCommunityEdition/OpenCE).
+Each has its own focus, and they borrow from each other. Some notable ones:
+
+### GulchCE
+
+<img align="right" width="96" alt="The GulchCE logo" src="https://github.com/user-attachments/assets/1787aa2f-3305-4353-8dd4-27d08661f6d4" />
+
+[chestahh/GulchCE](https://github.com/chestahh/GulchCE), by chester: an
+OpenCE fork for experimental features, among them its own Vulkan renderer
+and dynamic lighting on desktop platforms, and MCC custom map support.
+SlipstreamCE's dynamic lighting is ported from GulchCE, and its MCC support
+builds on GulchCE's.
+
+### Halo: Content Evolved
+
+<img align="right" width="96" alt="The Halo: Content Evolved logo" src="https://raw.githubusercontent.com/Watanoge/halo-content-evolved/main/port/assets/icon/opence-icon.png" />
+
+[Watanoge/halo-content-evolved](https://github.com/Watanoge/halo-content-evolved),
+by Watanoge: the Xbox game with Watanoge's own quality-of-life changes for
+the Switch, with a lot for the campaign, such as skulls and a randomizer.
+Its Steam client is the base of SlipstreamCE's Steam Workshop downloads.
+
+### halo-ce-vita
+
+<img align="right" width="96" alt="The halo-ce-vita logo: a PS Vita with the Halo ring on its screen" src="https://raw.githubusercontent.com/BirchWoodGod/halo-ce-vita/main/docs/logo.png" />
+
+[BirchWoodGod/halo-ce-vita](https://github.com/BirchWoodGod/halo-ce-vita),
+by BirchWoodGod: the decompilation ported to the PlayStation Vita, now
+adding Halo 2 support and Forge. Its bots are SlipstreamCE's Birchwood bots.
 
 ## Download
 
