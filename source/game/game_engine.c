@@ -8202,9 +8202,11 @@ long game_engine_remap_weapon(
 
 	/* (port: and the gravity rifle, a cut weapon, as the flamethrower,
 	which the Xbox's maps have unfinished: neither is a multiplayer weapon.
-	A Halo Custom Edition map's flamethrower is finished, and stays) */
-	if (weapon_list_index == _weapon_list_gravity_rifle ||
-		(weapon_list_index == _weapon_list_flamethrower && !custom_edition_cache_tags_loaded()))
+	A Halo Custom Edition or Halo PC map's are its own and stay: its
+	flamethrower is finished, and HaloMD's Halo 2 maps keep their battle
+	rifle in the gravity rifle's place, as ChupathingyCE found) */
+	if ((weapon_list_index == _weapon_list_gravity_rifle || weapon_list_index == _weapon_list_flamethrower) &&
+		!custom_edition_cache_tags_loaded())
 	{
 		weapon_list_index = _weapon_list_rocket_launcher;
 	}

@@ -397,8 +397,17 @@ class Map:
                  font_style_reference=NONE, pitch_ranges=1, bsp_sizes=(0x1000,), sound_compression=1,
                  model=None, bsp_material=None, shaders=(), animation_overlay=None,
                  weapon_hud=None, hud_bitmap_flags=None, in_map_bitmap=None, strings_name="test\\strings",
-                 strings=("hello", "world!"), name=b"test", tags_checksum=0):
+                 strings=("hello", "world!"), name=b"test", tags_checksum=0,
+                 halo_pc=False, halo_pc_bitmap_name="test\\external bitmap", halo_pc_bad_string=False):
         self.bsp_sizes = bsp_sizes
+        # a Halo PC map (version 7): no tag held by a resource map; its stock
+        # bitmap and sound whole in the map, their pixels and samples at
+        # (made-up) offsets of Halo PC's own bitmaps.map and sounds.map; its
+        # string list in the map too, with a string outside its tags when
+        # asked; no font or HUD message text
+        self.halo_pc = halo_pc
+        self.halo_pc_bitmap_name = halo_pc_bitmap_name
+        self.halo_pc_bad_string = halo_pc_bad_string
         # the header's name and the tag data's checksum, by which Chimera's
         # map list knows a map
         self.name = name
@@ -460,6 +469,9 @@ class Map:
             ("hmt ", "test\\hud messages", True),
             ("weap", "test\\weapon", False),
         ] + list(self.extra_tags)
+        if self.halo_pc:
+            tags = [(group, self.halo_pc_bitmap_name if name == "test\\external bitmap" else name, False)
+                    for group, name, _ in tags if group not in ("font", "hmt ")]
         if self.model is not None:
             tags.append(("mod2", "test\\model", False))
         tags += [(group, f"test\\shader {index}", False) for index, (group, _) in enumerate(self.shaders)]
@@ -545,6 +557,42 @@ class Map:
         sound = tag_data.reserve(0xA4)
         tag_data.u32(sound + 0x98, self.pitch_ranges)
         address_of["test\\sound"] = sound
+        if self.halo_pc:
+            # the stock bitmap, whole, its pixels at Halo PC's offset
+            group = tag_data.reserve(0x6C)
+            element = tag_data.reserve(0x30)
+            tag_data.block(group + 0x60, 1, element)
+            tag_data.u32(element, code("bitm"))
+            tag_data.u16(element + 0x0E, 1 << 8)
+            tag_data.u32(element + 0x18, 0x00ABC000)
+            tag_data.u32(element + 0x1C, self.bitmap_pixels_size)
+            address_of[self.halo_pc_bitmap_name] = group
+            address_of["halo pc bitmap data"] = element
+            # the stock sound, whole: its pitch ranges and permutations, its
+            # samples at Halo PC's offset
+            struct.pack_into("<hh", tag_data.bytes, sound + 0x6C - BASE, SOUND_ENTRY_FIELDS["encoding"],
+                             self.sound_compression)
+            ranges = tag_data.reserve(0x48 * self.pitch_ranges)
+            tag_data.block(sound + 0x98, self.pitch_ranges, ranges)
+            permutations = []
+            for range_index in range(self.pitch_ranges):
+                permutation = tag_data.reserve(0x7C)
+                tag_data.block(ranges + range_index * 0x48 + 0x3C, 1, permutation)
+                tag_data.data(permutation + 0x40, self.sound_samples_size, flags=1, file_offset=0x00DEF000)
+                permutations.append(permutation)
+            address_of["halo pc permutations"] = permutations
+            # the string list, in the map
+            strings = tag_data.reserve(0x0C)
+            references = tag_data.reserve(20 * len(self.strings))
+            tag_data.block(strings, len(self.strings), references)
+            for string_index, text in enumerate(self.strings):
+                encoded = text.encode("utf-16-le") + b"\0\0"
+                string_address = tag_data.add(encoded)
+                if self.halo_pc_bad_string and string_index == 0:
+                    string_address = BASE + TAG_CACHE_BYTES - 4
+                tag_data.data(references + string_index * 20, len(encoded), data_address=string_address)
+            address_of[self.strings_name] = strings
+            address_of["halo pc string references"] = references
         address_of["test\\weapon"] = tag_data.add(bytes(0x100))
         for group_name, name, external in self.extra_tags:
             address_of[name] = tag_data.add(bytes(0x40))
@@ -572,7 +620,7 @@ class Map:
         file_length = len(data)
         data += self.trailing
         header = data
-        struct.pack_into("<IiIIII", header, 0, code("head"), 609, file_length, 0,
+        struct.pack_into("<IiIIII", header, 0, code("head"), 7 if self.halo_pc else 609, file_length, 0,
                          tag_data_offset, len(tag_data.bytes))
         header[0x20:0x20 + len(self.name) + 1] = self.name + b"\0"
         header[0x40:0x40 + 14] = b"01.00.00.0609\0"
@@ -1131,8 +1179,8 @@ def test_compressed_xbox_caches_are_recognized(report_tool, tmp_path):
 
 
 def test_other_cache_versions_are_named_not_loaded(report_tool, tmp_path):
-    path = tmp_path / "pc.map"
-    path.write_bytes(xbox_header(build=b"01.00.00.0564", version=7))
+    path = tmp_path / "other.map"
+    path.write_bytes(xbox_header(build=b"01.00.00.0564", version=8))
     returncode, report = report_one(report_tool, path)
     assert returncode == 1
     assert report["format"] == "cache of an unknown version"
@@ -1503,3 +1551,75 @@ def test_real_maps_convert_as_recorded(report_tool, real_maps):
         name = Path(block["file"]).name
         assert block["convert"] == "ok", name
         assert {key: block[key] for key in recorded[name]} == recorded[name], name
+
+
+# ---------- Halo PC maps (version 7: HaloMD's)
+
+
+def halo_pc_bitmap(tags, cache):
+    element = cache.addresses["halo pc bitmap data"]
+    return (u32_at(tags, element + 0x18), u32_at(tags, element + 0x1C), u16_at(tags, element + 0x0E),
+            u16_at(tags, cache.addresses[cache.halo_pc_bitmap_name] + 0x06))
+
+
+def test_a_halo_pc_maps_stock_bitmap_and_sound_are_found_in_custom_editions_resource_maps(report_tool, tmp_path):
+    cache = Map(halo_pc=True)
+    returncode, report, tags = converted(report_tool, cache, tmp_path)
+    assert returncode == 0, report
+    assert report["milestone.load"] == "yes"
+    assert report["resource_maps_needed"] == "bitmaps, sounds"
+    assert report["halo_pc_bitmaps"] == "1 by name, 0 by offset, 0 resized, 0 stood in"
+    assert report["halo_pc_sounds"] == "1 found, 0 silenced"
+    # (the pixels and samples now those of Custom Edition's files, right after their headers)
+    offset, size, flags, group_flags = halo_pc_bitmap(tags, cache)
+    assert (offset, size) == (16, 16) and flags & (1 << 8) and not group_flags & (1 << 15)
+    assert u32_at(tags, cache.addresses["halo pc permutations"][0] + 0x40 + 8) == 16
+
+
+def test_a_halo_pc_tag_named_with_a_plus_is_the_stock_one(report_tool, tmp_path):
+    cache = Map(halo_pc=True, halo_pc_bitmap_name="test\\external bitmap++")
+    returncode, report, tags = converted(report_tool, cache, tmp_path)
+    assert returncode == 0, report
+    assert report["halo_pc_bitmaps"] == "1 by name, 0 by offset, 0 resized, 0 stood in"
+
+
+def test_a_halo_pc_bitmap_custom_edition_lacks_is_stood_in_for(report_tool, tmp_path):
+    cache = Map(halo_pc=True, halo_pc_bitmap_name="levels\\a10\\bitmaps\\campaign only")
+    returncode, report, tags = converted(report_tool, cache, tmp_path)
+    assert returncode == 0, report
+    assert report["halo_pc_bitmaps"] == "0 by name, 0 by offset, 0 resized, 1 stood in"
+    offset, size, flags, group_flags = halo_pc_bitmap(tags, cache)
+    assert (offset, size) == (16, 16) and group_flags & (1 << 15)
+
+
+def test_a_halo_pc_sound_unlike_custom_editions_is_silenced(report_tool, tmp_path):
+    cache = Map(halo_pc=True)
+    cache.build()
+    resource_maps = cache.resource_maps()
+    cache.sound_samples_size = 48  # the map's samples another size than sounds.map's
+    path = tmp_path / "test.map"
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(cache.build())
+    for type_name, data in resource_maps.items():
+        (tmp_path / f"{type_name}.map").write_bytes(data)
+    returncode, report = report_one(report_tool, path)
+    assert returncode == 0, report
+    assert report["halo_pc_sounds"] == "0 found, 1 silenced"
+
+
+def test_a_halo_pc_string_outside_the_tags_is_emptied(report_tool, tmp_path):
+    cache = Map(halo_pc=True, halo_pc_bad_string=True)
+    returncode, report, tags = converted(report_tool, cache, tmp_path)
+    assert returncode == 0, report
+    assert report["halo_pc_strings_emptied"] == "1"
+    references = cache.addresses["halo pc string references"]
+    assert u32_at(tags, references) == 0 and u32_at(tags, references + 12) == 0
+    assert u32_at(tags, references + 20) != 0
+
+
+def test_a_halo_pc_map_without_custom_editions_bitmaps_is_refused(report_tool, tmp_path):
+    cache = Map(halo_pc=True)
+    path = cache.write(tmp_path)
+    (tmp_path / "bitmaps.map").unlink()
+    returncode, report = report_one(report_tool, path)
+    assert returncode == 1

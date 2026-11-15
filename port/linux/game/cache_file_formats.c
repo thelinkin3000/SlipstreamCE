@@ -1094,6 +1094,7 @@ static enum cache_file_status cache_header_identify(
 		identity->format = _cache_file_format_xbox_cache;
 		break;
 	case CACHE_FILE_VERSION_CUSTOM_EDITION:
+	case CACHE_FILE_VERSION_HALO_PC:
 		identity->format = _cache_file_format_custom_edition_cache;
 		break;
 	default:
@@ -1707,6 +1708,657 @@ static enum cache_file_status resource_sound_load(
 	return _cache_file_status_ok;
 }
 
+/* ---------- Halo PC maps (version 7)
+
+A Halo PC map (retail's, and every HaloMD map) is laid out as a Custom
+Edition cache is, but no tag of it is held by a resource map: its bitmaps
+and sounds are whole in the map, and those of them that are stock keep
+their pixels or samples in Halo PC's own bitmaps.map and sounds.map, at
+those files' offsets, which Custom Edition's (laid out otherwise) do not
+share. Each such bitmap and sound permutation is pointed at the same data
+in Custom Edition's files instead: a bitmap by its tag's name there (a name
+with a '+' after it, as HaloMD copies of stock tags have, without it), else
+by its Halo PC offset (halo_pc_bitmap_offsets.h: a renamed stock tag), taken
+whole when its size and format agree, else at the other's size or format
+(a repacked or high resolution bitmaps.map), and, where Custom Edition has
+nothing of it (a campaign texture), stood in for by another of its bitmaps
+of the same kind, flagged BITMAP_GROUP_PORT_STOOD_IN_BIT; a sound by its
+tag's name, when its encoding, pitch ranges, permutations and their sizes
+are those of the one there, else silenced. ChupathingyCE's ce_resources.c
+does the same (docs/custom_edition_caches.md "Halo PC maps"). */
+
+#include "halo_pc_bitmap_offsets.h"
+
+#define BITMAP_GROUP_BITMAP_COUNT_LIMIT 0x10000
+#define BITMAP_DATA_MIPMAP_COUNT_OFFSET 0x14
+/* the shape and format: width, height, depth, type and format */
+#define BITMAP_DATA_SHAPE_OFFSET 0x04
+#define BITMAP_DATA_SHAPE_BYTES 0x0A
+/* the flags that say how the pixels are laid out (power of two dimensions,
+compressed, palettized, swizzled, linear, v16u16) */
+#define BITMAP_DATA_FORMAT_FLAGS_MASK 0x3F
+#define SOUND_PITCH_RANGES_ADDRESS_OFFSET (SOUND_PITCH_RANGES_OFFSET + TAG_BLOCK_ADDRESS_OFFSET)
+#define SOUND_PITCH_RANGE_PERMUTATION_COUNT_LIMIT 0x10000
+/* the largest sounds.map entry read whole (the stock ones are a few KB) */
+#define HALO_PC_SOUND_ENTRY_MAXIMUM_BYTES 0x100000
+#define TAG_PATH_BUFFER_BYTES (TAG_NAME_MAXIMUM_LENGTH + 1)
+
+/* a stock bitmap tag of Custom Edition's bitmaps.map: its entry, its path's
+hash, and its bitmaps in halo_pc_bitmaps.elements */
+struct halo_pc_bitmap_tag
+{
+	struct resource_map_item const *item;
+	uint32_t path_hash;
+	int32_t first_element;
+	int32_t element_count;
+};
+
+struct halo_pc_bitmaps
+{
+	struct halo_pc_bitmap_tag *tags;
+	int32_t tag_count;
+	/* every tag's bitmaps (BITMAP_DATA_BYTES each), their pixels' offsets
+	those of bitmaps.map */
+	uint8_t *elements;
+	int32_t element_count;
+};
+
+/* FNV-1a, 32 bits, of a path in lower case (halo_pc_bitmap_offsets.h) */
+static uint32_t halo_pc_path_hash(
+	char const *path)
+{
+	uint32_t hash = 0x811C9DC5UL;
+
+	for (; *path; path++)
+	{
+		uint8_t c = (uint8_t)*path;
+
+		if (c >= 'A' && c <= 'Z')
+		{
+			c = (uint8_t)(c + 32);
+		}
+		hash = (hash ^ c) * 0x01000193UL;
+	}
+
+	return hash;
+}
+
+static int name_ends_with(
+	char const *name,
+	char const *ending)
+{
+	size_t length = strlen(name);
+	size_t ending_length = strlen(ending);
+
+	return length >= ending_length && !strcmp(name + length - ending_length, ending);
+}
+
+static void halo_pc_bitmaps_free(
+	struct halo_pc_bitmaps *bitmaps)
+{
+	free(bitmaps->tags);
+	free(bitmaps->elements);
+	memset(bitmaps, 0, sizeof(*bitmaps));
+
+	return;
+}
+
+/* Custom Edition's stock bitmap tags and their bitmaps, read once: each
+entry not of pixels (`<path>__pixels`) is a bitmap tag whose block
+addresses count from the start of the entry */
+static enum cache_file_status halo_pc_bitmaps_read(
+	struct load_state *state,
+	struct resource_map const *map,
+	struct halo_pc_bitmaps *bitmaps)
+{
+	int32_t item_index;
+	int32_t element_capacity = 0;
+
+	memset(bitmaps, 0, sizeof(*bitmaps));
+	bitmaps->tags = malloc((size_t)map->item_count * sizeof(*bitmaps->tags) + 1);
+	if (!bitmaps->tags)
+	{
+		return load_fail(state, _cache_file_status_out_of_memory, 0);
+	}
+	for (item_index = 0; item_index < map->item_count; item_index++)
+	{
+		struct resource_map_item const *item = &map->items[item_index];
+		uint8_t group[BITMAP_GROUP_BYTES];
+		int32_t count;
+		uint32_t address;
+		struct halo_pc_bitmap_tag *tag;
+
+		if (name_ends_with(item->name, "__pixels") || item->size < BITMAP_GROUP_BYTES ||
+			!map->source->read(map->source->context, item->data_offset, BITMAP_GROUP_BYTES, group))
+		{
+			continue;
+		}
+		count = read_s32(group + BITMAP_GROUP_BITMAPS_OFFSET + TAG_BLOCK_COUNT_OFFSET);
+		address = read_u32(group + BITMAP_GROUP_BITMAPS_OFFSET + TAG_BLOCK_ADDRESS_OFFSET);
+		if (count <= 0 || count > BITMAP_GROUP_BITMAP_COUNT_LIMIT ||
+			!range_fits(address, (uint32_t)count * BITMAP_DATA_BYTES, item->size))
+		{
+			continue;
+		}
+		if (bitmaps->element_count + count > element_capacity)
+		{
+			int32_t capacity = element_capacity ? element_capacity * 2 : 4096;
+			uint8_t *grown;
+
+			while (capacity < bitmaps->element_count + count)
+			{
+				capacity *= 2;
+			}
+			grown = realloc(bitmaps->elements, (size_t)capacity * BITMAP_DATA_BYTES);
+			if (!grown)
+			{
+				halo_pc_bitmaps_free(bitmaps);
+				return load_fail(state, _cache_file_status_out_of_memory, 0);
+			}
+			bitmaps->elements = grown;
+			element_capacity = capacity;
+		}
+		if (!map->source->read(map->source->context, item->data_offset + address, (uint32_t)count * BITMAP_DATA_BYTES,
+			bitmaps->elements + (size_t)bitmaps->element_count * BITMAP_DATA_BYTES))
+		{
+			continue;
+		}
+		tag = &bitmaps->tags[bitmaps->tag_count++];
+		tag->item = item;
+		tag->path_hash = halo_pc_path_hash(item->name);
+		tag->first_element = bitmaps->element_count;
+		tag->element_count = count;
+		bitmaps->element_count += count;
+	}
+
+	return _cache_file_status_ok;
+}
+
+/* the tag of Custom Edition's whose entry has this name, or with any '+'
+at its end left off; NULL if none */
+static struct halo_pc_bitmap_tag const *halo_pc_bitmap_tag_by_name(
+	struct halo_pc_bitmaps const *bitmaps,
+	char const *name)
+{
+	char trimmed[TAG_PATH_BUFFER_BYTES];
+	size_t length = strlen(name);
+	int pass;
+
+	if (length >= sizeof(trimmed))
+	{
+		return NULL;
+	}
+	memcpy(trimmed, name, length + 1);
+	for (pass = 0; pass < 2; pass++)
+	{
+		int32_t index;
+
+		for (index = 0; index < bitmaps->tag_count; index++)
+		{
+			if (!strcmp(bitmaps->tags[index].item->name, trimmed))
+			{
+				return &bitmaps->tags[index];
+			}
+		}
+		while (length && trimmed[length - 1] == '+')
+		{
+			trimmed[--length] = 0;
+		}
+		if (!length || !strcmp(trimmed, name))
+		{
+			break;
+		}
+	}
+
+	return NULL;
+}
+
+/* the bitmap of Custom Edition's that Halo PC's bitmaps.map holds at this
+offset (halo_pc_bitmap_offsets.h), or NULL */
+static uint8_t const *halo_pc_bitmap_by_offset(
+	struct halo_pc_bitmaps const *bitmaps,
+	uint32_t offset)
+{
+	int32_t low = 0;
+	int32_t high = HALO_PC_BITMAP_OFFSET_COUNT - 1;
+
+	while (low <= high)
+	{
+		int32_t middle = low + (high - low) / 2;
+
+		if (halo_pc_bitmap_offsets[middle] < offset)
+		{
+			low = middle + 1;
+		}
+		else if (halo_pc_bitmap_offsets[middle] > offset)
+		{
+			high = middle - 1;
+		}
+		else
+		{
+			int32_t bitmap_index = halo_pc_bitmap_indices[middle];
+			int32_t index;
+
+			for (index = 0; index < bitmaps->tag_count; index++)
+			{
+				struct halo_pc_bitmap_tag const *tag = &bitmaps->tags[index];
+
+				if (tag->path_hash == halo_pc_bitmap_path_hashes[middle] && bitmap_index < tag->element_count)
+				{
+					return bitmaps->elements + (size_t)(tag->first_element + bitmap_index) * BITMAP_DATA_BYTES;
+				}
+			}
+			return NULL;
+		}
+	}
+
+	return NULL;
+}
+
+/* whether two bitmaps are the same picture: shape, format, mipmaps and size */
+static int halo_pc_bitmap_same(
+	uint8_t const *bitmap,
+	uint8_t const *other)
+{
+	return !memcmp(bitmap + BITMAP_DATA_SHAPE_OFFSET, other + BITMAP_DATA_SHAPE_OFFSET, BITMAP_DATA_SHAPE_BYTES) &&
+		read_u16(bitmap + BITMAP_DATA_MIPMAP_COUNT_OFFSET) == read_u16(other + BITMAP_DATA_MIPMAP_COUNT_OFFSET) &&
+		read_u32(bitmap + BITMAP_DATA_PIXELS_SIZE_OFFSET) == read_u32(other + BITMAP_DATA_PIXELS_SIZE_OFFSET);
+}
+
+/* the map's bitmap given another's pixels, as they are: shape, format,
+mipmaps, offset and size (its registration point and other flags kept) */
+static void halo_pc_bitmap_take(
+	uint8_t *bitmap,
+	uint8_t const *other)
+{
+	uint16_t flags = read_u16(bitmap + BITMAP_DATA_FLAGS_OFFSET);
+
+	memcpy(bitmap + BITMAP_DATA_SHAPE_OFFSET, other + BITMAP_DATA_SHAPE_OFFSET, BITMAP_DATA_SHAPE_BYTES);
+	flags = (uint16_t)((flags & ~BITMAP_DATA_FORMAT_FLAGS_MASK) |
+		(read_u16(other + BITMAP_DATA_FLAGS_OFFSET) & BITMAP_DATA_FORMAT_FLAGS_MASK) |
+		(1u << BITMAP_DATA_IN_RESOURCE_MAP_BIT));
+	write_u16(bitmap + BITMAP_DATA_FLAGS_OFFSET, flags);
+	write_u16(bitmap + BITMAP_DATA_MIPMAP_COUNT_OFFSET, read_u16(other + BITMAP_DATA_MIPMAP_COUNT_OFFSET));
+	write_u32(bitmap + BITMAP_DATA_PIXELS_OFFSET_OFFSET, read_u32(other + BITMAP_DATA_PIXELS_OFFSET_OFFSET));
+	write_u32(bitmap + BITMAP_DATA_PIXELS_SIZE_OFFSET, read_u32(other + BITMAP_DATA_PIXELS_SIZE_OFFSET));
+
+	return;
+}
+
+/* a bitmap of Custom Edition's to stand in for one it lacks: the first of
+the same picture's shape and size, else of its type and format, else of its
+type; NULL if none */
+static uint8_t const *halo_pc_bitmap_stand_in(
+	struct halo_pc_bitmaps const *bitmaps,
+	uint8_t const *bitmap)
+{
+	int pass;
+
+	for (pass = 0; pass < 3; pass++)
+	{
+		int32_t index;
+
+		for (index = 0; index < bitmaps->element_count; index++)
+		{
+			uint8_t const *other = bitmaps->elements + (size_t)index * BITMAP_DATA_BYTES;
+			int fits = pass == 0 ? halo_pc_bitmap_same(bitmap, other) :
+				pass == 1 ? read_u16(bitmap + BITMAP_DATA_TYPE_OFFSET) == read_u16(other + BITMAP_DATA_TYPE_OFFSET) &&
+					read_u16(bitmap + BITMAP_DATA_FORMAT_OFFSET) == read_u16(other + BITMAP_DATA_FORMAT_OFFSET) :
+				read_u16(bitmap + BITMAP_DATA_TYPE_OFFSET) == read_u16(other + BITMAP_DATA_TYPE_OFFSET);
+
+			if (fits)
+			{
+				return other;
+			}
+		}
+	}
+
+	return NULL;
+}
+
+/* a Halo PC bitmap tag's stock bitmaps pointed at Custom Edition's */
+static enum cache_file_status halo_pc_bitmap_tag_place(
+	struct load_state *state,
+	struct halo_pc_bitmaps const *bitmaps,
+	uint32_t group_offset,
+	char const *name)
+{
+	uint8_t *group = state->tag_cache + group_offset;
+	int32_t count = read_s32(group + BITMAP_GROUP_BITMAPS_OFFSET + TAG_BLOCK_COUNT_OFFSET);
+	uint32_t address = read_u32(group + BITMAP_GROUP_BITMAPS_OFFSET + TAG_BLOCK_ADDRESS_OFFSET);
+	struct halo_pc_bitmap_tag const *tag = NULL;
+	uint32_t elements_offset;
+	int32_t index;
+
+	if (count <= 0)
+	{
+		return _cache_file_status_ok;
+	}
+	if (count > BITMAP_GROUP_BITMAP_COUNT_LIMIT ||
+		!tag_cache_offset(state, address, (uint32_t)count * BITMAP_DATA_BYTES, &elements_offset))
+	{
+		return load_fail(state, _cache_file_status_bad_tag_address, address);
+	}
+	if (name)
+	{
+		tag = halo_pc_bitmap_tag_by_name(bitmaps, name);
+	}
+	for (index = 0; index < count; index++)
+	{
+		uint8_t *bitmap = state->tag_cache + elements_offset + (uint32_t)index * BITMAP_DATA_BYTES;
+		uint8_t const *by_name;
+		uint8_t const *by_offset;
+		uint8_t const *other;
+
+		if (!flag_is_set(read_u16(bitmap + BITMAP_DATA_FLAGS_OFFSET), BITMAP_DATA_IN_RESOURCE_MAP_BIT))
+		{
+			continue;
+		}
+		by_name = tag && index < tag->element_count ?
+			bitmaps->elements + (size_t)(tag->first_element + index) * BITMAP_DATA_BYTES :
+			NULL;
+		by_offset = halo_pc_bitmap_by_offset(bitmaps, read_u32(bitmap + BITMAP_DATA_PIXELS_OFFSET_OFFSET));
+		if (by_name && halo_pc_bitmap_same(bitmap, by_name))
+		{
+			halo_pc_bitmap_take(bitmap, by_name);
+			state->report->halo_pc_bitmaps_by_name++;
+		}
+		else if (by_offset && halo_pc_bitmap_same(bitmap, by_offset))
+		{
+			halo_pc_bitmap_take(bitmap, by_offset);
+			state->report->halo_pc_bitmaps_by_offset++;
+		}
+		else if ((other = by_offset ? by_offset : by_name) != NULL &&
+			read_u16(bitmap + BITMAP_DATA_TYPE_OFFSET) == read_u16(other + BITMAP_DATA_TYPE_OFFSET))
+		{
+			halo_pc_bitmap_take(bitmap, other);
+			state->report->halo_pc_bitmaps_resized++;
+		}
+		else if ((other = halo_pc_bitmap_stand_in(bitmaps, bitmap)) != NULL)
+		{
+			halo_pc_bitmap_take(bitmap, other);
+			write_u16(group + BITMAP_GROUP_FLAGS_OFFSET,
+				(uint16_t)(read_u16(group + BITMAP_GROUP_FLAGS_OFFSET) | (1u << BITMAP_GROUP_PORT_STOOD_IN_BIT)));
+			state->report->halo_pc_bitmaps_stood_in++;
+		}
+		else
+		{
+			return load_fail(state, _cache_file_status_bad_resource_data_range,
+				read_u32(bitmap + BITMAP_DATA_PIXELS_OFFSET_OFFSET));
+		}
+	}
+
+	return _cache_file_status_ok;
+}
+
+/* a Halo PC sound's stock samples pointed at Custom Edition's sounds.map
+entry of the same name (its pitch ranges, then their permutations, whose
+addresses count from the first pitch range: resource_sound_load), when the
+two agree in everything but where the samples are; else it is silenced */
+static enum cache_file_status halo_pc_sound_place(
+	struct load_state *state,
+	struct resource_map const *map,
+	uint32_t sound_offset,
+	char const *name)
+{
+	uint8_t *sound = state->tag_cache + sound_offset;
+	int32_t range_count = read_s32(sound + SOUND_PITCH_RANGES_OFFSET + TAG_BLOCK_COUNT_OFFSET);
+	uint32_t ranges_address = read_u32(sound + SOUND_PITCH_RANGES_ADDRESS_OFFSET);
+	struct resource_map_item const *item = NULL;
+	char trimmed[TAG_PATH_BUFFER_BYTES];
+	uint32_t ranges_offset;
+	uint8_t *entry = NULL;
+	int32_t range_index;
+	int external = 0;
+	int agrees;
+
+	if (range_count <= 0)
+	{
+		return _cache_file_status_ok;
+	}
+	if (!tag_cache_offset(state, ranges_address, (uint32_t)range_count * SOUND_PITCH_RANGE_BYTES, &ranges_offset))
+	{
+		return load_fail(state, _cache_file_status_bad_tag_address, ranges_address);
+	}
+	/* (each range's permutations within the tags; whether any is stock) */
+	for (range_index = 0; range_index < range_count; range_index++)
+	{
+		uint8_t const *range = state->tag_cache + ranges_offset + (uint32_t)range_index * SOUND_PITCH_RANGE_BYTES;
+		int32_t permutation_count = read_s32(range + SOUND_PITCH_RANGE_PERMUTATIONS_OFFSET + TAG_BLOCK_COUNT_OFFSET);
+		uint32_t address = read_u32(range + SOUND_PITCH_RANGE_PERMUTATIONS_OFFSET + TAG_BLOCK_ADDRESS_OFFSET);
+		uint32_t permutations_offset;
+		int32_t permutation_index;
+
+		if (permutation_count <= 0)
+		{
+			continue;
+		}
+		if (permutation_count > SOUND_PITCH_RANGE_PERMUTATION_COUNT_LIMIT ||
+			!tag_cache_offset(state, address, (uint32_t)permutation_count * SOUND_PERMUTATION_BYTES,
+				&permutations_offset))
+		{
+			return load_fail(state, _cache_file_status_bad_tag_address, address);
+		}
+		for (permutation_index = 0; permutation_index < permutation_count; permutation_index++)
+		{
+			uint8_t const *samples = state->tag_cache + permutations_offset +
+				(uint32_t)permutation_index * SOUND_PERMUTATION_BYTES + SOUND_PERMUTATION_SAMPLES_OFFSET;
+
+			external |= flag_is_set(read_u32(samples + TAG_DATA_FLAGS_OFFSET), SOUND_SAMPLES_IN_RESOURCE_MAP_BIT);
+		}
+	}
+	if (!external)
+	{
+		return _cache_file_status_ok;
+	}
+	if (map && name && strlen(name) < sizeof(trimmed))
+	{
+		size_t length = strlen(name);
+
+		item = resource_map_find(map, name);
+		memcpy(trimmed, name, length + 1);
+		while (length && trimmed[length - 1] == '+')
+		{
+			trimmed[--length] = 0;
+		}
+		if (!item && length && strcmp(trimmed, name))
+		{
+			item = resource_map_find(map, trimmed);
+		}
+	}
+	agrees = item && item->size >= SOUND_DEFINITION_BYTES && item->size <= HALO_PC_SOUND_ENTRY_MAXIMUM_BYTES;
+	if (agrees)
+	{
+		entry = malloc(item->size);
+		if (!entry)
+		{
+			return load_fail(state, _cache_file_status_out_of_memory, item->size);
+		}
+		agrees = map->source->read(map->source->context, item->data_offset, item->size, entry) &&
+			!memcmp(sound + SOUND_ENCODING_OFFSET, entry + SOUND_ENCODING_OFFSET, 4) &&
+			read_s32(entry + SOUND_PITCH_RANGES_OFFSET + TAG_BLOCK_COUNT_OFFSET) == range_count &&
+			range_fits(SOUND_DEFINITION_BYTES, (uint32_t)range_count * SOUND_PITCH_RANGE_BYTES, item->size);
+	}
+	/* (first a pass that compares, then one that points) */
+	for (range_index = 0; agrees && range_index < range_count * 2; range_index++)
+	{
+		int pointing = range_index >= range_count;
+		int32_t range_at = range_index % range_count;
+		uint8_t const *range = state->tag_cache + ranges_offset + (uint32_t)range_at * SOUND_PITCH_RANGE_BYTES;
+		uint8_t const *entry_range = entry + SOUND_DEFINITION_BYTES + (uint32_t)range_at * SOUND_PITCH_RANGE_BYTES;
+		int32_t permutation_count = read_s32(range + SOUND_PITCH_RANGE_PERMUTATIONS_OFFSET + TAG_BLOCK_COUNT_OFFSET);
+		uint32_t entry_address = read_u32(entry_range + SOUND_PITCH_RANGE_PERMUTATIONS_OFFSET + TAG_BLOCK_ADDRESS_OFFSET);
+		uint32_t permutations_offset = 0;
+		int32_t permutation_index;
+
+		if (read_s32(entry_range + SOUND_PITCH_RANGE_PERMUTATIONS_OFFSET + TAG_BLOCK_COUNT_OFFSET) != permutation_count)
+		{
+			agrees = 0;
+			break;
+		}
+		if (permutation_count <= 0)
+		{
+			continue;
+		}
+		if (!range_fits(entry_address, (uint32_t)permutation_count * SOUND_PERMUTATION_BYTES,
+				item->size - SOUND_DEFINITION_BYTES) ||
+			!tag_cache_offset(
+				state,
+				read_u32(range + SOUND_PITCH_RANGE_PERMUTATIONS_OFFSET + TAG_BLOCK_ADDRESS_OFFSET),
+				(uint32_t)permutation_count * SOUND_PERMUTATION_BYTES,
+				&permutations_offset))
+		{
+			agrees = 0;
+			break;
+		}
+		for (permutation_index = 0; permutation_index < permutation_count; permutation_index++)
+		{
+			uint8_t *samples = state->tag_cache + permutations_offset +
+				(uint32_t)permutation_index * SOUND_PERMUTATION_BYTES + SOUND_PERMUTATION_SAMPLES_OFFSET;
+			uint8_t const *entry_samples = entry + SOUND_DEFINITION_BYTES + entry_address +
+				(uint32_t)permutation_index * SOUND_PERMUTATION_BYTES + SOUND_PERMUTATION_SAMPLES_OFFSET;
+
+			if (!pointing)
+			{
+				if (read_s32(samples + TAG_DATA_SIZE_OFFSET) != read_s32(entry_samples + TAG_DATA_SIZE_OFFSET))
+				{
+					agrees = 0;
+					break;
+				}
+			}
+			else if (flag_is_set(read_u32(samples + TAG_DATA_FLAGS_OFFSET), SOUND_SAMPLES_IN_RESOURCE_MAP_BIT))
+			{
+				write_u32(samples + TAG_DATA_FILE_OFFSET_OFFSET, read_u32(entry_samples + TAG_DATA_FILE_OFFSET_OFFSET));
+			}
+		}
+	}
+	free(entry);
+	if (agrees)
+	{
+		state->report->halo_pc_sounds_found++;
+	}
+	else
+	{
+		/* (no pitch ranges: the game plays nothing of it) */
+		write_u32(sound + SOUND_PITCH_RANGES_OFFSET + TAG_BLOCK_COUNT_OFFSET, 0);
+		write_u32(sound + SOUND_PITCH_RANGES_ADDRESS_OFFSET, 0);
+		state->report->halo_pc_sounds_silenced++;
+	}
+
+	return _cache_file_status_ok;
+}
+
+/* a Halo PC map's unicode string list whose strings lie outside its tags
+(a menu's that a multiplayer map holds and Halo PC never read: outback_3's
+var_kill_penalty): each such string emptied, as it reads there */
+static enum cache_file_status halo_pc_strings_check(
+	struct load_state *state,
+	uint32_t list_offset)
+{
+	uint8_t *list = state->tag_cache + list_offset;
+	int32_t count = read_s32(list + UNICODE_STRING_LIST_STRINGS_OFFSET + TAG_BLOCK_COUNT_OFFSET);
+	uint32_t address = read_u32(list + UNICODE_STRING_LIST_STRINGS_OFFSET + TAG_BLOCK_ADDRESS_OFFSET);
+	uint32_t strings_offset;
+	int32_t index;
+
+	if (count <= 0)
+	{
+		return _cache_file_status_ok;
+	}
+	if (count > BITMAP_GROUP_BITMAP_COUNT_LIMIT ||
+		!tag_cache_offset(state, address, (uint32_t)count * TAG_DATA_BYTES, &strings_offset))
+	{
+		/* (the block itself unreadable: no strings) */
+		write_u32(list + UNICODE_STRING_LIST_STRINGS_OFFSET + TAG_BLOCK_COUNT_OFFSET, 0);
+		write_u32(list + UNICODE_STRING_LIST_STRINGS_OFFSET + TAG_BLOCK_ADDRESS_OFFSET, 0);
+		state->report->halo_pc_strings_emptied += count;
+		return _cache_file_status_ok;
+	}
+	for (index = 0; index < count; index++)
+	{
+		uint8_t *string = state->tag_cache + strings_offset + (uint32_t)index * TAG_DATA_BYTES;
+		int32_t size = read_s32(string + TAG_DATA_SIZE_OFFSET);
+		uint32_t offset;
+
+		if (size > 0 && !tag_cache_offset(state, read_u32(string + TAG_DATA_ADDRESS_OFFSET), (uint32_t)size, &offset))
+		{
+			write_u32(string + TAG_DATA_SIZE_OFFSET, 0);
+			write_u32(string + TAG_DATA_FILE_OFFSET_OFFSET, 0);
+			write_u32(string + TAG_DATA_ADDRESS_OFFSET, 0);
+			state->report->halo_pc_strings_emptied++;
+		}
+	}
+
+	return _cache_file_status_ok;
+}
+
+/* every bitmap and sound of a Halo PC map pointed at Custom Edition's
+resource maps (above), and its unreadable strings emptied */
+static enum cache_file_status halo_pc_resources_place(
+	struct load_state *state,
+	uint8_t const *tag_instances,
+	int32_t tag_count)
+{
+	struct resource_map const *bitmaps_map = state->resource_maps[_resource_map_bitmaps];
+	struct resource_map const *sounds_map = state->resource_maps[_resource_map_sounds];
+	struct halo_pc_bitmaps bitmaps;
+	enum cache_file_status status = _cache_file_status_ok;
+	int32_t tag_index_value;
+
+	memset(&bitmaps, 0, sizeof(bitmaps));
+	if (bitmaps_map)
+	{
+		status = halo_pc_bitmaps_read(state, bitmaps_map, &bitmaps);
+		if (status != _cache_file_status_ok)
+		{
+			return status;
+		}
+	}
+	for (tag_index_value = 0; status == _cache_file_status_ok && tag_index_value < tag_count; tag_index_value++)
+	{
+		uint8_t const *instance = tag_instances + (uint32_t)tag_index_value * TAG_INSTANCE_BYTES;
+		uint32_t group_tag = read_u32(instance + TAG_INSTANCE_GROUP_OFFSET);
+		uint32_t address = read_u32(instance + TAG_INSTANCE_ADDRESS_OFFSET);
+		uint32_t offset;
+
+		if ((group_tag != BITMAP_GROUP_TAG && group_tag != SOUND_GROUP_TAG &&
+			group_tag != UNICODE_STRING_LIST_GROUP_TAG) || !address)
+		{
+			continue;
+		}
+		state->tag_index = tag_index_value;
+		if (group_tag == UNICODE_STRING_LIST_GROUP_TAG)
+		{
+			status = tag_cache_offset(state, address, UNICODE_STRING_LIST_BYTES, &offset) ?
+				halo_pc_strings_check(state, offset) :
+				load_fail(state, _cache_file_status_bad_tag_address, address);
+		}
+		else if (group_tag == BITMAP_GROUP_TAG)
+		{
+			if (!tag_cache_offset(state, address, BITMAP_GROUP_BYTES, &offset))
+			{
+				status = load_fail(state, _cache_file_status_bad_tag_address, address);
+			}
+			else
+			{
+				status = halo_pc_bitmap_tag_place(state, &bitmaps, offset, tag_name_get(state, instance));
+			}
+		}
+		else if (!tag_cache_offset(state, address, SOUND_DEFINITION_BYTES, &offset))
+		{
+			status = load_fail(state, _cache_file_status_bad_tag_address, address);
+		}
+		else
+		{
+			status = halo_pc_sound_place(state, sounds_map, offset, tag_name_get(state, instance));
+		}
+	}
+	state->tag_index = NO_TAG_INDEX;
+	halo_pc_bitmaps_free(&bitmaps);
+
+	return status;
+}
+
 /* the layout of a group whose tags resource maps may hold, or NULL: only
 these groups ever are (OpenSauce cache_files.cpp, cache_file_data_load) */
 static struct element_layout const *resource_group_layout(
@@ -2103,6 +2755,7 @@ enum cache_file_format cache_file_header_format(
 		format = _cache_file_format_xbox_cache;
 		break;
 	case CACHE_FILE_VERSION_CUSTOM_EDITION:
+	case CACHE_FILE_VERSION_HALO_PC:
 		format = _cache_file_format_custom_edition_cache;
 		break;
 	default:
@@ -2216,6 +2869,14 @@ enum cache_file_status cache_file_resource_maps_needed(
 	if (status != _cache_file_status_ok)
 	{
 		return status;
+	}
+	/* (a Halo PC map holds no tag in them, but its stock bitmaps' pixels and
+	sounds' samples are in Custom Edition's bitmaps.map and sounds.map:
+	halo_pc_resources_place) */
+	if (identity.version == CACHE_FILE_VERSION_HALO_PC)
+	{
+		*types = (1u << _resource_map_bitmaps) | (1u << _resource_map_sounds);
+		return _cache_file_status_ok;
 	}
 	if (identity.tag_data_size < TAG_INDEX_BYTES ||
 		!source->read(source->context, identity.tag_data_offset, TAG_INDEX_BYTES, tag_index))
@@ -2539,6 +3200,17 @@ enum cache_file_status custom_edition_cache_load(
 			status = resource_tag_load(&state, instance, name, _resource_map_locale, &hud_message_text_layout);
 			break;
 		}
+		if (status != _cache_file_status_ok)
+		{
+			return status;
+		}
+	}
+
+	/* a Halo PC map's stock bitmaps and sounds, found in Custom Edition's
+	resource maps */
+	if (identity->version == CACHE_FILE_VERSION_HALO_PC)
+	{
+		status = halo_pc_resources_place(&state, tag_instances, tag_count);
 		if (status != _cache_file_status_ok)
 		{
 			return status;

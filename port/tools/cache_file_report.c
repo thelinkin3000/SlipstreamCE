@@ -258,6 +258,15 @@ static int report_custom_edition_cache(
 		printf("sound_sample_ranges_checked: %" PRId32 "\n", report.sound_sample_ranges_checked);
 		printf("relocated_pointers: %" PRId32 "\n", report.relocated_pointer_count);
 		printf("scenario_regrouped: %" PRId32 "\n", report.scenario_regrouped);
+		if (report.identity.version == CACHE_FILE_VERSION_HALO_PC)
+		{
+			printf("halo_pc_bitmaps: %" PRId32 " by name, %" PRId32 " by offset, %" PRId32 " resized, %" PRId32
+				" stood in\n", report.halo_pc_bitmaps_by_name, report.halo_pc_bitmaps_by_offset,
+				report.halo_pc_bitmaps_resized, report.halo_pc_bitmaps_stood_in);
+			printf("halo_pc_sounds: %" PRId32 " found, %" PRId32 " silenced\n", report.halo_pc_sounds_found,
+				report.halo_pc_sounds_silenced);
+			printf("halo_pc_strings_emptied: %" PRId32 "\n", report.halo_pc_strings_emptied);
+		}
 		printf("computed_checksum: 0x%08" PRIx32 "\n", report.computed_checksum);
 		printf("trailing_bytes: 0x%" PRIx32 "\n", report.trailing_bytes);
 		print_flags("warnings", report.warnings, warning_names, NUMBER_OF_CUSTOM_EDITION_WARNINGS);

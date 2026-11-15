@@ -403,6 +403,54 @@ changed:
   globals can list fewer, and oddball stopped on such a map. With fewer than
   three, the native builds predict none (`game_engine.c`).
 
+## Halo PC maps
+
+Halo PC 1.0's maps (cache version 7: retail's, and every HaloMD map) are
+read as Custom Edition caches. They share the layout: the header, the tag
+index, the tag cache at `0x40440000`, the tags themselves, the uncompressed
+model and BSP vertices. They go in `custom_maps` and are listed with the
+Custom Edition maps. What differs is where their stock data is:
+
+- **No tag of theirs is held by a resource map.** Every bitmap, sound,
+  font and string list is whole in the map. Only the *pixels* of stock
+  bitmaps and the *samples* of stock sounds are outside it, flagged as in
+  `bitmaps.map` and `sounds.map`, at offsets of **Halo PC's** own resource
+  maps, which Custom Edition's (laid out otherwise) do not share. A Halo PC
+  map needs Custom Edition's `bitmaps.map` and `sounds.map`, not `loc.map`.
+- **Each stock bitmap is found again in Custom Edition's `bitmaps.map`**
+  (`halo_pc_resources_place`): by its tag's path there (whose entry lists
+  the tag's bitmaps, their pixels' offsets those of `bitmaps.map`), or the
+  path without the `+` that HaloMD copies of stock tags have at its end;
+  else by its Halo PC offset, in `halo_pc_bitmap_offsets.h`, which says
+  which bitmap of which tag (by a hash of its path) Halo PC's `bitmaps.map`
+  holds there, for stock tags that HaloMD tools left renamed. A bitmap of
+  the same shape, format, mipmaps and size has its offset taken; one of the
+  same type but another size or format (a repacked or high resolution
+  `bitmaps.map`) takes the other's shape and format too; one that Custom
+  Edition has nothing of (a campaign texture) gets another bitmap of the
+  same kind in its place, and its tag the port's *stood in* flag, whose
+  weather particles are left out (`weather_particle_systems.c`). The table
+  is ChupathingyCE's (GPL-3.0), made from Halo PC's `bitmaps.map`: only
+  offsets, hashes and indices.
+- **Each stock sound is found again in Custom Edition's `sounds.map`** by
+  its tag's path (or without the `+`): when its encoding and compression,
+  its pitch ranges and their permutations, and every permutation's size
+  are the entry's, each stock permutation takes the entry's samples'
+  offset; else the sound is silenced (no pitch ranges).
+- **A string that lies outside the tags is emptied.** A multiplayer map
+  can hold menu string lists that Halo PC never read; one of `outback_3`'s
+  points past its tags.
+- **The gravity rifle stays.** The game turns the gravity rifle's place in
+  the multiplayer weapon list into the rocket launcher on Xbox maps, where
+  it is a cut weapon; HaloMD's Halo 2 maps keep their battle rifle there,
+  so it stays on Custom Edition and Halo PC maps, as the flamethrower does.
+
+On `outback_3` (HaloMD's Outback, 190 MB), against Custom Edition's
+resource maps: 387 bitmaps found by name, 29 by offset and 8 stood in; 132
+sounds found and 5 silenced; 2 strings emptied. ChupathingyCE's
+`ce_resources.c` does the same, and its notes on HaloMD maps
+(`docs/maps.md`) were the guide here.
+
 ## Checks
 
 The loader (`cache_file_formats.c`) checks the container: the header, the

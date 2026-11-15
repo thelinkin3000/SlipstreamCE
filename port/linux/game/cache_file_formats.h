@@ -35,6 +35,16 @@ against the file or buffer it refers to before it is used.
 
 #define CACHE_FILE_VERSION_XBOX 5
 #define CACHE_FILE_VERSION_CUSTOM_EDITION 609
+/* Halo PC 1.0's (retail's, and HaloMD's maps): read as Custom Edition caches,
+whose layout they share, but with no tag held by a resource map and their
+stock bitmaps' pixels and sounds' samples at Halo PC's own bitmaps.map and
+sounds.map offsets, which are found again in Custom Edition's
+(halo_pc_resources_place, docs/custom_edition_caches.md "Halo PC maps") */
+#define CACHE_FILE_VERSION_HALO_PC 7
+/* a bitmap group flag this port sets on a Halo PC map's bitmap whose pixels
+Custom Edition's bitmaps.map lacks, drawn with another of its bitmaps in
+their place (weather particles skip such bitmaps: weather_particle_systems.c) */
+#define BITMAP_GROUP_PORT_STOOD_IN_BIT 15
 
 /* Halo PC and Custom Edition keep tag data at a fixed address, as the Xbox
 does at 0x803A6000: 0x40440000, above a 0x440000-byte game state at
@@ -233,6 +243,18 @@ struct custom_edition_load_report
 	/* 1 when the scenario tag had another group (map protection renames it)
 	and was given the scenario's */
 	int32_t scenario_regrouped;
+	/* a Halo PC map's stock bitmaps found in Custom Edition's bitmaps.map: by
+	their tag's name, by their Halo PC offset (a tag renamed), taken at
+	another size or format, and stood in for by another bitmap; and its
+	stock sounds found in sounds.map, and those not, silenced */
+	int32_t halo_pc_bitmaps_by_name;
+	int32_t halo_pc_bitmaps_by_offset;
+	int32_t halo_pc_bitmaps_resized;
+	int32_t halo_pc_bitmaps_stood_in;
+	int32_t halo_pc_sounds_found;
+	int32_t halo_pc_sounds_silenced;
+	/* and its strings that lay outside its tags, emptied */
+	int32_t halo_pc_strings_emptied;
 };
 
 /* Where Halo PC keeps what a texture holds in other channels than this

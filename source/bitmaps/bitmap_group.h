@@ -20,6 +20,14 @@ enum
 	BITMAP_GROUP_TAG = 'bitm',
 };
 
+/* port: a bitmap group flag the loader sets on a Halo PC map's bitmap whose
+pixels Custom Edition's bitmaps.map lacks, another of its bitmaps standing
+in (port/linux/game/cache_file_formats.h, BITMAP_GROUP_PORT_STOOD_IN_BIT) */
+enum
+{
+	_bitmap_group_port_stood_in_bit = 15
+};
+
 /* ---------- macros */
 
 #define bitmap_group_get(index) ((struct bitmap_group *)tag_get(BITMAP_GROUP_TAG, (index)))

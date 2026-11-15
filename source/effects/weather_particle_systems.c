@@ -576,6 +576,13 @@ static void weather_particle_system_render(
 			type_index,
 			struct weather_particle_type_definition);
 
+		/* port: a Halo PC map's bitmap that Custom Edition's bitmaps.map lacks
+		(relic's swamp bugs: a campaign bitmap) has another of its bitmaps in
+		its place, whose sprites would draw as squares of a sheet of
+		something else; its particles are left out
+		(port/linux/game/cache_file_formats.c, halo_pc_bitmap_tag_place) */
+		if (TEST_FLAG(bitmap_group_get(type_definition->bitmap.index)->flags, _bitmap_group_port_stood_in_bit))
+			continue;
 		if (type->particle_count)
 		{
 			real_plane3d clip_planes[NUMBER_OF_WEATHER_PARTICLE_CLIPPING_PLANES];
