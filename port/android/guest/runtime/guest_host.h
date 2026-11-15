@@ -266,6 +266,10 @@ void host_mcc_hash_cancel(int id);
 int host_sha256_start(unsigned int path);
 int host_sha256_poll(int id, unsigned int digest, unsigned int size);
 void host_sha256_cancel(int id);
+/* a file built into the game into the guest's memory at destination, size bytes (its size): 1 if it is; the host
+keeps them for a guest image, whose window has little room (tools/embed_assets.py --host,
+port/linux/src/embedded_assets.h) */
+int host_embedded_asset_read(unsigned int asset, unsigned int destination, unsigned int size);
 /* the Steam Workshop screen, whose Steam client is the host's (port/android/host/steam_downloads.c, which
 says what each does; the guest's wrappers are port/linux/src/steam_screen.c's) */
 void host_steam_open(unsigned int data_root, int section, unsigned int custom_maps);

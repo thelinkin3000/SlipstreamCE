@@ -50,7 +50,8 @@ struct hud_hires_embedded
 	int ce_only;
 	/* Stock CE first mip after hardware conversion; resource maps may be modified. */
 	unsigned int ce_width, ce_height, ce_size, ce_crc;
-	const unsigned int *png;
+	/* its PNG: its number (embedded_asset, embedded_assets.h) and size */
+	unsigned int png_asset;
 	unsigned int png_size;
 	/* where its picture's buttons are right, for a port's own button art drawn twice
 	(tools/button_assets.py platform): HUD_HIRES_CONTEXT_* bits; 0 everywhere */

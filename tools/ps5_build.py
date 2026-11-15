@@ -725,7 +725,9 @@ def _generate(n: Writer, sln: Any, config_path: Path) -> None:
                     root / MONOCYPHER_DIR / "monocypher.c",
                     # (and Ed25519, the map archive's list's signature: fractum_archive.c)
                     root / MONOCYPHER_DIR / "monocypher-ed25519.c",
-                    guest["host_table_c"], import_stubs]
+                    guest["host_table_c"], import_stubs,
+                    # (the files the guest image's tables number: embed_assets.py --host)
+                    guest["host_assets_c"]]
     for source in host_sources:
         obj = obj_dir / (source.name + ".o")
         cflags = host_cflags

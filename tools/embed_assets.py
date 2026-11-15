@@ -7,7 +7,7 @@ made by tools/button_assets.py), the fonts the text is drawn with
 tools/ce_menus.py) and SMAA's shader and lookup textures
 (port/third_party/smaa) in the game as C data:
 
-    python tools/embed_assets.py [--platform PORT] OUTPUT.c
+    python tools/embed_assets.py [--platform PORT] [--host HOST.c] OUTPUT.c
 
 writes OUTPUT.c with each PNG and the bitmap it stands for (its tag, index
 and checksum of its pixels, from port/assets/hud/layout.json,
@@ -23,6 +23,15 @@ display.xbox_buttons to choose the port's or the Xbox's. The builds generate it
 (hud_assets_build, called by tools/linux_build.py, windows_build.py and
 android_build.py), so the assets are the committed source and Android needs
 no files beside its guest image.
+
+The PNGs, the fonts and the menus' files are numbered, and their tables
+give each its number (port/linux/src/embedded_assets.h: embedded_asset).
+With --host, they are written to HOST.c, which the host is built with, and
+OUTPUT.c has only the tables and the guest's embedded_asset, which asks the
+host for a file (host_embedded_asset_read) the first time and keeps it: a
+guest image's 64 MB window has little room (port/android/guest/guest.ld).
+Without it, OUTPUT.c has them too, and an embedded_asset that points at
+them.
 
 The data are 32-bit words, not bytes: the Android build passes the guest's
 assembly through tools/android_asm_convert.py, which rewrites identifiers in
@@ -221,18 +230,20 @@ def words(data: bytes) -> List[str]:
             for start in range(0, len(values), 8)]
 
 
-def hud_assets_build(n: Any, prefix: str, output: Path) -> List[Path]:
-    """Emits the rule that generates output; returns [output]. It is made
+def hud_assets_build(n: Any, prefix: str, output: Path, host_output: Optional[Path] = None) -> List[Path]:
+    """Emits the rule that generates output (and host_output, the files a
+    guest image's host keeps for it: --host); returns [output]. It is made
     whatever assets the checkout has (with none, its tables are empty), so
     that the symbols the platform layer refers to are always defined."""
     platform = platform_of(prefix)
     inputs = hud_asset_inputs(platform)
     n.rule(
         name=f"{prefix}_embed_assets",
-        command="$python tools/embed_assets.py " + (f"--platform {platform} " if platform else "") + "$out",
-        description=f"{prefix.upper()} EMBED $out",
+        command="$python tools/embed_assets.py " + (f"--platform {platform} " if platform else "") +
+                (f"--host {host_output} " if host_output else "") + f"{output}",
+        description=f"{prefix.upper()} EMBED {output}",
     )
-    n.build(outputs=output, rule=f"{prefix}_embed_assets",
+    n.build(outputs=[output, host_output] if host_output else output, rule=f"{prefix}_embed_assets",
             implicit=[Path("tools/embed_assets.py"), CREDITS_TEXT.relative_to(ROOT), *inputs, *news_inputs()])
     return [output]
 
@@ -253,6 +264,101 @@ def server_ui_build(n: Any, prefix: str, output: Path) -> List[Path]:
     return [output]
 
 
+def guest_accessor(sizes: List[int]) -> List[str]:
+    """The guest's embedded_asset (embedded_assets.h): a file copied from the
+    host into the guest's memory the first time, then kept (two threads that
+    both ask keep one copy)."""
+    count = len(sizes)
+    return [
+        "",
+        "#include <stdint.h>",
+        "#include <stdlib.h>",
+        "",
+        '#include "embedded_assets.h"',
+        "",
+        "/* the host's (port/android/guest/runtime/guest_host.h) */",
+        "int host_embedded_asset_read(unsigned int asset, unsigned int destination, unsigned int size);",
+        "",
+        f"#define EMBEDDED_ASSET_COUNT {count}u",
+        "static const unsigned int embedded_asset_sizes[EMBEDDED_ASSET_COUNT + 1] = {",
+        *(f"	{size}," for size in sizes),
+        "	0,",
+        "};",
+        "static void *embedded_asset_copies[EMBEDDED_ASSET_COUNT + 1];",
+        "",
+        "const void *embedded_asset(unsigned int asset)",
+        "{",
+        "	void *copy;",
+        "	void *expected = NULL;",
+        "	unsigned int size;",
+        "",
+        "	if (asset >= EMBEDDED_ASSET_COUNT)",
+        "		return NULL;",
+        "	copy = __atomic_load_n(&embedded_asset_copies[asset], __ATOMIC_ACQUIRE);",
+        "	if (copy)",
+        "		return copy;",
+        "	size = embedded_asset_sizes[asset];",
+        "	copy = malloc(size + 1);",
+        "	if (!copy)",
+        "		return NULL;",
+        "	if (!host_embedded_asset_read(asset, (unsigned int)(uintptr_t)copy, size))",
+        "	{",
+        "		free(copy);",
+        "		return NULL;",
+        "	}",
+        "	((unsigned char *)copy)[size] = 0;",
+        "	if (!__atomic_compare_exchange_n(&embedded_asset_copies[asset], &expected, copy, 0, __ATOMIC_ACQ_REL,",
+        "		__ATOMIC_ACQUIRE))",
+        "	{",
+        "		free(copy);",
+        "		copy = expected;",
+        "	}",
+        "	return copy;",
+        "}",
+    ]
+
+
+def host_file(blobs: List[tuple]) -> List[str]:
+    """HOST.c: the files, and host_embedded_asset_read, which copies one into
+    the guest's memory (its addresses the host's own)."""
+    lines = ["/* generated by tools/embed_assets.py from port/assets: do not edit */", "",
+             "#include <stdint.h>", "#include <string.h>", ""]
+    for symbol, data in blobs:
+        lines.append(f"static const unsigned int {symbol}[] = {{")
+        lines.extend(words(data))
+        lines.append("};")
+        lines.append("")
+    lines.append(f"#define EMBEDDED_ASSET_COUNT {len(blobs)}u")
+    lines.append("static const struct { const unsigned int *words; unsigned int size; } "
+                 "embedded_assets[EMBEDDED_ASSET_COUNT + 1] =")
+    lines.append("{")
+    lines.extend(f"	{{ {symbol}, {len(data)} }}," for symbol, data in blobs)
+    lines.append("	{ 0, 0 },")
+    lines.append("};")
+    lines += [
+        "",
+        "/* the asset's bytes, when it is of that size (the host's own reads: host_embedded_assets.h) */",
+        "const unsigned char *host_embedded_asset_bytes(unsigned int asset, unsigned int size)",
+        "{",
+        "\tif (asset >= EMBEDDED_ASSET_COUNT || size != embedded_assets[asset].size)",
+        "\t\treturn 0;",
+        "\treturn (const unsigned char *)embedded_assets[asset].words;",
+        "}",
+        "",
+        "/* the asset's bytes into the guest's memory at destination, size of them (its size, or none is",
+        "copied): 1 if they are */",
+        "int host_embedded_asset_read(unsigned int asset, unsigned int destination, unsigned int size)",
+        "{",
+        "	if (asset >= EMBEDDED_ASSET_COUNT || !destination || size != embedded_assets[asset].size)",
+        "		return 0;",
+        "	memcpy((void *)(uintptr_t)destination, embedded_assets[asset].words, size);",
+        "	return 1;",
+        "}",
+        "",
+    ]
+    return lines
+
+
 def png_size(data: bytes, name: str) -> tuple:
     """The width and height of an 8-bit RGBA, non-interlaced PNG (the only
     kind port/linux/src/hud_hires.c reads)."""
@@ -267,10 +373,26 @@ def png_size(data: bytes, name: str) -> tuple:
 def main() -> None:
     arguments = sys.argv[1:]
     platform = None
-    if len(arguments) == 3 and arguments[0] == "--platform":
+    host_output = None
+    if len(arguments) >= 3 and arguments[0] == "--platform":
         platform, arguments = arguments[1], arguments[2:]
+    if len(arguments) >= 3 and arguments[0] == "--host":
+        host_output, arguments = Path(arguments[1]), arguments[2:]
     if len(arguments) != 1:
-        sys.exit("usage: embed_assets.py [--platform PORT] OUTPUT.c")
+        sys.exit("usage: embed_assets.py [--platform PORT] [--host HOST.c] OUTPUT.c")
+    # the numbered files (embedded_assets.h): their symbols and bytes, in order
+    blobs = []
+
+    def blob(symbol: str, data: bytes) -> int:
+        blobs.append((symbol, data))
+        if host_output is None:
+            # (in this file, with a NUL after the bytes, as the guest's copies have)
+            lines.append(f"static const unsigned int {symbol}[] = {{")
+            lines.extend(words(data + b"\0"))
+            lines.append("};")
+            lines.append("")
+        return len(blobs) - 1
+
     lines = [
         "/* generated by tools/embed_assets.py from port/assets: do not edit */",
         "",
@@ -288,10 +410,7 @@ def main() -> None:
         scale = asset["scale"]
         if (width, height) != (asset["width"] * scale, asset["height"] * scale):
             sys.exit(f"{name}: {width}x{height}, not {scale}x its bitmap's {asset['width']}x{asset['height']}")
-        lines.append(f"static const unsigned int asset{index}[] = {{")
-        lines.extend(words(data))
-        lines.append("};")
-        lines.append("")
+        number = blob(f"asset{index}", data)
         tag = asset["tag"].replace("\\", "\\\\")
         coverage = int(asset.get("coverage", False) or any(cell.get("kind") == "meter" for cell in asset.get("cells", [])))
         point_threshold = int(asset.get("point_threshold", False) or any(cell.get("thresholds") for cell in asset.get("cells", [])))
@@ -306,7 +425,7 @@ def main() -> None:
         table.append(f'\t{{ "{tag}", {asset["bitmap"]}, {width}, {height}, 0x{asset["crc"]:08x}u, {coverage}, '
                      f'{point_threshold}, {int(title)}, 0x{sprites:x}u, '
                      f'{int(bool(ce))}, {int(asset.get("ce_only", False))}, {ce.get("width", 0)}, {ce.get("height", 0)}, '
-                     f'{ce.get("size", 0)}, 0x{ce.get("crc", 0):08x}u, asset{index}, {len(data)}, {contexts} }},')
+                     f'{ce.get("size", 0)}, 0x{ce.get("crc", 0):08x}u, {number}u, {len(data)}, {contexts} }},')
     lines.append("const struct hud_hires_embedded hud_hires_embedded[] =")
     lines.append("{")
     lines.extend(table)
@@ -327,11 +446,7 @@ def main() -> None:
     lines.append('#include "text_hires.h"')
     lines.append("")
     files = font_files()
-    for index, name in enumerate(files):
-        lines.append(f"static const unsigned int font{index}[] = {{")
-        lines.extend(words((ROOT / FONT_ASSETS / name).read_bytes()))
-        lines.append("};")
-        lines.append("")
+    font_numbers = [blob(f"font{index}", (ROOT / FONT_ASSETS / name).read_bytes()) for index, name in enumerate(files)]
     fonts = json.loads((ROOT / FONT_LIST).read_text())["fonts"] if files else []
     lines.append("const struct text_hires_embedded text_hires_embedded[] =")
     lines.append("{")
@@ -339,7 +454,7 @@ def main() -> None:
         index = files.index(font["file"])
         tag = font["tag"].replace("\\", "\\\\")
         size = (ROOT / FONT_ASSETS / font["file"]).stat().st_size
-        lines.append(f'\t{{ "{tag}", "{font["file"]}", font{index}, {size} }},')
+        lines.append(f'\t{{ "{tag}", "{font["file"]}", {font_numbers[index]}u, {size} }},')
     if not fonts:
         lines.append("\t{ 0 },")
     lines.append("};")
@@ -349,19 +464,17 @@ def main() -> None:
     lines.append('#include "menu_files.h"')
     lines.append("")
     menus = menu_files()
+    menu_numbers = []
     for index, name in enumerate(menus):
         data = (ROOT / MENU_ASSETS / name).read_bytes()
         if name.endswith(".png"):
             png_size(data, name)
-        lines.append(f"static const unsigned int menu{index}[] = {{")
-        lines.extend(words(data))
-        lines.append("};")
-        lines.append("")
+        menu_numbers.append(blob(f"menu{index}", data))
     lines.append("const struct menu_file_embedded menu_files_embedded[] =")
     lines.append("{")
     for index, name in enumerate(menus):
         size = (ROOT / MENU_ASSETS / name).stat().st_size
-        lines.append(f'\t{{ "{name}", menu{index}, {size} }},')
+        lines.append(f'\t{{ "{name}", {menu_numbers[index]}u, {size} }},')
     if not menus:
         lines.append("\t{ 0 },")
     lines.append("};")
@@ -412,6 +525,20 @@ def main() -> None:
     lines.append(f"const unsigned long platform_menu_cursor_size = {len(data)};")
     lines.append("")
     lines.append("#endif")
+    # the numbered files' accessor (embedded_assets.h): the host's copies, or these
+    if host_output is not None:
+        lines.extend(guest_accessor([len(data) for _, data in blobs]))
+    else:
+        lines += ["", '#include "embedded_assets.h"', "",
+                  "static const unsigned int *const embedded_asset_words[] =", "{",
+                  *(f"\t{symbol}," for symbol, _ in blobs), "\t0,", "};", "",
+                  "const void *embedded_asset(unsigned int asset)", "{",
+                  f"\treturn asset < {len(blobs)}u ? embedded_asset_words[asset] : 0;", "}"]
+    if host_output is not None:
+        host_output.parent.mkdir(parents=True, exist_ok=True)
+        host_text = "\n".join(host_file(blobs))
+        if not host_output.is_file() or host_output.read_text() != host_text:
+            host_output.write_text(host_text)
     output = Path(arguments[0])
     output.parent.mkdir(parents=True, exist_ok=True)
     text = "\n".join(lines) + "\n"

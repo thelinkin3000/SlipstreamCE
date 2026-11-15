@@ -16,6 +16,7 @@ png_decode reads them, inflated with the port's zlib (port/third_party/zlib, its
 */
 
 #include "host.h"
+#include "host_embedded_assets.h"
 #include "host_vk.h"
 
 #include "zlib_prefixed.h"
@@ -116,7 +117,9 @@ buffer aligned and rounded to HUD_ALIGNMENT, written back from the
 CPU's cache; 0 if it is not one tools/hud_assets.py writes */
 static int hud_decode(const unsigned char *data, uint32_t size, struct hud_levels *levels)
 {
-	uint32_t width = size >= 33 ? big_endian(data + 16) : 0, height = size >= 33 ? big_endian(data + 20) : 0;
+	/* (no data: a PNG not among the host's, host_embedded_asset_bytes) */
+	uint32_t width = data && size >= 33 ? big_endian(data + 16) : 0;
+	uint32_t height = data && size >= 33 ? big_endian(data + 20) : 0;
 	uint32_t stride = width * 4, position = 8, level, row, column;
 	unsigned long filtered_size = (unsigned long)height * (stride + 1), total = 0, compressed_size = 0, at;
 	uLongf inflated_size = filtered_size;
@@ -124,7 +127,7 @@ static int hud_decode(const unsigned char *data, uint32_t size, struct hud_level
 	int result;
 
 	memset(levels, 0, sizeof(*levels));
-	if (size < 33 || memcmp(data, "\x89PNG\r\n\x1a\n", 8) || memcmp(data + 12, "IHDR", 4) || !width || !height ||
+	if (!data || size < 33 || memcmp(data, "\x89PNG\r\n\x1a\n", 8) || memcmp(data + 12, "IHDR", 4) || !width || !height ||
 		width > 8192 || height > 8192 || data[24] != 8 || data[25] != 6 || data[28] != 0)
 		return 0;
 	levels->width = width;
@@ -282,7 +285,7 @@ static void *sheet_thread(void *unused)
 		pthread_mutex_unlock(&lock);
 
 		start = now_ns();
-		decoded = hud_decode((const unsigned char *)(uintptr_t)png, png_size, &levels);
+		decoded = hud_decode(host_embedded_asset_bytes(png, png_size), png_size, &levels);
 
 		pthread_mutex_lock(&lock);
 		if (sheets[asset].forgotten)
@@ -353,11 +356,11 @@ static void sheet_queue(uint32_t asset, uint32_t png, uint32_t png_size, uint32_
 has none) */
 static uint64_t sheet_bytes(uint32_t png, uint32_t png_size)
 {
-	const unsigned char *data = (const unsigned char *)(uintptr_t)png;
+	const unsigned char *data = host_embedded_asset_bytes(png, png_size);
 	uint32_t width, height, level = 0;
 	uint64_t total = 0;
 
-	if (png_size < 24)
+	if (!data || png_size < 24)
 		return 0;
 	width = big_endian(data + 16);
 	height = big_endian(data + 20);
@@ -500,7 +503,7 @@ void host_vk_hud_image_command(const struct vk_command_hud_image *command)
 	struct hud_levels levels;
 
 	if (!hud_take(command->sheet.asset, &levels) &&
-		!hud_decode((const unsigned char *)(uintptr_t)command->sheet.png, command->sheet.png_size, &levels))
+		!hud_decode(host_embedded_asset_bytes(command->sheet.png, command->sheet.png_size), command->sheet.png_size, &levels))
 	{
 		host_logf(HOST_LOG_WARN, "vk: high-res hud: %s (sheet %u) could not be decoded",
 			command->sheet.tag ? (const char *)(uintptr_t)command->sheet.tag : "?", (unsigned)command->sheet.asset);

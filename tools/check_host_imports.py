@@ -387,7 +387,7 @@ def host_sources(root: Path) -> List[Path]:
 def inputs() -> List[Path]:
     """The files a check reads, but for the other declarations' folders (the
     build's dependencies)."""
-    return [*IMPORT_LISTS, *LISTED_DECLARATIONS, POSIX_HEADER,
+    return [*IMPORT_LISTS, *LISTED_DECLARATIONS, POSIX_HEADER, Path("tools/embed_assets.py"),
             *(path.relative_to(ROOT) for path in host_sources(ROOT))]
 
 
@@ -412,6 +412,12 @@ def check_repository(root: Path) -> List[str]:
         for definition in parse_definitions(path.read_text(encoding="utf-8", errors="replace"),
                                             str(path.relative_to(root))):
             definitions.setdefault(definition.name, []).append(definition)
+    # (and those of the file the build generates for each host: the embedded
+    # files' host_embedded_asset_read, tools/embed_assets.py --host)
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import embed_assets
+    for definition in parse_definitions("\n".join(embed_assets.host_file([])), "tools/embed_assets.py (host_file)"):
+        definitions.setdefault(definition.name, []).append(definition)
     return check(lists, listed_declarations, other, posix, definitions)
 
 

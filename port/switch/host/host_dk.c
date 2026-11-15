@@ -38,6 +38,7 @@ give.
 */
 
 #include "host.h"
+#include "../../android/host/host_embedded_assets.h"
 #include "../guest/dk_commands.h"
 
 #include <deko3d.h>
@@ -3136,8 +3137,8 @@ static void hud_image_receive(const struct dk_command_hud_image *command)
 	{
 		/* (let go since the guest was told it was ready: a map's change) */
 		late = 1;
-		if (!host_dk_hud_decode((const unsigned char *)(uintptr_t)command->sheet.png, command->sheet.png_size,
-			&levels))
+		if (!host_dk_hud_decode(host_embedded_asset_bytes(command->sheet.png, command->sheet.png_size),
+			command->sheet.png_size, &levels))
 		{
 			texture_problem("high-res hud sheet %u could not be decoded for image %u", (unsigned)command->sheet.asset,
 				(unsigned)command->id);

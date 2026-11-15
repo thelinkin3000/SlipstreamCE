@@ -561,7 +561,9 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
         if (source.name.startswith("posix_") and source.name != "posix_server.c") or source.name in guest_host_only or source.name in opengl_only:
             continue
         objects.append(guest_object(source, platform_cflags))
-    for source in hud_assets_build(n, "switch", gen_dir / "hud_hires_assets.c"):
+    # (the tables here, the files' bytes the host's: embed_assets.py --host, embedded_assets.h)
+    host_assets_c = gen_dir / "embedded_assets_host.c"
+    for source in hud_assets_build(n, "switch", gen_dir / "hud_hires_assets.c", host_assets_c):
         objects.append(guest_object(source, platform_cflags))
     objects.append(guest_object(TOML_DIR / "tomlc17.c", platform_cflags))
     # the menus' XML parser (port/third_party/expat; menu_files.c)
@@ -864,6 +866,10 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
     table_obj = host_obj_dir / "host_import_table.c.o"
     n.build(outputs=table_obj, rule="switch_host_cc", inputs=host_table_c, variables={"cflags": host_cflags})
     host_objects.append(table_obj)
+    # the files the guest image's tables number (embed_assets.py --host)
+    assets_obj = host_obj_dir / "embedded_assets_host.c.o"
+    n.build(outputs=assets_obj, rule="switch_host_cc", inputs=host_assets_c, variables={"cflags": host_cflags})
+    host_objects.append(assets_obj)
 
     # The host is linked to an ELF and then packaged into an NRO.
     #

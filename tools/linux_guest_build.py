@@ -277,6 +277,10 @@ def _generate(n: Writer, sln: Any, target: LinuxGuest, config_path: Path, third_
     n.build(outputs=table_obj, rule=host_cc, inputs=guest["host_table_c"],
             variables={"cflags": host_cflags})
     host_objects.append(table_obj)
+    # the files the guest image's tables number (embed_assets.py --host)
+    assets_obj = host_obj_dir / "embedded_assets_host.c.o"
+    n.build(outputs=assets_obj, rule=host_cc, inputs=guest["host_assets_c"], variables={"cflags": host_cflags})
+    host_objects.append(assets_obj)
     # the guest image, inside the executable (host_main.c)
     image_obj = host_obj_dir / "guest_image.S.o"
     n.build(outputs=image_obj, rule=host_cc, inputs=PORT_DIR / "guest_image.S",

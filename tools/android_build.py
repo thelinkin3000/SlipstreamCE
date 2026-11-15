@@ -620,8 +620,11 @@ def generate_guest_image(n: Writer, sln: Any, config: Dict[str, Any], *, arch: G
             gl_post_object = objects[-1]
         if source.name == "xbox_textures.c":
             gl_textures_object = objects[-1]
-    # the high-res HUD's textures (port/assets/hud; port/linux/src/hud_hires.c)
-    for source in hud_assets_build(n, prefix, gen_dir / "hud_hires_assets.c"):
+    # the high-res HUD's textures (port/assets/hud; port/linux/src/hud_hires.c), the fonts and the menus' files:
+    # their tables here, their bytes the host's (host_assets_c: embed_assets.py --host, embedded_assets.h), as the
+    # image's 64 MB window has little room (guest.ld)
+    host_assets_c = gen_dir / "embedded_assets_host.c"
+    for source in hud_assets_build(n, prefix, gen_dir / "hud_hires_assets.c", host_assets_c):
         objects.append(guest_object(source, platform_cflags))
     # the settings file's parser (port/third_party/tomlc17)
     objects.append(guest_object(TOML_DIR / "tomlc17.c", platform_cflags))
@@ -728,7 +731,7 @@ def generate_guest_image(n: Writer, sln: Any, config: Dict[str, Any], *, arch: G
     )
     n.build(outputs=checked, rule=f"{prefix}_guest_check", inputs=image,
             implicit=[Path("tools/guest_image_check.py"), GUEST_ARCH_SCRIPT])
-    result = {"image": image, "checked": checked, "host_table_c": host_table_c}
+    result = {"image": image, "checked": checked, "host_table_c": host_table_c, "host_assets_c": host_assets_c}
     if relocatable:
         result["relocations"] = relocations
 
@@ -973,6 +976,10 @@ def generate_android_build(n: Writer, sln: Any) -> None:
     table_obj = host_obj_dir / "host_import_table.c.o"
     n.build(outputs=table_obj, rule="android_host_cc", inputs=host_table_c, variables={"cflags": host_cflags})
     host_objects.append(table_obj)
+    # the files the guest image's tables number (embed_assets.py --host)
+    assets_obj = host_obj_dir / "embedded_assets_host.c.o"
+    n.build(outputs=assets_obj, rule="android_host_cc", inputs=guest["host_assets_c"], variables={"cflags": host_cflags})
+    host_objects.append(assets_obj)
     n.rule(
         name="android_host_link",
         command=(f"$android_host_cc -shared -o $out $in -L{sdl_build} "

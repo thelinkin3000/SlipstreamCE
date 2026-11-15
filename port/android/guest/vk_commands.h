@@ -149,7 +149,8 @@ decoded and not drawn for the map before is let go first: VK_COMMAND_HUD_FORGET)
 struct vk_hud_sheet
 {
 	uint32_t asset;
-	/* guest addresses: the PNG, and the bitmap's tag name (for the log) */
+	/* the PNG: its number among the host's embedded files (host_embedded_assets.h), and its size; the
+	bitmap's tag name, a guest address (for the log) */
 	uint32_t png;
 	uint32_t png_size;
 	uint32_t tag;

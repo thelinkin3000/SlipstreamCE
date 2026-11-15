@@ -17,6 +17,7 @@ scale (a window made fullscreen) or a full atlas starts it over.
 */
 
 #include "text_hires.h"
+#include "embedded_assets.h"
 #include "platform.h"
 #include "port_config.h"
 #include "xgpu.h"
@@ -158,11 +159,14 @@ long text_hires_font(char const *tag_name, float cap_height, short const *letter
 	for (index = 0; index < text_hires_embedded_count; index++)
 	{
 		const struct text_hires_embedded *embedded = &text_hires_embedded[index];
-		const unsigned char *data = (const unsigned char *)embedded->data;
+		const unsigned char *data;
 
 		if (!embedded->tag || names_differ(embedded->tag, tag_name))
 			continue;
-		if (!stbtt_InitFont(&fonts[font].info, data, stbtt_GetFontOffsetForIndex(data, 0)) ||
+		/* (the font file, the host's on a guest image: embedded_assets.h; kept for
+		the run, as stb_truetype reads it from then on) */
+		data = (const unsigned char *)embedded_asset(embedded->asset);
+		if (!data || !stbtt_InitFont(&fonts[font].info, data, stbtt_GetFontOffsetForIndex(data, 0)) ||
 			!stbtt_GetCodepointBox(&fonts[font].info, 'H', &x0, &y0, &x1, &y1) || y1 <= y0)
 		{
 			platform_log("high-res text: could not read %s for %s", embedded->file, tag_name);

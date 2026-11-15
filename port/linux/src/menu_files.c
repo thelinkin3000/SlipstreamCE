@@ -19,6 +19,7 @@ high-res HUD's are (hud_hires.c).
 
 #include "halo_menus.h"
 #include "hud_hires.h"
+#include "embedded_assets.h"
 #include "menu_files.h"
 #include "platform.h"
 #include "port_config.h"
@@ -42,9 +43,12 @@ high-res HUD's are (hud_hires.c).
 struct menu_file
 {
 	char *path;
+	/* its bytes: NULL until first read for a built-in file, which is the
+	embedded asset numbered asset (-1 for any other: embedded_assets.h) */
 	const unsigned char *data;
 	unsigned long size;
 	int loaded;
+	long asset;
 };
 
 static struct menu_file *files;
@@ -54,6 +58,16 @@ static char folder[1024];
 not, none of its files is looked for. Each embedded file's was, a failed
 open each, some 95 of them at every start on the Switch's card. */
 static int folder_present;
+
+/* a file's bytes: a built-in one's fetched the first time (embedded_asset:
+on a guest image, a copy of the host's, kept for the run); NULL if they
+cannot be had */
+static const unsigned char *file_bytes(struct menu_file *file)
+{
+	if (!file->data && file->asset >= 0)
+		file->data = (const unsigned char *)embedded_asset((unsigned int)file->asset);
+	return file->data;
+}
 
 static long file_find(const char *path)
 {
@@ -98,6 +112,7 @@ static long file_add(const char *path, const unsigned char *data, unsigned long 
 	}
 	files[index].data = data;
 	files[index].size = size;
+	files[index].asset = -1;
 	files[index].loaded = loaded;
 	return index;
 }
@@ -173,7 +188,11 @@ static void files_gather(void)
 		}
 		else
 		{
-			file_add(embedded->path, (const unsigned char *)embedded->data, embedded->size, 0);
+			/* (its bytes fetched when first read: file_bytes) */
+			long added = file_add(embedded->path, NULL, embedded->size, 0);
+
+			if (added >= 0)
+				files[added].asset = (long)embedded->asset;
 		}
 	}
 #ifndef HALO_ANDROID
@@ -258,7 +277,7 @@ static const unsigned char *file_data(const char *path, unsigned long *size)
 			return NULL;
 	}
 	*size = files[index].size;
-	return files[index].data;
+	return file_bytes(&files[index]);
 }
 
 /* ---------- reading */
@@ -935,8 +954,10 @@ static void XMLCALL text(void *data, const XML_Char *characters, int length)
 	}
 }
 
-static int read_file(struct reader *reader, const struct menu_file *file)
+static int read_file(struct reader *reader, struct menu_file *file)
 {
+	const unsigned char *bytes = file_bytes(file);
+
 	reader->file = file->path;
 	reader->depth = 0;
 	reader->skipping = 0;
@@ -950,7 +971,12 @@ static int read_file(struct reader *reader, const struct menu_file *file)
 	XML_SetUserData(reader->parser, reader);
 	XML_SetElementHandler(reader->parser, element_start, element_end);
 	XML_SetCharacterDataHandler(reader->parser, text);
-	if (XML_Parse(reader->parser, (const char *)file->data, (int)file->size, XML_TRUE) == XML_STATUS_ERROR &&
+	if (!bytes)
+	{
+		platform_log("menus: %s: its built-in copy could not be had", file->path);
+		reader->failed = 1;
+	}
+	else if (XML_Parse(reader->parser, (const char *)bytes, (int)file->size, XML_TRUE) == XML_STATUS_ERROR &&
 		!reader->failed)
 	{
 		platform_log("menus: %s:%lu:%lu: %s", file->path, (unsigned long)XML_GetCurrentLineNumber(reader->parser),

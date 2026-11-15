@@ -18,7 +18,8 @@ struct text_hires_embedded
 {
 	const char *tag;
 	const char *file;
-	const unsigned int *data;
+	/* the font file: its number (embedded_asset, embedded_assets.h) and size */
+	unsigned int asset;
 	unsigned int size;
 };
 

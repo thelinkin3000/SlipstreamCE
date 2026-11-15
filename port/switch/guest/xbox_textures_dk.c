@@ -29,6 +29,7 @@ a time, and only the atlas's rows that changed are sent again.
 #include "port_config.h"
 #include "dk_commands.h"
 #include "dk_textures.h"
+#include "embedded_assets.h"
 #include "hud_hires.h"
 #include "mcc_texture_bridge.h"
 #include "menu_files.h"
@@ -1063,7 +1064,8 @@ static void hud_sheet_fill(long asset, struct dk_hud_sheet *sheet)
 	const struct hud_hires_embedded *embedded = &hud_hires_embedded[asset];
 
 	sheet->asset = (uint32_t)asset;
-	sheet->png = (uint32_t)(uintptr_t)embedded->png;
+	/* (the host's own copy of the PNG, by its number: host_embedded_assets.h) */
+	sheet->png = embedded->png_asset;
 	sheet->png_size = embedded->png_size;
 	sheet->tag = (uint32_t)(uintptr_t)embedded->tag;
 }
@@ -1100,13 +1102,12 @@ static uint32_t hud_image(long asset, unsigned long *levels)
 	if (!hud_images[asset].tried)
 	{
 		const struct hud_hires_embedded *embedded = &hud_hires_embedded[asset];
-		const unsigned char *png = (const unsigned char *)embedded->png;
 		int answer;
 
 		if (hud_images[asset].asked_frame == texture_frame + 1)
 			return 0;
 		hud_images[asset].asked_frame = texture_frame + 1;
-		answer = host_dk_hud_ready((unsigned int)asset, (unsigned int)(uintptr_t)embedded->png, embedded->png_size,
+		answer = host_dk_hud_ready((unsigned int)asset, embedded->png_asset, embedded->png_size,
 			(unsigned int)(uintptr_t)embedded->tag);
 		if (!answer)
 			return 0;
@@ -1114,8 +1115,9 @@ static uint32_t hud_image(long asset, unsigned long *levels)
 		if (answer > 0 && embedded->png_size >= 24 && (hud_images[asset].id = id_take()) != 0)
 		{
 			struct dk_command_hud_image *command = dk_stream_command(DK_COMMAND_HUD_IMAGE, sizeof(*command));
-			unsigned long width = (unsigned long)png[16] << 24 | png[17] << 16 | png[18] << 8 | png[19];
-			unsigned long height = (unsigned long)png[20] << 24 | png[21] << 16 | png[22] << 8 | png[23];
+			/* (the PNG's size, as its header gives it: embed_assets.py's png_size) */
+			unsigned long width = embedded->width;
+			unsigned long height = embedded->height;
 			unsigned long largest = width > height ? width : height;
 
 			command->id = hud_images[asset].id;

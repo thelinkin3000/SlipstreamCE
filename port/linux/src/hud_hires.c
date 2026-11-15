@@ -24,6 +24,7 @@ zlib (port/third_party/zlib).
 */
 
 #include "hud_hires.h"
+#include "embedded_assets.h"
 #include "platform.h"
 #include "port_config.h"
 #include "xgpu.h"
@@ -356,7 +357,7 @@ int hud_hires_sprites_drawable(long asset, unsigned long address, unsigned long 
 	if (!textures[asset].decodes)
 	{
 		unsigned long width, height;
-		unsigned char *pixels = hud_hires_png_pixels(hud_hires_embedded[asset].png, hud_hires_embedded[asset].png_size,
+		unsigned char *pixels = hud_hires_png_pixels(embedded_asset(hud_hires_embedded[asset].png_asset), hud_hires_embedded[asset].png_size,
 			&width, &height);
 
 		textures[asset].decodes = pixels ? 1 : -1;
@@ -531,7 +532,7 @@ static void upscale_outline(unsigned char *pixels, const unsigned char *bgra,
 
 		if (strcmp(embedded->tag, name))
 			continue;
-		outline = png_decode((const unsigned char *)embedded->png, embedded->png_size, &png_width, &png_height);
+		outline = png_decode((const unsigned char *)embedded_asset(embedded->png_asset), embedded->png_size, &png_width, &png_height);
 		if (outline && png_width == width * 4 && png_height == height * 4)
 			for (row = top * 4; row < bottom * 4; row++)
 				memcpy(pixels + (row * width * 4 + left * 4) * 4,
@@ -601,15 +602,16 @@ static unsigned char *png_decode(const unsigned char *data, unsigned long size, 
 	unsigned long *png_height)
 {
 	unsigned long position = 8;
-	unsigned long width = size >= 33 ? big_endian_long(data + 16) : 0;
-	unsigned long height = size >= 33 ? big_endian_long(data + 20) : 0;
+	/* (no data: an embedded PNG the host could not give, embedded_asset) */
+	unsigned long width = data && size >= 33 ? big_endian_long(data + 16) : 0;
+	unsigned long height = data && size >= 33 ? big_endian_long(data + 20) : 0;
 	unsigned long stride = width * 4, filtered_size = height * (stride + 1);
 	unsigned char *compressed = NULL, *filtered = NULL, *pixels = NULL;
 	unsigned long compressed_size = 0, row, column;
 	uLongf inflated_size = filtered_size;
 	int result;
 
-	if (size < 33 || memcmp(data, "\x89PNG\r\n\x1a\n", 8) || memcmp(data + 12, "IHDR", 4) ||
+	if (!data || size < 33 || memcmp(data, "\x89PNG\r\n\x1a\n", 8) || memcmp(data + 12, "IHDR", 4) ||
 		!width || !height || width > 8192 || height > 8192 ||
 		data[24] != 8 || data[25] != 6 || data[28] != 0)
 		return NULL;
@@ -782,7 +784,7 @@ unsigned int hud_hires_override_texture(long asset, unsigned long *levels)
 		pthread_mutex_unlock(&decode_lock);
 #endif
 		if (!decoded)
-			pixels = png_decode((const unsigned char *)embedded->png, embedded->png_size, &width, &height);
+			pixels = png_decode((const unsigned char *)embedded_asset(embedded->png_asset), embedded->png_size, &width, &height);
 		textures[asset].texture = png_pixels_texture(pixels, width, height, &textures[asset].levels);
 	}
 	if (!textures[asset].texture)
@@ -822,7 +824,7 @@ static void *decode_thread_main(void *unused)
 		}
 		textures[asset].decode_state = _decode_decoding;
 		pthread_mutex_unlock(&decode_lock);
-		pixels = png_decode((const unsigned char *)embedded->png, embedded->png_size, &width, &height);
+		pixels = png_decode((const unsigned char *)embedded_asset(embedded->png_asset), embedded->png_size, &width, &height);
 		pthread_mutex_lock(&decode_lock);
 		textures[asset].pixels = pixels;
 		textures[asset].width = width;
