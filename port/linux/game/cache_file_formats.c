@@ -110,6 +110,10 @@ an empty name for tags whose own is unusable */
 /* the scenario's structure BSP block (OpenSauce scenario_definitions.hpp;
 the offset holds in every map examined) */
 #define SCENARIO_STRUCTURE_BSPS_OFFSET 0x5A4
+/* its scripts' syntax data (a data array of script nodes) and string
+constants (OpenSauce scenario_definitions.hpp) */
+#define SCENARIO_HS_SYNTAX_DATA_OFFSET 0x474
+#define SCENARIO_HS_STRING_CONSTANTS_OFFSET 0x488
 #define SCENARIO_BYTES 0x5B0
 
 #define STRUCTURE_BSP_REFERENCE_BYTES 0x20
@@ -2250,9 +2254,55 @@ static enum cache_file_status halo_pc_sound_place(
 
 /* a Halo PC map's unicode string list whose strings lie outside its tags
 (a menu's that a multiplayer map holds and Halo PC never read: outback_3's
-var_kill_penalty): each such string emptied, as it reads there */
+var_kill_penalty, whose own block overlaps another tag's bytes too): the
+list is junk, and emptied whole (no strings) */
+/* the map's tags' addresses, in order (halo_pc_strings_check) */
+struct halo_pc_tag_starts
+{
+	uint32_t *addresses;
+	int32_t count;
+};
+
+static int compare_addresses(
+	void const *a,
+	void const *b)
+{
+	uint32_t x = *(uint32_t const *)a;
+	uint32_t y = *(uint32_t const *)b;
+
+	return x < y ? -1 : x > y;
+}
+
+/* whether a tag begins in [start, end) */
+static int halo_pc_tag_starts_within(
+	struct halo_pc_tag_starts const *starts,
+	uint32_t start,
+	uint32_t end)
+{
+	int32_t low = 0;
+	int32_t high = starts->count;
+
+	/* (the first tag at start or after it) */
+	while (low < high)
+	{
+		int32_t middle = low + (high - low) / 2;
+
+		if (starts->addresses[middle] < start)
+		{
+			low = middle + 1;
+		}
+		else
+		{
+			high = middle;
+		}
+	}
+
+	return low < starts->count && starts->addresses[low] < end;
+}
+
 static enum cache_file_status halo_pc_strings_check(
 	struct load_state *state,
+	struct halo_pc_tag_starts const *starts,
 	uint32_t list_offset)
 {
 	uint8_t *list = state->tag_cache + list_offset;
@@ -2260,33 +2310,35 @@ static enum cache_file_status halo_pc_strings_check(
 	uint32_t address = read_u32(list + UNICODE_STRING_LIST_STRINGS_OFFSET + TAG_BLOCK_ADDRESS_OFFSET);
 	uint32_t strings_offset;
 	int32_t index;
+	int junk = 0;
 
 	if (count <= 0)
 	{
 		return _cache_file_status_ok;
 	}
+	/* (or whose strings run into another tag: imminent_1's var_kill_penalty) */
 	if (count > BITMAP_GROUP_BITMAP_COUNT_LIMIT ||
-		!tag_cache_offset(state, address, (uint32_t)count * TAG_DATA_BYTES, &strings_offset))
+		!tag_cache_offset(state, address, (uint32_t)count * TAG_DATA_BYTES, &strings_offset) ||
+		halo_pc_tag_starts_within(starts, address, address + (uint32_t)count * TAG_DATA_BYTES))
 	{
-		/* (the block itself unreadable: no strings) */
+		junk = 1;
+	}
+	for (index = 0; !junk && index < count; index++)
+	{
+		uint8_t const *string = state->tag_cache + strings_offset + (uint32_t)index * TAG_DATA_BYTES;
+		int32_t size = read_s32(string + TAG_DATA_SIZE_OFFSET);
+		uint32_t string_address = read_u32(string + TAG_DATA_ADDRESS_OFFSET);
+		uint32_t offset;
+
+		junk = size < 0 ||
+			(size > 0 && (!tag_cache_offset(state, string_address, (uint32_t)size, &offset) ||
+				halo_pc_tag_starts_within(starts, string_address, string_address + (uint32_t)size)));
+	}
+	if (junk)
+	{
 		write_u32(list + UNICODE_STRING_LIST_STRINGS_OFFSET + TAG_BLOCK_COUNT_OFFSET, 0);
 		write_u32(list + UNICODE_STRING_LIST_STRINGS_OFFSET + TAG_BLOCK_ADDRESS_OFFSET, 0);
 		state->report->halo_pc_strings_emptied += count;
-		return _cache_file_status_ok;
-	}
-	for (index = 0; index < count; index++)
-	{
-		uint8_t *string = state->tag_cache + strings_offset + (uint32_t)index * TAG_DATA_BYTES;
-		int32_t size = read_s32(string + TAG_DATA_SIZE_OFFSET);
-		uint32_t offset;
-
-		if (size > 0 && !tag_cache_offset(state, read_u32(string + TAG_DATA_ADDRESS_OFFSET), (uint32_t)size, &offset))
-		{
-			write_u32(string + TAG_DATA_SIZE_OFFSET, 0);
-			write_u32(string + TAG_DATA_FILE_OFFSET_OFFSET, 0);
-			write_u32(string + TAG_DATA_ADDRESS_OFFSET, 0);
-			state->report->halo_pc_strings_emptied++;
-		}
 	}
 
 	return _cache_file_status_ok;
@@ -2302,15 +2354,35 @@ static enum cache_file_status halo_pc_resources_place(
 	struct resource_map const *bitmaps_map = state->resource_maps[_resource_map_bitmaps];
 	struct resource_map const *sounds_map = state->resource_maps[_resource_map_sounds];
 	struct halo_pc_bitmaps bitmaps;
+	struct halo_pc_tag_starts starts;
 	enum cache_file_status status = _cache_file_status_ok;
 	int32_t tag_index_value;
 
 	memset(&bitmaps, 0, sizeof(bitmaps));
+	/* (where each tag begins, in order) */
+	starts.count = 0;
+	starts.addresses = malloc((size_t)tag_count * sizeof(*starts.addresses) + 1);
+	if (!starts.addresses)
+	{
+		return load_fail(state, _cache_file_status_out_of_memory, 0);
+	}
+	for (tag_index_value = 0; tag_index_value < tag_count; tag_index_value++)
+	{
+		uint32_t address = read_u32(tag_instances + (uint32_t)tag_index_value * TAG_INSTANCE_BYTES +
+			TAG_INSTANCE_ADDRESS_OFFSET);
+
+		if (address)
+		{
+			starts.addresses[starts.count++] = address;
+		}
+	}
+	qsort(starts.addresses, (size_t)starts.count, sizeof(*starts.addresses), compare_addresses);
 	if (bitmaps_map)
 	{
 		status = halo_pc_bitmaps_read(state, bitmaps_map, &bitmaps);
 		if (status != _cache_file_status_ok)
 		{
+			free(starts.addresses);
 			return status;
 		}
 	}
@@ -2330,7 +2402,7 @@ static enum cache_file_status halo_pc_resources_place(
 		if (group_tag == UNICODE_STRING_LIST_GROUP_TAG)
 		{
 			status = tag_cache_offset(state, address, UNICODE_STRING_LIST_BYTES, &offset) ?
-				halo_pc_strings_check(state, offset) :
+				halo_pc_strings_check(state, &starts, offset) :
 				load_fail(state, _cache_file_status_bad_tag_address, address);
 		}
 		else if (group_tag == BITMAP_GROUP_TAG)
@@ -2355,8 +2427,74 @@ static enum cache_file_status halo_pc_resources_place(
 	}
 	state->tag_index = NO_TAG_INDEX;
 	halo_pc_bitmaps_free(&bitmaps);
+	free(starts.addresses);
 
 	return status;
+}
+
+/* A map whose scenario's script syntax data holds other data: the tool
+that built HaloMD's maps (flatgulch_1, outback_3) sized it for every node
+it may hold (19001) and packed into the slots no node uses the script
+strings and other blocks of the scenario (its structure BSPs' list too),
+at an address not even aligned. Halo PC never minded. The game keeps the
+syntax data in place, compiles the console's expressions into its free
+slots, over that data then, and wants it aligned; and the tag validator
+refuses two fields over the same bytes (tag_validate.c). So it is copied
+after the tags, its header and the nodes it ever used (its count) as they
+are, the rest zeroed, and the scenario points at the copy; what was packed
+into it stays where it is. */
+#define DATA_ARRAY_HEADER_BYTES 0x38
+#define DATA_ARRAY_MAXIMUM_COUNT_OFFSET 0x20
+#define DATA_ARRAY_ELEMENT_SIZE_OFFSET 0x22
+#define DATA_ARRAY_COUNT_OFFSET 0x2E
+
+static enum cache_file_status script_syntax_separate(
+	struct load_state *state,
+	uint32_t scenario_offset)
+{
+	uint8_t *syntax = state->tag_cache + scenario_offset + SCENARIO_HS_SYNTAX_DATA_OFFSET;
+	int32_t size = read_s32(syntax + TAG_DATA_SIZE_OFFSET);
+	uint32_t offset, copy_offset, used;
+	int32_t element_size, count;
+	uint32_t index;
+	enum cache_file_status status;
+
+	if (size < DATA_ARRAY_HEADER_BYTES ||
+		!tag_cache_offset(state, read_u32(syntax + TAG_DATA_ADDRESS_OFFSET), (uint32_t)size, &offset))
+	{
+		return _cache_file_status_ok;
+	}
+	element_size = read_s16(state->tag_cache + offset + DATA_ARRAY_ELEMENT_SIZE_OFFSET);
+	count = read_s16(state->tag_cache + offset + DATA_ARRAY_COUNT_OFFSET);
+	if (element_size <= 0 || count < 0 || count > read_s16(state->tag_cache + offset + DATA_ARRAY_MAXIMUM_COUNT_OFFSET))
+	{
+		count = 0;
+	}
+	used = DATA_ARRAY_HEADER_BYTES + (uint32_t)count * (uint32_t)(element_size > 0 ? element_size : 0);
+	if (used > (uint32_t)size)
+	{
+		used = (uint32_t)size;
+	}
+	/* (free slots that are free: nothing to move) */
+	for (index = used; index < (uint32_t)size && !state->tag_cache[offset + index]; index++)
+	{
+	}
+	if (index == (uint32_t)size && !(offset & 3))
+	{
+		return _cache_file_status_ok;
+	}
+	status = tag_cache_allocate(state, (uint32_t)size, &copy_offset);
+	if (status != _cache_file_status_ok)
+	{
+		return status;
+	}
+	memmove(state->tag_cache + copy_offset, state->tag_cache + offset, used);
+	memset(state->tag_cache + copy_offset + used, 0, (size_t)size - used);
+	write_u32(syntax + TAG_DATA_ADDRESS_OFFSET, CUSTOM_EDITION_TAG_CACHE_ADDRESS + copy_offset);
+	state->report->relocated_pointer_count++;
+	state->report->script_syntax_moved = 1;
+
+	return _cache_file_status_ok;
 }
 
 /* the layout of a group whose tags resource maps may hold, or NULL: only
@@ -3086,11 +3224,14 @@ enum cache_file_status custom_edition_cache_load(
 			write_u32(instance + TAG_INSTANCE_ADDRESS_OFFSET, 0);
 		}
 		/* port: a protected map may leave a tag without data (address 0), which
-		Halo PC tolerates while nothing reads it; the validator refuses any
-		reference to such a tag (tag_validate.c) */
+		Halo PC tolerates while nothing reads it; the validator makes any
+		reference to such a tag none (tag_validate.c). A tag whose data lies
+		past the map's tag data is given none too: HaloMD's vast_1 ends its
+		tag data where its last tag (a sound environment) would begin. */
 		else if (address && !tag_cache_offset(&state, address, 1, &offset))
 		{
-			return load_fail(&state, _cache_file_status_bad_tag_address, address);
+			write_u32(instance + TAG_INSTANCE_ADDRESS_OFFSET, 0);
+			report->tags_without_data++;
 		}
 	}
 	state.tag_index = NO_TAG_INDEX;
@@ -3215,6 +3356,12 @@ enum cache_file_status custom_edition_cache_load(
 		{
 			return status;
 		}
+	}
+	/* script syntax data that other data was packed into, copied after the tags */
+	status = script_syntax_separate(&state, scenario_offset);
+	if (status != _cache_file_status_ok)
+	{
+		return status;
 	}
 
 	/* every tag whose layout this module knows, wherever it came from: each

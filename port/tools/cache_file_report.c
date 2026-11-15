@@ -258,6 +258,8 @@ static int report_custom_edition_cache(
 		printf("sound_sample_ranges_checked: %" PRId32 "\n", report.sound_sample_ranges_checked);
 		printf("relocated_pointers: %" PRId32 "\n", report.relocated_pointer_count);
 		printf("scenario_regrouped: %" PRId32 "\n", report.scenario_regrouped);
+		printf("script_syntax_moved: %" PRId32 "\n", report.script_syntax_moved);
+		printf("tags_without_data: %" PRId32 "\n", report.tags_without_data);
 		if (report.identity.version == CACHE_FILE_VERSION_HALO_PC)
 		{
 			printf("halo_pc_bitmaps: %" PRId32 " by name, %" PRId32 " by offset, %" PRId32 " resized, %" PRId32

@@ -398,7 +398,8 @@ class Map:
                  model=None, bsp_material=None, shaders=(), animation_overlay=None,
                  weapon_hud=None, hud_bitmap_flags=None, in_map_bitmap=None, strings_name="test\\strings",
                  strings=("hello", "world!"), name=b"test", tags_checksum=0,
-                 halo_pc=False, halo_pc_bitmap_name="test\\external bitmap", halo_pc_bad_string=False):
+                 halo_pc=False, halo_pc_bitmap_name="test\\external bitmap", halo_pc_bad_string=False,
+                 script_strings_inside_syntax=False):
         self.bsp_sizes = bsp_sizes
         # a Halo PC map (version 7): no tag held by a resource map; its stock
         # bitmap and sound whole in the map, their pixels and samples at
@@ -408,6 +409,8 @@ class Map:
         self.halo_pc = halo_pc
         self.halo_pc_bitmap_name = halo_pc_bitmap_name
         self.halo_pc_bad_string = halo_pc_bad_string
+        # the scenario's script strings inside its script syntax data (HaloMD's flatgulch_1)
+        self.script_strings_inside_syntax = script_strings_inside_syntax
         # the header's name and the tag data's checksum, by which Chimera's
         # map list knows a map
         self.name = name
@@ -538,6 +541,11 @@ class Map:
             tag_data.u32(element + 0x1C, ((salt + tag_index) << 16) | tag_index)
             file_offset += size
         address_of["test\\scenario"] = scenario
+        if self.script_strings_inside_syntax:
+            syntax = tag_data.add(bytes(range(256)) * 4)
+            tag_data.data(scenario + 0x474, 1024, data_address=syntax)
+            tag_data.data(scenario + 0x488, 0x400, data_address=syntax + 512)
+            address_of["script syntax"] = syntax
         # a bitmap kept in the map, its pixels in the map too
         group = tag_data.reserve(0x6C)
         bitmap = tag_data.reserve(0x30)
@@ -1249,8 +1257,6 @@ MALFORMED_CACHES = {
                              "the model vertex and index data do not fit in the file"),
     "handle": (instance_case(3, 0x0C, "<I", 0xE1770009), "load",
                "a tag handle does not match its position in the index"),
-    "tag address outside": (instance_case(8, 0x14, "<I", BASE + 0x1000000), "load",
-                            "a tag's address lies outside the tag data"),
     "external weapon": (instance_case(8, 0x18, "<I", 1), "load",
                         "a tag of a group that resource maps never hold is marked as held by one"),
     "external sound header outside": (instance_case(4, 0x14, "<I", BASE - 0x100), "load",
@@ -1607,14 +1613,14 @@ def test_a_halo_pc_sound_unlike_custom_editions_is_silenced(report_tool, tmp_pat
     assert report["halo_pc_sounds"] == "0 found, 1 silenced"
 
 
-def test_a_halo_pc_string_outside_the_tags_is_emptied(report_tool, tmp_path):
+def test_a_halo_pc_string_list_with_a_string_outside_the_tags_is_emptied(report_tool, tmp_path):
     cache = Map(halo_pc=True, halo_pc_bad_string=True)
     returncode, report, tags = converted(report_tool, cache, tmp_path)
     assert returncode == 0, report
-    assert report["halo_pc_strings_emptied"] == "1"
-    references = cache.addresses["halo pc string references"]
-    assert u32_at(tags, references) == 0 and u32_at(tags, references + 12) == 0
-    assert u32_at(tags, references + 20) != 0
+    # (the list is junk: emptied whole, both its strings)
+    assert report["halo_pc_strings_emptied"] == "2"
+    strings = cache.addresses[cache.strings_name]
+    assert u32_at(tags, strings) == 0 and u32_at(tags, strings + 4) == 0
 
 
 def test_a_halo_pc_map_without_custom_editions_bitmaps_is_refused(report_tool, tmp_path):
@@ -1623,3 +1629,38 @@ def test_a_halo_pc_map_without_custom_editions_bitmaps_is_refused(report_tool, t
     (tmp_path / "bitmaps.map").unlink()
     returncode, report = report_one(report_tool, path)
     assert returncode == 1
+
+
+def test_script_syntax_data_with_other_data_in_its_free_slots_is_put_after_the_tags(report_tool, tmp_path):
+    cache = Map(script_strings_inside_syntax=True)
+    returncode, report, tags = converted(report_tool, cache, tmp_path)
+    assert returncode == 0, report
+    assert report["script_syntax_moved"] == "1"
+    syntax = cache.addresses["script syntax"]
+    scenario = cache.addresses["test\\scenario"]
+    moved = u32_at(tags, scenario + 0x474 + 12)
+    assert moved != syntax and moved % 4 == 0
+    # (its header kept, its free slots zeroed: its count says it used none)
+    assert tags[moved - BASE:moved - BASE + 0x38] == (bytes(range(256)) * 4)[:0x38]
+    assert tags[moved - BASE + 0x38:moved - BASE + 1024] == bytes(1024 - 0x38)
+    # (the strings packed into it stay where they were)
+    assert u32_at(tags, scenario + 0x488 + 12) == syntax + 512
+
+
+def test_script_syntax_data_with_free_slots_free_stays(report_tool, tmp_path):
+    cache = Map()
+    returncode, report, tags = converted(report_tool, cache, tmp_path)
+    assert returncode == 0, report
+    assert report["script_syntax_moved"] == "0"
+
+
+def test_a_tag_whose_data_lies_past_the_tag_data_is_given_none(report_tool, tmp_path):
+    cache = Map()
+    path = cache.write(tmp_path)
+    # (the weapon's address past the map's tag data, as HaloMD's vast_1 leaves its last tag)
+    patched(path, cache.where["instances"] + 8 * 0x20 + 0x14, "<I", BASE + 0x1000000)
+    dump = tmp_path / "converted_tags.bin"
+    returncode, report = report_one(report_tool, path, "--dump-tags", dump)
+    assert returncode == 0, report
+    assert report["tags_without_data"] == "1"
+    assert u32_at(dump.read_bytes(), cache.addresses["instances"] + 8 * 0x20 + 0x14) == 0

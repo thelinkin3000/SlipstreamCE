@@ -243,6 +243,8 @@ struct custom_edition_load_report
 	/* 1 when the scenario tag had another group (map protection renames it)
 	and was given the scenario's */
 	int32_t scenario_regrouped;
+	/* tags whose data lay past the map's tag data, given none */
+	int32_t tags_without_data;
 	/* a Halo PC map's stock bitmaps found in Custom Edition's bitmaps.map: by
 	their tag's name, by their Halo PC offset (a tag renamed), taken at
 	another size or format, and stood in for by another bitmap; and its
@@ -255,6 +257,9 @@ struct custom_edition_load_report
 	int32_t halo_pc_sounds_silenced;
 	/* and its strings that lay outside its tags, emptied */
 	int32_t halo_pc_strings_emptied;
+	/* whether the scenario's script syntax data held other data in its free
+	slots (or was not aligned), and was copied after the tags */
+	int32_t script_syntax_moved;
 };
 
 /* Where Halo PC keeps what a texture holds in other channels than this

@@ -611,10 +611,27 @@ static void validate_block_extent(
 
 	VALIDATE_MOVE(block->address);
 	block->definition = NULL;
+	/* port: a Custom Edition or Halo PC map's block of fewer than no
+	elements (HaloMD's mgmsuper_1: the grenade smoke effect's events, -1),
+	which Halo PC, counting up to it, took for none: none */
+	if (block->count < 0 && tag_validate_globals.custom_edition)
+	{
+		tag_validate_correct(validation, "has %ld elements: none", block->count);
+		block->count = 0;
+	}
 	if (block->count < 0)
 	{
 		tag_validate_refuse(validation, "has %ld elements", block->count);
 		return;
+	}
+	/* port: a Custom Edition or Halo PC map's block with elements and no
+	address (HaloMD's mgmsuper_1: a grenade smoke effect's 32 locations),
+	which Halo PC tolerated while nothing read it: none, its indices then
+	corrected as any past a block's count */
+	if (block->count && !block->address && tag_validate_globals.custom_edition)
+	{
+		tag_validate_correct(validation, "has %ld elements at 00000000: none", block->count);
+		block->count = 0;
 	}
 	if (field->maximum > 0 && block->count > field->maximum &&
 		!(tag_validate_globals.custom_edition && TEST_FLAG(field->flags, _tag_schema_tool_maximum_bit)))
