@@ -3623,6 +3623,8 @@ static void hs_allocate(
 	void);
 static boolean hs_scenario_syntax_data_valid(
 	struct scenario const *scenario);
+static void hs_scenario_syntax_data_realign(
+	struct scenario *scenario);
 static boolean hs_scenario_string_constants_valid(
 	struct scenario const *scenario);
 static void hs_scenario_scripts_disable(
@@ -3686,6 +3688,9 @@ static char const **enumeration_results = NULL;
 static char const *hs_enumeration_substring = NULL;
 static boolean hs_recompile_pending = FALSE;
 static boolean hs_syntax_data_allocated = FALSE;
+/* port: a map's script syntax that is sound but not on a 4-byte boundary,
+copied here (hs_scenario_syntax_data_realign); made once, kept */
+static struct data_array *hs_syntax_data_realigned = NULL;
 /* port: the map's scripts and global initializers that call a function
 maps may not (hs_scenario_functions_check) */
 static unsigned long hs_scenario_disabled_scripts[BIT_VECTOR_SIZE_IN_LONGS(MAXIMUM_HS_SCRIPTS_PER_SCENARIO)];
@@ -12898,9 +12903,11 @@ static boolean hs_scenario_syntax_data_valid(
 	}
 
 	/* (in the loaded map's tag cache: this build's, or a Custom Edition
-	map's, cache_file_tag_cache_contains) */
+	map's, cache_file_tag_cache_contains; or the aligned copy of it,
+	hs_scenario_syntax_data_realign) */
 	if (scenario->hs_syntax_data.size != syntax_data_size ||
-		!cache_file_tag_cache_contains(address, syntax_data_size) ||
+		(address != (byte const *)hs_syntax_data_realigned &&
+			!cache_file_tag_cache_contains(address, syntax_data_size)) ||
 		((unsigned long)address & 3))
 	{
 		return FALSE;
@@ -12917,6 +12924,41 @@ static boolean hs_scenario_syntax_data_valid(
 		data->first_free_absolute_index >= 0 &&
 		data->first_free_absolute_index <= data->maximum_count &&
 		hs_scenario_string_constants_valid(scenario);
+}
+
+/* port: a map's script syntax in its tag cache but not on a 4-byte boundary
+(a modding tool's packing: Covenant Edition's ui.map has it 2 bytes off,
+and its menu starts the campaign from its scripts; the Xbox read it so, the
+shipped maps all have it aligned) copied into an aligned array of the
+port's own, which the scenario's tag data then names. The checks of
+hs_scenario_syntax_data_valid then go through the copy as through any map's */
+static void hs_scenario_syntax_data_realign(
+	struct scenario *scenario)
+{
+	long const syntax_data_size =
+		sizeof(struct data_array)+MAXIMUM_HS_SYNTAX_NODES_PER_SCENARIO*sizeof(struct hs_syntax_node);
+	byte const *address;
+
+	if (!scenario || mcc_syntax_scenario_valid(scenario) >= 0)
+		return;
+	address = (byte const *)TAG_DATA_ADDRESS(scenario->hs_syntax_data);
+	if (scenario->hs_syntax_data.size != syntax_data_size ||
+		!((unsigned long)address & 3) ||
+		address == (byte const *)hs_syntax_data_realigned ||
+		!cache_file_tag_cache_contains(address, syntax_data_size))
+	{
+		return;
+	}
+	if (!hs_syntax_data_realigned)
+		hs_syntax_data_realigned = (struct data_array *)malloc(syntax_data_size);
+	if (!hs_syntax_data_realigned)
+		return;
+	csmemcpy(hs_syntax_data_realigned, address, syntax_data_size);
+	scenario->hs_syntax_data.address = hs_syntax_data_realigned;
+	error(_error_silent, "the scenario's script data is not on a 4-byte boundary (%p): an aligned copy of it runs",
+		address);
+
+	return;
 }
 
 /* port: the scenario's script strings as the map holds them (the names
@@ -13514,7 +13556,9 @@ static void hs_allocate(
 		if (mcc_syntax_scenario_valid(scenario) > 0)
 			return;
 	}
-	/* port: as the map holds it only when it is sound */
+	/* port: as the map holds it only when it is sound (aligned first, when
+	it is not on a 4-byte boundary) */
+	hs_scenario_syntax_data_realign(scenario);
 	if (scenario &&
 		scenario->hs_syntax_data.size ==
 			sizeof(struct data_array)+MAXIMUM_HS_SYNTAX_NODES_PER_SCENARIO*sizeof(struct hs_syntax_node) &&
