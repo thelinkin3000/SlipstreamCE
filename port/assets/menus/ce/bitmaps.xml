@@ -321,8 +321,15 @@
 	<bitmap name="main_menu/settings_select/player_setup/player_profile_edit/gameplay/header_gameplay">
 		<frame png="ce/port/main_menu/settings_select/player_setup/player_profile_edit/gameplay/header_gameplay.png" width="512" height="64"/>
 	</bitmap>
+	<bitmap name="main_menu/settings_select/player_setup/player_profile_edit/manage_content/header_manage_content">
+		<frame png="ce/port/main_menu/settings_select/player_setup/player_profile_edit/manage_content/header_manage_content.png" width="512" height="64"/>
+	</bitmap>
 	<bitmap name="main_menu/theater/header_theater">
 		<frame png="ce/port/main_menu/theater/header_theater.png" width="512" height="64"/>
+	</bitmap>
+	<bitmap name="bitmaps/list_item_bkd_bottom">
+		<frame png="ce/shell/bitmaps/list_item_bkd_bottom__0.png" width="256" height="32"/>
+		<frame png="ce/shell/bitmaps/list_item_bkd_bottom__1.png" width="256" height="32"/>
 	</bitmap>
 	<bitmap name="main_menu/mods/header_mods">
 		<frame png="ce/port/main_menu/mods/header_mods.png" width="512" height="64"/>

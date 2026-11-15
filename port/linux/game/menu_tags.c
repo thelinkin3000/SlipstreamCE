@@ -377,7 +377,7 @@ static char const *const port_function_names[] =
 	"port mcc import replace", "port mcc import keep", "port mcc import closed",
 	"port map import page closed",
 	/* the Steam Workshop (menu_functions.c's steam_*) */
-	"port steam init", "port steam close", "port steam choose", "port steam back",
+	"port steam init", "port steam init content", "port steam init archive", "port steam close", "port steam choose", "port steam back",
 	"port pause end game", "port coop friendly fire",
 	"port coop begin", "port coop player 2 list initialize", "port coop player 2",
 	"port lobby open", "port lobby add player", "port lobby join", "port lobby leave",
@@ -2258,7 +2258,7 @@ the profile itself. */
 
 /* Change Name's keyboard and Change Color's pictures are ui.map's, Network
 Setup is for others' games (shown in co-op: its pages, pause_network_patch),
-and About and Credits are nothing to it */
+and About, Credits and Manage Content are nothing to it */
 static char const *const pause_settings_hidden_items[] =
 {
 	"main_menu/settings_select/player_setup/player_profile_edit/name_profile_item",
@@ -2266,6 +2266,7 @@ static char const *const pause_settings_hidden_items[] =
 	"main_menu/settings_select/player_setup/player_profile_edit/color_profile_item",
 	"main_menu/settings_select/player_setup/player_profile_edit/about_item",
 	"main_menu/settings_select/player_setup/player_profile_edit/credits_item",
+	"main_menu/settings_select/player_setup/player_profile_edit/manage_content_item",
 };
 
 #if defined(HALO_SWITCH) || defined(HALO_PS5)

@@ -1,12 +1,17 @@
 # Steam Workshop
 
-Settings > Network Setup > **STEAM WORKSHOP** signs in with Steam and downloads
-MCC content into `mcc_maps` on Android, the Switch and the PS5. The Steam client
+Settings > Network Setup > **STEAM WORKSHOP** signs in with Steam, and
+Settings > Manage Content > **STEAM WORKSHOP** downloads MCC content into
+`mcc_maps`, on Android, the Switch and the PS5. Both are the same screen,
+opened on its account or on its content (`steam_downloads.h`'s sections).
+The Steam client
 comes from [Halo Content Evolved](https://github.com/Watanoge/halo-content-evolved)
 (AGPL-3.0-or-later, like this port). Here it runs in the host rather than the guest:
 `port/android/host/steam_*.c`, built into all three hosts.
 
 ## What it does
+
+Network Setup's screen:
 
 - **Sign in**, in one of two ways:
   - **With a QR code**, scanned with the Steam mobile app.
@@ -22,10 +27,14 @@ comes from [Halo Content Evolved](https://github.com/Watanoge/halo-content-evolv
 
   The account must own Halo: The Master Chief Collection and Halo: Combat
   Evolved Anniversary, because Steam only gives the depots' keys to owners.
-- **MCC FILE STATUS:**
-  - Downloads the three shared resource maps from Halo: CE Anniversary's depot
-    (976733) into `mcc_maps/_shared/singleplayer` and `mcc_maps/_shared/multiplayer`.
-  - Lists the Workshop packages in `mcc_maps`, and updates or removes them.
+- Once signed in, **STEAM ACCOUNT** and **LOG OUT**: LOG OUT revokes the
+  sign-in with Steam (`Authentication.RevokeToken`), then forgets it on the
+  device. If Steam can't be reached, the sign-in is forgotten on the device
+  only. The screen then says that Steam's own settings can deauthorize it.
+
+Manage Content's screen, once signed in (before, it shows **SIGN IN TO
+STEAM**, which points to Network Setup's):
+
 - **BROWSE WORKSHOP:** the Halo 1 Workshop, 20 items at a time. You can search,
   sort and filter by type, and each item shows its preview picture.
   - Installing an item builds it in `mcc_staging/steam_<id>`, then moves it into
@@ -34,10 +43,10 @@ comes from [Halo Content Evolved](https://github.com/Watanoge/halo-content-evolv
     (`port/android/host/host_mcc_import.c`).
   - `steam/downloads.txt` records which version each item came from, which is
     how an update is told.
-- **MANAGE ACCOUNT > LOG OUT:** revokes the sign-in with Steam
-  (`Authentication.RevokeToken`), then forgets it on the device. If Steam can't
-  be reached, the sign-in is forgotten on the device only. The screen then says
-  that Steam's own settings can deauthorize it.
+- **INSTALLED FILES:**
+  - Downloads the three shared resource maps from Halo: CE Anniversary's depot
+    (976733) into `mcc_maps/_shared/singleplayer` and `mcc_maps/_shared/multiplayer`.
+  - Lists the Workshop packages in `mcc_maps`, and updates or removes them.
 
 ## Joining an MCC game
 

@@ -12,6 +12,18 @@ the player typed (a password included, wiped here once passed).
 #ifndef STEAM_SCREEN_H
 #define STEAM_SCREEN_H
 
+/* which part of the Workshop a screen is (steam_downloads.h's
+STEAM_SECTION_*): Network Setup's, the sign-in and the account, or Manage
+Content's, the Workshop and the installed files; or FRACTUM SERAPH'S MAP
+ARCHIVE, Manage Content's too, which the same screen shows
+(port/android/host/fractum_archive.h) */
+enum
+{
+	STEAM_SCREEN_ACCOUNT,
+	STEAM_SCREEN_CONTENT,
+	STEAM_SCREEN_ARCHIVE
+};
+
 /* the kinds of text steam_screen_text_wanted asks for */
 enum
 {
@@ -30,7 +42,7 @@ enum
 	STEAM_QR_MODULES = 57 * 57
 };
 
-void steam_screen_open(void);
+void steam_screen_open(int section);
 void steam_screen_close(void);
 int steam_screen_poll(void);
 int steam_screen_count(void);

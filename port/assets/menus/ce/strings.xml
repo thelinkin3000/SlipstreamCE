@@ -1417,6 +1417,7 @@
 		<string text="SlipstreamCE, a fork of OpenCE.\nHalo: Combat Evolved on your\nAndroid Device\nProfile:" platform="android"/>
 		<string text="SlipstreamCE, a fork of OpenCE.\nHalo: Combat Evolved on your\nComputer\nProfile:" platform="desktop web"/>
 		<string text="The people behind the game, and\nthe licenses of what it uses.\n\nProfile:"/>
+		<string text="Maps and other content to\ndownload, and what is installed.\n\nProfile:"/>
 	</strings>
 	<strings name="main_menu/settings_select/player_setup/player_profile_edit/profile_edit_options">
 		<string text="CHANGE NAME"/>

@@ -163,6 +163,6 @@
 		<string text="Hide offensive words in names and text from\nother players, maps and mods, as stars."/>
 		<string text="What the Server Browser lists and its order: the\nsame settings as its Filters screen."/>
 		<string text="Link a Discord account, which lets you join\nservers that block VPNs while you use one."/>
-		<string text="Sign in with Steam to download MCC's shared files\nand Halo 1 Workshop maps into mcc_maps."/>
+		<string text="Sign in with Steam, the account Manage Content's\nWorkshop downloads use, or log out."/>
 	</strings>
 </menus>

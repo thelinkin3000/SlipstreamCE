@@ -31,6 +31,7 @@ cut at their buffers on purpose, the way snprintf is made) */
 #pragma GCC diagnostic ignored "-Wformat-truncation"
 #endif
 #include "steam_downloads.h"
+#include "fractum_archive.h"
 #include "steam_cm.h"
 #include "steam_crypto.h"
 #include "steam_depot.h"
@@ -146,6 +147,20 @@ enum view
 	VIEW_BROWSE
 };
 
+/* which part of the Workshop the screen is: Network Setup's, the account
+(the sign-in, then the account and LOG OUT as its hub), or Manage
+Content's, the content (BROWSE WORKSHOP and INSTALLED FILES as its hub,
+once signed in: the account's screen signs in); or no Workshop at all,
+FRACTUM SERAPH'S MAP ARCHIVE, whose rows are fractum_archive.c's */
+enum section
+{
+	SECTION_ACCOUNT,
+	SECTION_CONTENT,
+	SECTION_ARCHIVE
+};
+
+static void snapshot_clear(void);
+
 static char const *const sort_names[] = { "TRENDING", "MOST SUBSCRIBED", "NEWEST", "TOP RATED" };
 static enum steam_workshop_sort const sorts[] =
 	{ STEAM_WORKSHOP_TREND, STEAM_WORKSHOP_SUBSCRIPTIONS, STEAM_WORKSHOP_NEWEST, STEAM_WORKSHOP_VOTES };
@@ -159,7 +174,7 @@ struct installed
 	uint64_t manifest;
 };
 
-/* a Workshop package in mcc_maps (MCC FILE STATUS' list): its folder, the
+/* a Workshop package in mcc_maps (INSTALLED FILES' list): its folder, the
 item it is, its title, and the item as Steam last told of it (file.id 0:
 not asked yet) */
 struct package
@@ -287,6 +302,7 @@ static struct
 	/* the screen's: the list shown, the hub's place kept while another is,
 	and the row whose A asked to be pressed again (-1: none) */
 	enum view view;
+	enum section section;
 	short first;
 	short chosen;
 	short home_first;
@@ -2016,11 +2032,23 @@ static void threads_start(char const *data_root)
 	}
 }
 
-void steam_downloads_open(char const *data_root)
+void steam_downloads_open(char const *data_root, int section, char const *custom_maps)
 {
+	/* (the map archive: no Steam, its own model) */
+	if (section == SECTION_ARCHIVE)
+	{
+		pthread_mutex_lock(&steam.state_lock);
+		steam.section = SECTION_ARCHIVE;
+		steam.first = steam.chosen = 0;
+		snapshot_clear();
+		pthread_mutex_unlock(&steam.state_lock);
+		fractum_archive_open(data_root, custom_maps);
+		return;
+	}
 	threads_start(data_root);
 	pthread_mutex_lock(&steam.state_lock);
 	steam.open = 1;
+	steam.section = section == SECTION_CONTENT ? SECTION_CONTENT : SECTION_ACCOUNT;
 	steam.view = VIEW_HOME;
 	steam.confirm = -1;
 	steam.first = steam.chosen = steam.home_first = steam.home_chosen = 0;
@@ -2033,6 +2061,11 @@ void steam_downloads_open(char const *data_root)
 
 void steam_downloads_close(void)
 {
+	if (steam.section == SECTION_ARCHIVE)
+	{
+		fractum_archive_close();
+		return;
+	}
 	pthread_mutex_lock(&steam.state_lock);
 	steam.open = 0;
 	steam.cancel_sign_in = 1;
@@ -2047,6 +2080,7 @@ enum row_kind
 	ROW_NONE,
 	ROW_SIGN_IN_QR,
 	ROW_SIGN_IN_ACCOUNT,
+	ROW_SIGN_IN_ELSEWHERE,
 	ROW_HOME_ACCOUNT,
 	ROW_HOME_FILES,
 	ROW_HOME_BROWSE,
@@ -2084,6 +2118,13 @@ static enum row_kind row_kind(int place, int *index)
 	switch (steam.view)
 	{
 	case VIEW_HOME:
+		/* (the content's: signed in on the account's screen first) */
+		if (steam.section == SECTION_CONTENT)
+		{
+			if (steam.state != SESSION_IN)
+				return place == 0 ? ROW_SIGN_IN_ELSEWHERE : ROW_NONE;
+			return place == 0 ? ROW_HOME_BROWSE : place == 1 ? ROW_HOME_FILES : ROW_NONE;
+		}
 		if (steam.state != SESSION_IN)
 		{
 			if (steam.state == SESSION_UNAVAILABLE)
@@ -2092,7 +2133,8 @@ static enum row_kind row_kind(int place, int *index)
 				return ROW_NONE;
 			return (place == 0) == !account_first() ? ROW_SIGN_IN_QR : ROW_SIGN_IN_ACCOUNT;
 		}
-		return place == 0 ? ROW_HOME_ACCOUNT : place == 1 ? ROW_HOME_FILES : place == 2 ? ROW_HOME_BROWSE : ROW_NONE;
+		/* (the account's: the account itself, and LOG OUT) */
+		return place == 0 ? ROW_ACCOUNT_NAME : place == 1 ? ROW_LOG_OUT : ROW_NONE;
 	case VIEW_ACCOUNT:
 		return place == 0 ? ROW_ACCOUNT_NAME : place == 1 ? ROW_LOG_OUT : ROW_NONE;
 	case VIEW_FILES:
@@ -2133,7 +2175,9 @@ static int rows_count(void)
 	switch (steam.view)
 	{
 	case VIEW_HOME:
-		return steam.state == SESSION_IN ? 3 : steam.state == SESSION_UNAVAILABLE ? 1 : 2;
+		if (steam.section == SECTION_CONTENT)
+			return steam.state == SESSION_IN ? 2 : 1;
+		return steam.state == SESSION_IN ? 2 : steam.state == SESSION_UNAVAILABLE ? 1 : 2;
 	case VIEW_ACCOUNT: return 2;
 	case VIEW_FILES: return 1 + steam.package_count;
 	case VIEW_BROWSE:
@@ -2279,11 +2323,17 @@ static void row_build(int place, char *name, int name_size, char *state, int sta
 		else if (steam.state == SESSION_SIGNING_IN)
 			snprintf(state, (size_t)state_size, "SIGNING IN");
 		break;
+	case ROW_SIGN_IN_ELSEWHERE:
+		snprintf(name, (size_t)name_size, "SIGN IN TO STEAM");
+		snprintf(state, (size_t)state_size, "%s",
+			steam.state == SESSION_UNAVAILABLE ? "UNAVAILABLE" :
+			steam.state == SESSION_CONNECTING || steam.state == SESSION_SIGNING_IN ? "SIGNING IN" : "SIGNED OUT");
+		break;
 	case ROW_HOME_ACCOUNT:
 		snprintf(name, (size_t)name_size, "MANAGE ACCOUNT");
 		break;
 	case ROW_HOME_FILES:
-		snprintf(name, (size_t)name_size, "MCC FILE STATUS");
+		snprintf(name, (size_t)name_size, "INSTALLED FILES");
 		if (steam.downloading)
 		{
 			percent_text(state, state_size);
@@ -2419,12 +2469,22 @@ static void details_build(int place, char *title, int title_size, char *text, in
 			snprintf(body, sizeof(body), "A asks for your account name and password, then Steam Guard. The password "
 				"is not kept.");
 		break;
+	case ROW_SIGN_IN_ELSEWHERE:
+		snprintf(title, (size_t)title_size, "Sign in to Steam");
+		if (steam.state == SESSION_UNAVAILABLE)
+			snprintf(body, sizeof(body), "Steam is out of reach. Import MCC packages instead.");
+		else if (steam.state == SESSION_CONNECTING || steam.state == SESSION_SIGNING_IN)
+			snprintf(body, sizeof(body), "Reaching Steam...");
+		else
+			snprintf(body, sizeof(body), "You need to log into Steam first in Settings -> Network Setup -> Steam "
+				"Workshop");
+		break;
 	case ROW_HOME_ACCOUNT:
 		snprintf(title, (size_t)title_size, "Manage account");
 		snprintf(body, sizeof(body), "The account downloads use, and logging out.");
 		break;
 	case ROW_HOME_FILES:
-		snprintf(title, (size_t)title_size, "MCC file status");
+		snprintf(title, (size_t)title_size, "Installed files");
 		shared_text(body, sizeof(body));
 		snprintf(body + strlen(body), sizeof(body) - strlen(body), "\n%d Workshop items installed.",
 			steam.package_count);
@@ -2435,7 +2495,7 @@ static void details_build(int place, char *title, int title_size, char *text, in
 		break;
 	case ROW_ACCOUNT_NAME:
 		snprintf(title, (size_t)title_size, "%s", steam.account[0] ? steam.account : "Steam account");
-		snprintf(body, sizeof(body), "Signed in. It is kept on this device until you log out.");
+		snprintf(body, sizeof(body), "Signed in. Go to Settings -> Manage Content to download things from the workshop");
 		break;
 	case ROW_LOG_OUT:
 		snprintf(title, (size_t)title_size, "Log out");
@@ -2590,6 +2650,11 @@ void steam_downloads_choose(int place)
 	int index;
 	int confirm;
 
+	if (steam.section == SECTION_ARCHIVE)
+	{
+		fractum_archive_choose(place);
+		return;
+	}
 	pthread_mutex_lock(&steam.state_lock);
 	confirm = steam.confirm;
 	steam.confirm = -1;
@@ -2692,6 +2757,8 @@ int steam_downloads_back(void)
 {
 	int taken = 0;
 
+	if (steam.section == SECTION_ARCHIVE)
+		return fractum_archive_back();
 	pthread_mutex_lock(&steam.state_lock);
 	if (steam.state == SESSION_QR || steam.state == SESSION_GUARD)
 	{
@@ -2721,6 +2788,12 @@ int steam_downloads_back(void)
 
 void steam_downloads_text_typed(int kind, char const *text, int saved)
 {
+	if (steam.section == SECTION_ARCHIVE)
+	{
+		if (kind == TEXT_SEARCH && saved)
+			fractum_archive_search(text);
+		return;
+	}
 	pthread_mutex_lock(&steam.state_lock);
 	switch (kind)
 	{
@@ -2790,6 +2863,49 @@ static struct
 	char initial[TEXT_SIZE];
 } snapshot;
 
+/* (nothing of another screen's shown at an opening) */
+static void snapshot_clear(void)
+{
+	snapshot.count = 0;
+	snapshot.view = 0;
+	snapshot.first_built = 0;
+	snapshot.title[0] = snapshot.text[0] = 0;
+	snapshot.qr_size = 0;
+	snapshot.picture_key = 0;
+	snapshot.want_text = TEXT_NONE;
+}
+
+/* the map archive's frame: its rows into the snapshot (fractum_archive.c's
+model; the last frame's stand while its thread has the lock). 2 when a map
+was put in custom_maps or taken from it (the caller looks at the maps again) */
+static int archive_poll(void)
+{
+	int i, chosen, rescan;
+
+	if (!fractum_archive_try_lock())
+		return 0;
+	chosen = fractum_archive_take_chosen();
+	if (chosen >= 0)
+		steam.chosen = (short)chosen;
+	snapshot.count = fractum_archive_count();
+	if (steam.chosen >= snapshot.count)
+		steam.chosen = (short)(snapshot.count ? snapshot.count - 1 : 0);
+	snapshot.view = 0;
+	snapshot.first_built = steam.first > 4 ? steam.first - 4 : 0;
+	for (i = 0; i < SNAPSHOT_ROWS; i++)
+		fractum_archive_row(snapshot.first_built + i, snapshot.names[i], (int)sizeof(snapshot.names[i]),
+			snapshot.states[i], (int)sizeof(snapshot.states[i]));
+	fractum_archive_details(steam.chosen, snapshot.title, (int)sizeof(snapshot.title), snapshot.text,
+		(int)sizeof(snapshot.text));
+	snapshot.qr_size = 0;
+	snapshot.picture_key = 0;
+	if (!snapshot.want_text && fractum_archive_take_search(snapshot.initial, (int)sizeof(snapshot.initial)))
+		snapshot.want_text = TEXT_SEARCH;
+	rescan = fractum_archive_take_rescan();
+	fractum_archive_unlock();
+	return rescan ? 2 : 0;
+}
+
 int steam_downloads_poll(void)
 {
 	int rescan = 0;
@@ -2797,6 +2913,8 @@ int steam_downloads_poll(void)
 	struct steam_workshop_file const *file = NULL;
 	struct preview *preview;
 
+	if (steam.section == SECTION_ARCHIVE)
+		return archive_poll();
 	if (pthread_mutex_trylock(&steam.state_lock) != 0)
 		return 0;
 	rescan = steam.rescan;
@@ -2889,7 +3007,7 @@ char const *steam_downloads_text_caption(int kind)
 {
 	switch (kind)
 	{
-	case TEXT_SEARCH: return "Search the Workshop";
+	case TEXT_SEARCH: return steam.section == SECTION_ARCHIVE ? "Search the map archive" : "Search the Workshop";
 	case TEXT_ACCOUNT: return "Steam account name";
 	case TEXT_PASSWORD: return "Steam password";
 	case TEXT_CODE: return "Steam Guard code";
@@ -2925,9 +3043,10 @@ addresses, 32-bit, are the host's) */
 
 #define GUEST_POINTER(address) ((void *)(uintptr_t)(address))
 
-void host_steam_open(unsigned int data_root)
+void host_steam_open(unsigned int data_root, int section, unsigned int custom_maps)
 {
-	steam_downloads_open((char const *)GUEST_POINTER(data_root));
+	steam_downloads_open((char const *)GUEST_POINTER(data_root), section,
+		custom_maps ? (char const *)GUEST_POINTER(custom_maps) : "");
 }
 
 void host_steam_close(void)

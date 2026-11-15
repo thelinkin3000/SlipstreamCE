@@ -51,7 +51,9 @@ EXPAT_DIR = Path("port/third_party/expat")
 MONOCYPHER_DIR = Path("port/third_party/monocypher")
 # the Steam Workshop screen's Steam client, in the host (port/android/host/steam_downloads.h)
 STEAM_HOST_FILES = ("steam_cm", "steam_crypto", "steam_depot", "steam_downloads", "steam_net", "steam_seal",
-                    "steam_unpack")
+                    "steam_unpack",
+                    # (Manage Content's FRACTUM SERAPH'S MAP ARCHIVE, which the same screen shows)
+                    "fractum_archive")
 MUSL_DIR = THIRD_PARTY / f"musl-{MUSL_VERSION}"
 SDL_DIR = THIRD_PARTY / "SDL3"
 
@@ -716,6 +718,8 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
         # Monocypher's X25519 and ChaCha20-Poly1305
         ANDROID_PORT_DIR / "host" / "host_file_share.c", ANDROID_PORT_DIR / "host" / "host_file_share_crypto.c",
         MONOCYPHER_DIR / "monocypher.c",
+        # (and Ed25519, the map archive's list's signature: fractum_archive.c)
+        MONOCYPHER_DIR / "monocypher-ed25519.c",
     ]
     # the port's zlib (inflate only, its names z_), for the high-res HUD's
     # PNGs, which the host decodes as a map loads (host_dk_hud.c)
@@ -767,7 +771,7 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
         if source.name == "host_mcc_convert.c":
             cflags = f"{host_cflags} -fwrapv"
         # (the file connection's: Monocypher's X25519 and ChaCha20-Poly1305)
-        if source.name in ("host_file_share_crypto.c", "monocypher.c"):
+        if source.name in ("host_file_share_crypto.c", "monocypher.c", "monocypher-ed25519.c", "fractum_archive.c"):
             cflags = f"{host_cflags} -I{MONOCYPHER_DIR}"
         n.build(outputs=obj, rule="switch_host_cc", inputs=source, variables={"cflags": cflags},
                 implicit=[syscall_h])

@@ -102,7 +102,8 @@ CHILD_OFFSETS = {
      "ui\\shell\\main_menu\\multiplayer_type_select\\multiplayer_type_gametypes_item"): (0, 381),
     ("ui\\shell\\main_menu\\multiplayer_type_select\\multiplayer_type_select_screen",
      "ui\\shell\\main_menu\\blueline"): (64, 376),
-    # the profile settings' rows, eleven in the nine's room
+    # the profile settings' rows, twelve from 78 to the description panel's
+    # bottom
     # (port_settings.PROFILE_ROWS)
     **{("ui\\shell\\main_menu\\settings_select\\player_setup\\player_profile_edit\\profile_edit_select_list",
         f"ui\\shell\\main_menu\\settings_select\\player_setup\\player_profile_edit\\{row}"):
@@ -671,6 +672,20 @@ def pause_art(art):
     return lines
 
 
+def flipped_bitmap(art: "Art", written: list, source: str, name: str) -> str:
+    """a <bitmap> of another's frames (its <bitmap>, already in written),
+    turned upside down"""
+    import re
+    entry = next(text for text in written if f'<bitmap name="{source}">' in text)
+    lines = [f"\t<bitmap{attributes([('name', name)])}>"]
+    for png, width, height in re.findall(r'<frame png="([^"]+)" width="(\d+)" height="(\d+)"/>', entry):
+        flipped = png.replace(source.rsplit("/", 1)[-1] + "__", name.rsplit("/", 1)[-1] + "__")
+        Image.open(MENUS / png).transpose(Image.FLIP_TOP_BOTTOM).save(MENUS / flipped, optimize=True)
+        art.pngs.append(flipped)
+        lines.append(f"\t\t<frame{attributes([('png', flipped), ('width', width), ('height', height)])}/>")
+    return "\n".join(lines + ["\t</bitmap>"])
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--tags", type=Path, required=True)
@@ -740,6 +755,11 @@ def main() -> None:
              "<!-- The PC version's menus' bitmaps, drawn from the redraws, else the PC version's own pictures"
              " (NON_HANDDRAWN.md; tools/ce_menus.py) -->", "<menus>"]
     lines += [art.bitmap(tag) for tag in sorted(bitmaps)]
+    # (the profile settings' last row's highlight, Manage Content's: the
+    # first's, list_item_bkd_top, turned over, its bottom line run on to
+    # join the description panel's bottom as the first's joins its top:
+    # port_settings.PROFILE_ROWS)
+    lines.append(flipped_bitmap(art, lines, "bitmaps/list_item_bkd_top", "bitmaps/list_item_bkd_bottom"))
     lines += [art.title(name, text) for name, text in sorted(port_settings.TITLES.items())]
     lines += pause_art(art)
     # (voice chat's speaker, of a player who talks and of one muted: Lucide's

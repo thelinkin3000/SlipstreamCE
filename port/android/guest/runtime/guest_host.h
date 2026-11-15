@@ -268,7 +268,7 @@ int host_sha256_poll(int id, unsigned int digest, unsigned int size);
 void host_sha256_cancel(int id);
 /* the Steam Workshop screen, whose Steam client is the host's (port/android/host/steam_downloads.c, which
 says what each does; the guest's wrappers are port/linux/src/steam_screen.c's) */
-void host_steam_open(unsigned int data_root);
+void host_steam_open(unsigned int data_root, int section, unsigned int custom_maps);
 void host_steam_close(void);
 int host_steam_poll(void);
 int host_steam_count(void);

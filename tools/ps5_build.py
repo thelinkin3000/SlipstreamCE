@@ -108,6 +108,8 @@ SHARED_HOST_FILES = ("host_arch.c", "host_common.c", "host_loader.c", "host_thre
                      # (the Steam Workshop screen's Steam client: steam_downloads.h)
                      "steam_cm.c", "steam_crypto.c", "steam_depot.c", "steam_downloads.c", "steam_net.c",
                      "steam_seal.c", "steam_unpack.c",
+                     # (Manage Content's FRACTUM SERAPH'S MAP ARCHIVE, which the same screen shows)
+                     "fractum_archive.c",
                      # (files over a connection of their own: host_file_share.h)
                      "host_file_share.c", "host_file_share_crypto.c")
 # and the Vulkan renderer's host half (port/ps5/PS5.md, phase 4), less
@@ -721,6 +723,8 @@ def _generate(n: Writer, sln: Any, config_path: Path) -> None:
                     root / LINUX_DIR / "src" / "server_json.c",
                     # (the file connection's X25519 and ChaCha20-Poly1305: host_file_share_crypto.c)
                     root / MONOCYPHER_DIR / "monocypher.c",
+                    # (and Ed25519, the map archive's list's signature: fractum_archive.c)
+                    root / MONOCYPHER_DIR / "monocypher-ed25519.c",
                     guest["host_table_c"], import_stubs]
     for source in host_sources:
         obj = obj_dir / (source.name + ".o")
@@ -737,7 +741,7 @@ def _generate(n: Writer, sln: Any, config_path: Path) -> None:
         # signed values as the guest's -fwrapv defines)
         if source.name == "host_mcc_convert.c":
             cflags += " -fwrapv"
-        if source.name in ("host_file_share_crypto.c", "monocypher.c"):
+        if source.name in ("host_file_share_crypto.c", "monocypher.c", "monocypher-ed25519.c", "fractum_archive.c"):
             cflags += f" -I{root / MONOCYPHER_DIR}"
         if source.name == "tomlc17.c":
             # (the SDK's math.h: its isnan's _Generic names volatile types,

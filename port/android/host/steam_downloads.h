@@ -1,16 +1,18 @@
 /*
 STEAM_DOWNLOADS.H
 
-The Steam Workshop screen's model, in the host (Settings > Network Setup >
-STEAM WORKSHOP: tools/port_settings.py's _steam_workshop, the guest's
-port/linux/src/steam_screen.c and menu_functions.c's "port steam"
-functions, which reach it through the host_steam_* imports). Signing in
-with Steam (a QR code the Steam mobile app scans, or the account's name and
-password; the refresh token kept sealed: steam_seal.h), then a hub of three
-lists: MANAGE ACCOUNT (the account, LOG OUT, which revokes the sign-in with
-Steam), MCC FILE STATUS (the shared sets, and the Workshop packages in
-mcc_maps: updated or removed) and BROWSE WORKSHOP (the Halo 1 Workshop by
-sort and type, a page at a time, with each item's preview picture).
+The Steam Workshop screens' model, in the host (tools/port_settings.py's
+_steam_workshop, the guest's port/linux/src/steam_screen.c and
+menu_functions.c's "port steam" functions, which reach it through the
+host_steam_* imports). Two screens show it. Settings > Network Setup >
+STEAM WORKSHOP is the account's: signing in with Steam (a QR code the Steam
+mobile app scans, or the account's name and password; the refresh token
+kept sealed: steam_seal.h), then the account and LOG OUT, which revokes the
+sign-in with Steam. Settings > Manage Content > STEAM WORKSHOP is the
+content's, once signed in: BROWSE WORKSHOP (the Halo 1 Workshop by sort and
+type, a page at a time, with each item's preview picture) and INSTALLED
+FILES (the shared sets, and the Workshop packages in mcc_maps: updated or
+removed).
 Downloads go into mcc_maps, where the MCC loader reads them
 (docs/mcc_maps.md):
 
@@ -39,11 +41,21 @@ AGPL-3.0-or-later, as this port), moved from its guest to the hosts.
 #include <stdint.h>
 
 /* the screen opened (data_root: the guest's data folder; a sign-in kept is
-resumed at the opening) and closed */
-void steam_downloads_open(char const *data_root);
+resumed at the opening; section: STEAM_SECTION_ACCOUNT, Network Setup's
+sign-in and account, or STEAM_SECTION_CONTENT, Manage Content's Workshop
+and installed files) and closed */
+#define STEAM_SECTION_ACCOUNT 0
+#define STEAM_SECTION_CONTENT 1
+/* (and FRACTUM SERAPH'S MAP ARCHIVE, Manage Content's too: no Workshop, the
+same screen showing fractum_archive.h's model; custom_maps, the folder its
+maps go into, is for it alone) */
+#define STEAM_SECTION_ARCHIVE 2
+void steam_downloads_open(char const *data_root, int section, char const *custom_maps);
 void steam_downloads_close(void);
 /* each frame the screen is up: nonzero once when files were put in
-mcc_maps (the caller rescans the MCC catalog: mcc_maps_rescan) */
+mcc_maps (1: the caller rescans the MCC catalog, mcc_maps_rescan) or, the
+map archive's, put in custom_maps or taken from it (2: the caller looks at
+its maps again) */
 int steam_downloads_poll(void);
 
 /* the rows of the list shown */
@@ -82,7 +94,7 @@ int steam_downloads_qr(unsigned char *modules, int capacity, unsigned *serial);
 /* ---------- the guest's (port/android/host_imports.list; guest_host.h
 declares them, port/linux/src/steam_screen.c wraps them): its addresses */
 
-void host_steam_open(unsigned int data_root);
+void host_steam_open(unsigned int data_root, int section, unsigned int custom_maps);
 void host_steam_close(void);
 int host_steam_poll(void);
 int host_steam_count(void);

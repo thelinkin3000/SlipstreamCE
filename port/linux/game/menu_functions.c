@@ -9949,7 +9949,8 @@ static boolean news_close(struct widget_instance *widget, boolean *widget_delete
 	return TRUE;
 }
 
-/* ---------- the Steam Workshop (Settings > Network Setup > STEAM WORKSHOP:
+/* ---------- the Steam Workshop (Settings > Network Setup > STEAM WORKSHOP,
+the account, and Settings > Manage Content > STEAM WORKSHOP, the content:
 the host's port/android/host/steam_downloads.c through steam_screen.c,
 tools/port_settings.py's _steam_workshop; from Halo Content Evolved's):
 rows op_steam_<n> of a name and a state (steam_name, steam_state), the
@@ -10006,13 +10007,16 @@ static short steam_row_place(struct widget_instance *row)
 	return place >= 0 && place < steam_screen_count() ? place : NONE;
 }
 
-/* "port steam init" and "port steam close" */
-static boolean steam_screen_reset(boolean opening)
+/* "port steam init" (Network Setup's: the account), "port steam init
+content" (Manage Content's: the Workshop and the installed files), "port
+steam init archive" (Manage Content's FRACTUM SERAPH'S MAP ARCHIVE) and
+"port steam close" */
+static boolean steam_screen_reset(boolean opening, int section)
 {
 	short index;
 
 	if (opening)
-		steam_screen_open();
+		steam_screen_open(section);
 	else
 		steam_screen_close();
 	steam_screen.list_shown = NONE;
@@ -10076,8 +10080,14 @@ static void steam_update(struct widget_instance *list)
 	short count;
 	short focused_index;
 
-	if (steam_screen_poll())
-		mcc_maps_rescan();
+	/* (1: files put in mcc_maps; 2: the map archive's, in custom_maps or
+	taken from it) */
+	switch (steam_screen_poll())
+	{
+	case 1: mcc_maps_rescan(); break;
+	case 2: custom_edition_maps_look_again(); break;
+	default: break;
+	}
 	steam_keyboard_update();
 	first = (short)steam_screen_first();
 	chosen = (short)steam_screen_chosen();
@@ -14241,7 +14251,11 @@ boolean pc_menu_event_function_invoke(
         else if (!strcmp(name,"port map import page closed"))
             map_import.page_screen=NULL;
         else if (!strcmp(name,"port steam init") || !strcmp(name,"port steam close"))
-            return steam_screen_reset(!strcmp(name,"port steam init"));
+            return steam_screen_reset(!strcmp(name,"port steam init"), STEAM_SCREEN_ACCOUNT);
+        else if (!strcmp(name,"port steam init content"))
+            return steam_screen_reset(TRUE, STEAM_SCREEN_CONTENT);
+        else if (!strcmp(name,"port steam init archive"))
+            return steam_screen_reset(TRUE, STEAM_SCREEN_ARCHIVE);
         else if (!strcmp(name,"port steam choose"))
             return steam_choose(widget);
         else if (!strcmp(name,"port steam back"))

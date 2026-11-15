@@ -11,12 +11,13 @@ addresses (32-bit numbers, which are the host's).
 #include <string.h>
 
 const char *platform_data_root(void);
+void platform_translate_path(const char *xbox_path, char *host_path, unsigned long host_path_size);
 /* the folder holding mcc_maps (xbox_files.c), told to the host first */
 const char *platform_mcc_root(void);
 void host_mcc_root(unsigned int path);
 
 /* the host's (port/android/guest/runtime/guest_host.h) */
-void host_steam_open(unsigned int data_root);
+void host_steam_open(unsigned int data_root, int section, unsigned int custom_maps);
 void host_steam_close(void);
 int host_steam_poll(void);
 int host_steam_count(void);
@@ -37,13 +38,17 @@ int host_steam_qr(unsigned int modules, int capacity, unsigned int serial);
 
 #define HOST_ADDRESS(pointer) ((unsigned int)(uintptr_t)(pointer))
 
-void steam_screen_open(void)
+void steam_screen_open(int section)
 {
 	static char root[1024];
+	/* (the map archive's maps' folder: d:\custom_maps, wherever game.custom_maps.path
+	or GAME FILES has put it) */
+	static char custom_maps[1024];
 
 	strncpy(root, platform_data_root(), sizeof(root) - 1);
+	platform_translate_path("d:\\custom_maps", custom_maps, sizeof(custom_maps));
 	host_mcc_root(HOST_ADDRESS(platform_mcc_root()));
-	host_steam_open(HOST_ADDRESS(root));
+	host_steam_open(HOST_ADDRESS(root), section, HOST_ADDRESS(custom_maps));
 }
 
 void steam_screen_close(void)

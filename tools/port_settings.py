@@ -46,17 +46,21 @@ QUIT_ITEM_PLACE = main_menu_item_place("quit_game")
 # (_theater)
 THEATER = "main_menu/theater"
 # the profile settings' rows, in order: the PC version's nine, Gameplay before
-# About and Credits after it, all in the nine's room (78 to About's top, 342) so the
-# last one's 32-unit highlight stays beside the description panel. Each is
+# About, and Credits and Manage Content after it, from 78 to 368: the first
+# row's highlight border is on the description panel's top border (79-81),
+# and the last's, 29-31 below its top, on its bottom one (397-399), where
+# its highlight (list_item_bkd_bottom, the top one's turned over) joins the
+# panel as the first's (list_item_bkd_top) does. Each is
 # moved from its tag's top (the second number; Gameplay's is ours) by its
 # list's child offset (tools/ce_menus.py's CHILD_OFFSETS)
 PROFILE_ROWS = [("name_profile_item", 78), ("controller_setup_profile_item", 111),
                 ("gamepads_profile_item", 144), ("mouse_settings_profile_item", 177),
                 ("audio_settings_profile_item", 210), ("video_settings_profile_item", 243),
                 ("network_settings_profile_item", 277), ("color_profile_item", 277),
-                ("gameplay_profile_item", None), ("about_item", 310), ("credits_item", None)]
+                ("gameplay_profile_item", None), ("about_item", 310), ("credits_item", None),
+                ("manage_content_item", None)]
 PROFILE_ROWS_TOP = 78
-PROFILE_ROWS_LAST_TOP = 342
+PROFILE_ROWS_LAST_TOP = 368
 
 
 def profile_row_top(row: str) -> int:
@@ -679,9 +683,10 @@ _network["categories"] = [
      "What the Server Browser lists and its order: the\nsame settings as its Filters screen."),
     ("DISCORD ACCOUNT:", "network_setup/discord_account",
      "Link a Discord account, which lets you join\nservers that block VPNs while you use one."),
-    # (the Steam Workshop: _steam_workshop)
+    # (the Steam Workshop's account: _steam_workshop; its content is Manage
+    # Content's)
     ("STEAM WORKSHOP:", "network_setup/steam_workshop",
-     "Sign in with Steam to download MCC's shared files\nand Halo 1 Workshop maps into mcc_maps."),
+     "Sign in with Steam, the account Manage Content's\nWorkshop downloads use, or log out."),
 ]
 SCREENS["network_setup/map_sharing"] = {
     "screen": "map_sharing_settings_screen", "header": _network["header"], "spacing": 30,
@@ -740,6 +745,20 @@ SCREENS["gameplay"] = {
     "categories": [("GAME FILES:", "gameplay/game_files",
                     "Where your maps, custom maps, mods and MCC\nmaps are kept: the app's storage or a folder.",
                     "android")],
+}
+# Manage Content, a screen of its own from Settings (the profile menu's last
+# row, _manage_content_item): where the content's sources are, the Steam
+# Workshop's first, and the depots after it
+SCREENS["manage_content"] = {
+    "screen": "manage_content_screen",
+    "header": ("header_manage_content", f"{PE}/manage_content/header_manage_content"),
+    "spacing": 30,
+    "rows": [],
+    "categories": [("STEAM WORKSHOP:", "manage_content/steam_workshop",
+                    "Browse the Halo 1 Workshop, and MCC's shared\nfiles and the Workshop maps installed."),
+                   # (the same screen, on port/android/host/fractum_archive.c's model)
+                   ("FRACTUM SERAPH'S MAP ARCHIVE:", "manage_content/map_archive",
+                    "Custom Edition maps from FractumSeraph's archive,\ndownloaded into custom_maps.")],
 }
 # Network Setup's server browser (menu_functions.c's lobby_browser_update): where
 # its games come from (network.listings, master_list.c), the Filters screen's
@@ -923,6 +942,7 @@ STRING_OVERRIDES = {
          "android": "SlipstreamCE, a fork of OpenCE.\\nHalo: Combat Evolved on your\\nAndroid Device\\nProfile:",
          "desktop web": "SlipstreamCE, a fork of OpenCE.\\nHalo: Combat Evolved on your\\nComputer\\nProfile:"},
         "The people behind the game, and\\nthe licenses of what it uses.\\n\\nProfile:",
+        "Maps and other content to\\ndownload, and what is installed.\\n\\nProfile:",
     ],
 }
 
@@ -1194,6 +1214,19 @@ def _gameplay_profile_item() -> list:
                     '<on event="left_mouse" run="mouse emit accept event"/>'])
 
 
+def _manage_content_item() -> list:
+    """Settings' Manage Content row, the last: its highlight joins the
+    description panel's bottom (PROFILE_ROWS); the screen is this folder's"""
+    name = f"{PE}/manage_content_item"
+    screen = f"{PE}/manage_content/{SCREENS['manage_content']['screen']}"
+    return _widget(name, [("type", "text"), ("left", 51), ("top", profile_row_top("manage_content_item")),
+                          ("width", 232), ("height", 32), ("bitmap", "bitmaps/list_item_bkd_bottom"),
+                          ("text", "MANAGE CONTENT"), ("font", "ui\\large_ui"), ("color", "#FF2896FF"),
+                          ("text_x", 13), ("text_y", 5)],
+                   [f'<on event="a" open="{screen}"/>', f'<on event="start" open="{screen}"/>',
+                    '<on event="left_mouse" run="mouse emit accept event"/>'])
+
+
 def layout_overlay_places(controller: str, size: str) -> tuple:
     """where an overlay's picture of the controller is (left, top, width,
     height), its picture (the controller and the labels' lines: the same
@@ -1335,13 +1368,17 @@ def settings_files() -> dict:
         lines = (_mcc_downloads() if folder == "network_setup/mcc_downloads" else _setting_screen(folder, spec))
         if folder == "gameplay":
             lines += _gameplay_profile_item()
+        if folder == "manage_content":
+            lines += _manage_content_item()
         if folder == "gamepad_setup/layout":
             lines += _layout_overlays()
         files[f"{PE}/{folder}".replace("/", ".") + ".xml"] = lines
     files[f"{PE}/network_setup/mcc_download".replace("/", ".") + ".xml"] = _mcc_download()
     files[f"{PE}/network_setup/mcc_import".replace("/", ".") + ".xml"] = _mcc_import()
     files[f"{PE}/network_setup/map_import_page".replace("/", ".") + ".xml"] = _map_import_page()
-    files[STEAM_WORKSHOP.replace("/", ".") + ".xml"] = _steam_workshop()
+    files[STEAM_WORKSHOP.replace("/", ".") + ".xml"] = _steam_workshop(STEAM_WORKSHOP, "port steam init")
+    files[STEAM_CONTENT.replace("/", ".") + ".xml"] = _steam_workshop(STEAM_CONTENT, "port steam init content")
+    files[MAP_ARCHIVE.replace("/", ".") + ".xml"] = _steam_workshop(MAP_ARCHIVE, "port steam init archive", "MAP ARCHIVE")
     files[f"{PE}/gameplay/game_files".replace("/", ".") + ".xml"] = _game_files()
     files[f"{PE}/controls_setup".replace("/", ".") + ".xml"] = _controls_screen()
     return {name: ['<?xml version="1.0" encoding="UTF-8"?>',
@@ -1663,11 +1700,13 @@ WIDGET_PATCHES = {
     f"{PE}/profile_edit_extended_description": {"children": [
         f'<child widget="{LAYOUT}/{controller}/overlay_small" x="4" platform="{spec["platform"]}"/>'
         for controller, spec in CONTROLLERS.items()]},
-    # (Gameplay, before About: its screen is the gameplay file's; the rows'
+    # (Gameplay, before About: its screen is the gameplay file's; Credits,
+    # and Manage Content last, its screen the manage_content file's; the rows'
     # places, PROFILE_ROWS)
     f"{PE}/profile_edit_select_list": {"insert_before": {
         f"{PE}/about_item": [f'<child widget="{PE}/gameplay_profile_item"/>'],
-        f"{PE}/profile_edit_button_bar": [f'<child widget="{PE}/credits_item"/>'],
+        f"{PE}/profile_edit_button_bar": [f'<child widget="{PE}/credits_item"/>',
+                                          f'<child widget="{PE}/manage_content_item"/>'],
     }},
     # (straight to their screens: no "checking for updates" dialog, which
     # asked the PC version's servers)
@@ -1880,6 +1919,7 @@ TITLES = {
     f"{MT}/coop/header_player_2": "PLAYER 2 PROFILE",
     f"{MT}/lobby/header_add_player": "ADD PLAYER",
     f"{PE}/gameplay/header_gameplay": "GAMEPLAY",
+    f"{PE}/manage_content/header_manage_content": "MANAGE CONTENT",
 }
 
 
@@ -4081,22 +4121,30 @@ def _mcc_import() -> list:
 # the screens of a category that are no settings screen (_setting_screen),
 # made by a function of their own
 CUSTOM_SCREENS = {"network_setup/steam_workshop": {"screen": "steam_workshop_screen"},
+                  "manage_content/steam_workshop": {"screen": "steam_workshop_screen"},
+                  "manage_content/map_archive": {"screen": "steam_workshop_screen"},
                   "gameplay/game_files": {"screen": "screen"}}
 
-# ---------- the Steam Workshop (Settings > Network Setup > STEAM WORKSHOP:
-# the host's port/android/host/steam_downloads.c, menu_functions.c's "port
+# ---------- the Steam Workshop (Settings > Network Setup > STEAM WORKSHOP, the
+# sign-in and the account, and Settings > Manage Content > STEAM WORKSHOP,
+# BROWSE WORKSHOP and INSTALLED FILES: the same screen, opened by "port steam
+# init" or "port steam init content"; the host's
+# port/android/host/steam_downloads.c, menu_functions.c's "port
 # steam" functions; from Halo Content Evolved's): on the left the rows (the
 # sign-in, the hub, MCC's shared files, the Halo 1 Workshop's items), a row
 # each with its name and state; on the right, in the lobby's frame, the row
 # chosen's details and, while signing in, the QR code to scan, else the
 # item's preview (steam_picture: a text box, drawn over by menu_functions.c)
 STEAM_WORKSHOP = f"{PE}/network_setup/steam_workshop"
+STEAM_CONTENT = f"{PE}/manage_content/steam_workshop"
+# (FRACTUM SERAPH'S MAP ARCHIVE: the same screen, its rows the host's
+# fractum_archive.c's)
+MAP_ARCHIVE = f"{PE}/manage_content/map_archive"
 STEAM_ROWS = 11
 STEAM_PICTURE_BOUNDS = (448, 262, 128, 128)
 
 
-def _steam_workshop() -> list:
-    base = STEAM_WORKSHOP
+def _steam_workshop(base: str, init: str, title: str = "STEAM WORKSHOP") -> list:
     back = ['<on event="b" run="port steam back"/>', '<on event="back" run="port steam back"/>']
     lines = _widget(f"{base}/steam_workshop_screen", [("width", 640), ("height", 480),
                                                        ("flags", "pass_unhandled_to_focused_child"),
@@ -4105,13 +4153,13 @@ def _steam_workshop() -> list:
                      f'<child widget="{base}/steam_list"/>', f'<child widget="{base}/header_steam"/>'])
     lines += _widget(f"{base}/header_steam",
                      [("type", "text"), ("controller", 1), ("left", 35), ("top", 11), ("width", 363), ("height", 59),
-                      ("text", "STEAM WORKSHOP"), ("font", "ui\\large_ui"), ("color", "#FFFFFFFF"), ("text_x", 13),
+                      ("text", title), ("font", "ui\\large_ui"), ("color", "#FFFFFFFF"), ("text_x", 13),
                       ("text_y", 16)], [])
     rows = [f'<child widget="{base}/op_steam_{index + 1}" x="20" y="{73 + 30 * index}"/>' for index in range(STEAM_ROWS)]
     lines += _widget(f"{base}/steam_list", [("type", "column_list"), ("width", 640), ("height", 480),
                                             ("flags", "pass_unhandled_to_focused_child up_down_tabs_children"),
                                             ("description", f"{base}/steam_details")],
-                     ['<data input="port steam update"/>', '<on event="created" run="port steam init"/>',
+                     ['<data input="port steam update"/>', f'<on event="created" run="{init}"/>',
                       '<on event="deleted" run="port steam close"/>', *rows,
                       f'<child widget="{base}/button_bar" y="414"/>'])
     for index in range(STEAM_ROWS):

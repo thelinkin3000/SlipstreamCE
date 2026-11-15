@@ -921,6 +921,8 @@ def generate_android_build(n: Writer, sln: Any) -> None:
         TOML_DIR / "tomlc17.c",
         # the file connection's X25519 and ChaCha20-Poly1305 (host_file_share_crypto.c)
         MONOCYPHER_DIR / "monocypher.c",
+        # and Ed25519, the map archive's list's signature (fractum_archive.c)
+        MONOCYPHER_DIR / "monocypher-ed25519.c",
     ]
     for source in host_sources:
         obj = host_obj_dir / (source.name + ".o")
@@ -931,7 +933,8 @@ def generate_android_build(n: Writer, sln: Any) -> None:
         n.build(outputs=obj, rule="android_host_cc", inputs=source,
                 variables={"cflags": host_cflags + (" -w" if source.name == "steam_unpack.c" else "") +
                            (" -fwrapv" if source.name == "host_mcc_convert.c" else "") +
-                           (f" -I{MONOCYPHER_DIR}" if source.name in ("host_file_share_crypto.c", "monocypher.c")
+                           (f" -I{MONOCYPHER_DIR}" if source.name in ("host_file_share_crypto.c", "monocypher.c",
+                                                                      "monocypher-ed25519.c", "fractum_archive.c")
                             else "")},
                 implicit=[build_stamp] if source.name == "host_vk_probe.c" else None)
         host_objects.append(obj)
