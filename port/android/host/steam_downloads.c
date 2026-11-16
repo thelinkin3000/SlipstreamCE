@@ -1090,6 +1090,46 @@ static void do_page(void)
 	pthread_mutex_unlock(&steam.state_lock);
 }
 
+/* an item's maker, kept beside its workshop_id.txt for the lobby
+(mcc_workshop_local_author): workshop_author.txt, one line, printable ASCII.
+Not in workshop_id.txt, whose two lines MCC and older ports check strictly;
+sharing leaves this file out. Nothing is written for an unknown maker, and
+an unchanged one is not written again. */
+#define AUTHOR_FILE "workshop_author.txt"
+
+static void author_save(char const *package_path, char const *author)
+{
+	char path[1200];
+	char text[64];
+	char old[80];
+	size_t length = 0;
+	FILE *file;
+
+	for (; *author && length < sizeof(text) - 1; author++)
+		if (*author >= ' ' && *author <= '~')
+			text[length++] = *author;
+	while (length && text[length - 1] == ' ')
+		length--;
+	text[length] = 0;
+	if (!length)
+		return;
+	snprintf(path, sizeof(path), "%s/" AUTHOR_FILE, package_path);
+	file = fopen(path, "r");
+	if (file)
+	{
+		int same = fgets(old, sizeof(old), file) && (old[strcspn(old, "\r\n")] = 0, !strcmp(old, text));
+
+		fclose(file);
+		if (same)
+			return;
+	}
+	file = fopen(path, "w");
+	if (!file)
+		return;
+	fprintf(file, "%s\n", text);
+	fclose(file);
+}
+
 /* Steam asked about each installed package's item: its newest version */
 static void do_updates(void)
 {
@@ -1100,6 +1140,7 @@ static void do_updates(void)
 	{
 		uint64_t id = 0;
 		struct steam_workshop_file file;
+		char package_path[1100];
 		int found = 0;
 
 		pthread_mutex_lock(&steam.state_lock);
@@ -1108,9 +1149,14 @@ static void do_updates(void)
 		pthread_mutex_unlock(&steam.state_lock);
 		if (!id)
 			return;
+		package_path[0] = 0;
 		pthread_mutex_lock(&steam.session_lock);
 		if (session_ensure(error, sizeof(error)))
 			found = steam_cm_workshop_details(steam.cm, id, &file);
+		/* (and its maker, for a package installed before makers were kept) */
+		if (found && file.creator && steam_cm_workshop_authors(steam.cm, &file, 1) < 0)
+			steam_log("steam: item %llu's maker could not be named: %s", (unsigned long long)id,
+				steam_cm_error(steam.cm));
 		pthread_mutex_unlock(&steam.session_lock);
 		pthread_mutex_lock(&steam.state_lock);
 		if (found)
@@ -1122,9 +1168,12 @@ static void do_updates(void)
 				package->file = file;
 				if (!package->title[0])
 					snprintf(package->title, sizeof(package->title), "%s", file.title);
+				snprintf(package_path, sizeof(package_path), "%s/%s", steam.root, package->folder);
 			}
 		}
 		pthread_mutex_unlock(&steam.state_lock);
+		if (package_path[0] && file.author[0])
+			author_save(package_path, file.author);
 	}
 }
 
@@ -1448,11 +1497,23 @@ static int download_item(struct steam_workshop_file const *item)
 	char old[1100];
 	char folder[64];
 	char existing[64];
+	char author[sizeof(item->author)];
 	uint64_t base = 0, total = 0;
 	int i, maps = 0;
 	FILE *sidecar;
 
 	steam_log("steam: downloading item %llu (%s)", (unsigned long long)item->id, item->title);
+	/* (its maker's name: a browsed page's item has it, an id typed in asks) */
+	snprintf(author, sizeof(author), "%s", item->author);
+	if (!author[0] && item->creator)
+	{
+		struct steam_workshop_file named = *item;
+
+		pthread_mutex_lock(&steam.session_lock);
+		if (session_ensure(error, sizeof(error)) && steam_cm_workshop_authors(steam.cm, &named, 1) > 0)
+			snprintf(author, sizeof(author), "%s", named.author);
+		pthread_mutex_unlock(&steam.session_lock);
+	}
 	if (!depot_open(STEAM_APP_MCC, item->manifest, key, &files, error, sizeof(error)))
 	{
 		say_error("The item could not be downloaded: %s", error);
@@ -1534,6 +1595,7 @@ static int download_item(struct steam_workshop_file const *item)
 		fprintf(sidecar, "%s\n%s\n", folder, title);
 		fclose(sidecar);
 	}
+	author_save(staging, author);
 	/* in place: an older copy moved aside first, then removed */
 	make_folders(root, 1);
 	snprintf(old, sizeof(old), "%s.old", staging);

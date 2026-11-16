@@ -114,6 +114,7 @@ static void mcc_map_register(char const *name)
 	struct mcc_cache_identity identity;
 	struct mcc_menu_map *map;
 	struct mcc_workshop_item item;
+	char author[MCC_WORKSHOP_AUTHOR_SIZE];
 	FILE *file;
 	long file_size;
 	size_t name_length = strlen(name), index;
@@ -166,6 +167,24 @@ static void mcc_map_register(char const *name)
 		start_word = character == ' ';
 	}
 	mcc_map_description_read(map);
+	/* (a Steam download's maker, as its details said: "By <name>" after the rest) */
+	if (mcc_workshop_local_author(map->level_name, author))
+	{
+		size_t used = 0, at;
+
+		while (map->description[used])
+			used++;
+		if (used && used + 2 < MCC_MAP_DESCRIPTION_MAXIMUM)
+		{
+			map->description[used++] = '\r';
+			map->description[used++] = '\n';
+		}
+		for (at = 0; "By "[at] && used < MCC_MAP_DESCRIPTION_MAXIMUM; at++)
+			map->description[used++] = "By "[at];
+		for (at = 0; author[at] && used < MCC_MAP_DESCRIPTION_MAXIMUM; at++)
+			map->description[used++] = (unsigned char)author[at];
+		map->description[used] = 0;
+	}
 }
 
 static int mcc_map_order(void const *left, void const *right)

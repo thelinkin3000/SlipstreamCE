@@ -6,6 +6,10 @@
 #define MCC_WORKSHOP_ID_SIZE 24
 #define MCC_WORKSHOP_TITLE_SIZE 40
 #define MCC_WORKSHOP_SIDECAR "workshop_id.txt"
+/* The item's maker, one line, as Android's Steam downloads keep it beside the
+ * sidecar (not in it: the sidecar's two lines are checked strictly). */
+#define MCC_WORKSHOP_AUTHOR_FILE "workshop_author.txt"
+#define MCC_WORKSHOP_AUTHOR_SIZE 64
 
 /* Where the item travels: the bytes of the 128-byte map name after the name's
  * own terminator (names stop at 63 characters). MCC protocol 64 introduces
@@ -39,6 +43,9 @@ int mcc_workshop_package_folder(char const *name, char folder[64]);
  * its folder named by the item id (as Steam names it), or the id in its
  * ModInfo.json (mcc_workshop_parse_modinfo). 1 when known. */
 int mcc_workshop_local_item(char const *name, struct mcc_workshop_item *item);
+/* The maker of the item a local package belongs to, from
+ * MCC_WORKSHOP_AUTHOR_FILE in its folder (printable ASCII). 1 when known. */
+int mcc_workshop_local_author(char const *name, char author[MCC_WORKSHOP_AUTHOR_SIZE]);
 /* A level's name made readable: "pat_beavercreek" to "Pat Beavercreek". */
 void mcc_workshop_title_from_level(char const *name, char title[MCC_WORKSHOP_TITLE_SIZE]);
 /* Put the item into the unused bytes of a map name record (size 128), or
