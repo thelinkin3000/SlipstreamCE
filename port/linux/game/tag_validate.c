@@ -1487,6 +1487,54 @@ void tag_validate_custom_edition_note_structure_bsp(
 /* the tags at tag_header (tag_data_size bytes of a tag cache), whose header
 the caller has checked and claimed: each tag's table entry, then every tag
 through its schema, then every tag's checks */
+/* port: an earlier tag of another group whose data is at the same address
+(a Custom Edition or Halo PC map's tool aliased one tag onto another's
+data), or NULL */
+static struct tag_validate_instance *instance_sharing_data(
+	struct tag_validate_instance *instances,
+	long absolute_index)
+{
+	long other;
+
+	for (other = 0; other < absolute_index; other++)
+	{
+		if (instances[other].base_address == instances[absolute_index].base_address &&
+			instances[other].group_tag != instances[absolute_index].group_tag &&
+			instances[other].group_tag != STRUCTURE_BSP_GROUP_TAG)
+		{
+			return &instances[other];
+		}
+	}
+
+	return NULL;
+}
+
+/* port: how many bytes there are from address to the next tag's data, or 0
+when no tag's data follows it */
+static unsigned long instance_room(
+	struct tag_validate_instance const *instances,
+	long tag_count,
+	void const *address)
+{
+	unsigned long nearest = 0;
+	long index;
+
+	for (index = 0; index < tag_count; index++)
+	{
+		void *next = instances[index].base_address;
+
+		/* (the ones after this tag are not moved yet: tag_validate.c's window) */
+		VALIDATE_MOVE(next);
+		if ((unsigned long)next > (unsigned long)address &&
+			(!nearest || (unsigned long)next - (unsigned long)address < nearest))
+		{
+			nearest = (unsigned long)next - (unsigned long)address;
+		}
+	}
+
+	return nearest;
+}
+
 static boolean validate_tag_table(
 	struct tag_validation *validation,
 	struct tag_validate_instance *instances,
@@ -1546,6 +1594,52 @@ static boolean validate_tag_table(
 			(!region_contains(validation, instance->base_address, group->definition->size) ||
 				!claim(instance->base_address, group->definition->size)))
 		{
+			/* port: a Custom Edition or Halo PC map's two tags of other groups at
+			one address (HaloMD's sphere_1: the stock generic sound environment
+			aliased onto its wind's 64 bytes, the last of its tag data): the one
+			whose structure fits in the bytes up to the next tag's keeps them,
+			else the smaller; the other has no data, and what refers to it none
+			(validate_tag_index). (A failed claim here stopped at its first byte,
+			the other's.) */
+			struct tag_validate_instance *shared = tag_validate_globals.custom_edition &&
+				region_contains(validation, instance->base_address, group->definition->size) ?
+				instance_sharing_data(instances, absolute_index) : NULL;
+			struct tag_schema_group const *shared_group = shared ? schema_group_get(shared->group_tag) : NULL;
+
+			if (shared_group && shared_group->definition)
+			{
+				unsigned long size = (unsigned long)group->definition->size;
+				unsigned long shared_size = (unsigned long)shared_group->definition->size;
+				unsigned long room = instance_room(instances, tag_count, instance->base_address);
+				boolean fits = room && size <= room;
+				boolean shared_fits = room && shared_size <= room;
+				boolean keep_this = fits != shared_fits ? fits : size < shared_size;
+				char text[5];
+
+				if (!keep_this)
+				{
+					tag_validate_correct(validation, "has its data where tag %08lx ('%s') has its own: none",
+						shared->tag_index, tag_to_text(shared->group_tag, text));
+					instance->base_address = NULL;
+					continue;
+				}
+				/* (the bytes are this tag's: the other's claim stands for them, what
+				it claimed past them is let go, and what this one needs past it is
+				claimed) */
+				if (shared_size > size)
+					unclaim((unsigned long)((byte *)instance->base_address + size - (byte *)tag_validate_globals.header),
+						shared_size - size);
+				if (size > shared_size && !claim((byte *)instance->base_address + shared_size, size - shared_size))
+				{
+					tag_validate_refuse(validation, "has its data at %08lx, outside the tags or overlapping another's",
+						(unsigned long)instance->base_address);
+					break;
+				}
+				tag_validate_correct(validation, "has the data of tag %08lx ('%s'), which has none now",
+					shared->tag_index, tag_to_text(shared->group_tag, text));
+				shared->base_address = NULL;
+				continue;
+			}
 			tag_validate_refuse(validation, "has its data at %08lx, outside the tags or overlapping another's",
 				(unsigned long)instance->base_address);
 			break;
