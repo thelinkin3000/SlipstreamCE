@@ -742,6 +742,37 @@ static boolean reordered_bitmaps_find(
 	return TRUE;
 }
 
+/* A bitmap whose pixels hold fewer mipmaps than it says, as one a tool gave
+a new picture without its mipmaps can (HaloMD's bgulch_1: a 128x128 DXT1
+decal of 7 mipmaps in 0x2000 bytes, its first alone), is given the mipmaps
+its pixels hold: Halo PC read past them. The number dropped; none when even
+its first does not fit (custom_edition_bitmap_drawable then refuses it). */
+static short bitmap_mipmaps_fit(
+	struct bitmap_data *bitmap)
+{
+	short said = bitmap->mipmap_count;
+
+	/* (only what bitmap_verify would take: its sizes are counted below) */
+	if (said <= 0 || bitmap->pixels_size < 0 ||
+		bitmap->width <= 0 || bitmap->height <= 0 || bitmap->depth <= 0 ||
+		bitmap->type < _bitmap_type_2d || bitmap->type > _bitmap_type_cube_map ||
+		bitmap->format < 0 || bitmap->format > _bitmap_format_p8_bump ||
+		said > floor_log2(MAX(bitmap->width, MAX(bitmap->height, bitmap->depth))) ||
+		bitmap->pixels_size >= bitmap_get_pixel_data_size(bitmap))
+	{
+		return 0;
+	}
+	while (bitmap->mipmap_count > 0 && bitmap->pixels_size < bitmap_get_pixel_data_size(bitmap))
+		bitmap->mipmap_count--;
+	if (bitmap->pixels_size < bitmap_get_pixel_data_size(bitmap))
+	{
+		bitmap->mipmap_count = said;
+		return 0;
+	}
+
+	return (short)(said - bitmap->mipmap_count);
+}
+
 /* ---------- public code */
 
 boolean custom_edition_bitmaps_verify(
@@ -759,7 +790,18 @@ boolean custom_edition_bitmaps_verify(
 		for (bitmap_index = 0; bitmap_index < group->bitmaps.count; bitmap_index++)
 		{
 			struct bitmap_data *bitmap = TAG_BLOCK_GET_ELEMENT(&group->bitmaps, bitmap_index, struct bitmap_data);
+			short dropped = bitmap_mipmaps_fit(bitmap);
 
+			if (dropped)
+			{
+				error(
+					_error_silent,
+					"custom edition: bitmap %ld of '%s' holds the pixels of %d of its %d mipmaps: drawn with those",
+					bitmap_index,
+					custom_edition_cache_tag_name(tag_cache, loaded_bytes, tag_index),
+					bitmap->mipmap_count + 1,
+					bitmap->mipmap_count + dropped + 1);
+			}
 			if (!custom_edition_bitmap_drawable(bitmap))
 			{
 				error(
