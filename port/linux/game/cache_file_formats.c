@@ -2558,12 +2558,15 @@ static int loaded_block_get(
 	*count = read_s32(block + TAG_BLOCK_COUNT_OFFSET);
 	*offset = block_address - address;
 
+	/* (at any address: HaloMD's maps, sunset_7 and outback_3 among them, have
+	every tag and block 3 bytes past a multiple of 4, which the game reads as
+	it is, and which, skipped here, left their HUDs unhalved, their Ogg
+	Vorbis sounds silenced and their bitmaps unprepared) */
 	return *count == 0 ||
 		(*count > 0 &&
 		(uint32_t)*count <= size / element_bytes &&
 		block_address >= address &&
-		range_fits(*offset, (uint32_t)*count * element_bytes, size) &&
-		!(*offset & 3));
+		range_fits(*offset, (uint32_t)*count * element_bytes, size));
 }
 
 /* nonzero when the `vector_count` vectors at `vectors_offset` of each of

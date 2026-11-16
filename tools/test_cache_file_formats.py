@@ -320,12 +320,16 @@ def add_hud_placement(blob, placement, scale, flags):
     blob.u16(placement + 0x0C, flags)
 
 
-def add_weapon_hud(blob, placements, bitmap_index=None):
+def add_weapon_hud(blob, placements, bitmap_index=None, misaligned=False):
     """A weapon HUD interface with a static element for each of the first two
     placements and a crosshair of one item for the third, each (scale, flags);
-    the first static and the crosshair draw the bitmap of tag bitmap_index."""
+    the first static and the crosshair draw the bitmap of tag bitmap_index.
+    Misaligned, its statics are 3 bytes past a multiple of 4, as every block
+    of HaloMD's sunset_7 is."""
     hud = blob.reserve(0x17C)
-    statics = blob.reserve(2 * 0xB4)
+    if misaligned:
+        blob.reserve(3, align=1)
+    statics = blob.reserve(2 * 0xB4, align=1 if misaligned else 4)
     crosshairs = blob.reserve(0x68)
     items = blob.reserve(0x6C)
     blob.block(hud + 0x60, 2, statics)
@@ -399,7 +403,7 @@ class Map:
                  weapon_hud=None, hud_bitmap_flags=None, in_map_bitmap=None, strings_name="test\\strings",
                  strings=("hello", "world!"), name=b"test", tags_checksum=0,
                  halo_pc=False, halo_pc_bitmap_name="test\\external bitmap", halo_pc_bad_string=False,
-                 script_strings_inside_syntax=False):
+                 script_strings_inside_syntax=False, weapon_hud_misaligned=False):
         self.bsp_sizes = bsp_sizes
         # a Halo PC map (version 7): no tag held by a resource map; its stock
         # bitmap and sound whole in the map, their pixels and samples at
@@ -411,6 +415,7 @@ class Map:
         self.halo_pc_bad_string = halo_pc_bad_string
         # the scenario's script strings inside its script syntax data (HaloMD's flatgulch_1)
         self.script_strings_inside_syntax = script_strings_inside_syntax
+        self.weapon_hud_misaligned = weapon_hud_misaligned
         # the header's name and the tag data's checksum, by which Chimera's
         # map list knows a map
         self.name = name
@@ -615,7 +620,8 @@ class Map:
             if self.hud_bitmap_flags is not None:
                 tag_data.u16(address_of["test\\in map bitmap"] + 6, self.hud_bitmap_flags)
                 hud_bitmap_index = [name for _, name, _ in tags].index("test\\in map bitmap")
-            address_of["test\\weapon hud"] = add_weapon_hud(tag_data, self.weapon_hud, hud_bitmap_index)
+            address_of["test\\weapon hud"] = add_weapon_hud(tag_data, self.weapon_hud, hud_bitmap_index,
+                                                            self.weapon_hud_misaligned)
         for tag_index, (group_name, name, external) in enumerate(tags):
             if name in address_of:
                 tag_data.u32(instances + tag_index * 0x20 + 0x14, address_of[name])
@@ -1664,3 +1670,14 @@ def test_a_tag_whose_data_lies_past_the_tag_data_is_given_none(report_tool, tmp_
     assert returncode == 0, report
     assert report["tags_without_data"] == "1"
     assert u32_at(dump.read_bytes(), cache.addresses["instances"] + 8 * 0x20 + 0x14) == 0
+
+
+def test_hud_elements_in_a_misaligned_block_are_halved_too(report_tool, tmp_path):
+    """HaloMD's sunset_7 has every tag and block 3 bytes past a multiple of 4:
+    its weapon HUDs' statics were skipped and drawn twice too large."""
+    cache = Map(weapon_hud=[((1.0, 0.5), 4 | 1), ((1.0, 1.0), 1), ((2.0, 2.0), 4)], weapon_hud_misaligned=True)
+    returncode, report, tags = converted(report_tool, cache, tmp_path)
+    assert returncode == 0 and report["hud_placements_rescaled"] == "1"
+    statics = u32_at(tags, cache.addresses["test\\weapon hud"] + 0x64)
+    assert statics % 4 == 3
+    assert (f32_at(tags, statics + 0x28), f32_at(tags, statics + 0x2C)) == (0.5, 0.25)
