@@ -2,6 +2,9 @@
 #define MCC_MAIN_H
 boolean mcc_main_load_failed(char const *name);
 boolean mcc_main_network_load_failed(char const *name);
+/* The same for a Custom Edition map (custom_edition_level_name). */
+boolean custom_edition_main_load_failed(char const *name);
+boolean custom_edition_main_network_load_failed(char const *name);
 boolean mcc_main_map_completed(void);
 /* Resolve a script's map_name within the current MCC package. */
 boolean mcc_main_script_level_resolve(char const *current, char const *requested, char *next, size_t size);

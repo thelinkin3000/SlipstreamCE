@@ -844,7 +844,8 @@ boolean network_game_create_game_objects(
 	else
 	{
 		/* port: MCC refusals unwind through the network session lifecycle. */
-		if (mcc_main_network_load_failed(options.map_name))
+		if (mcc_main_network_load_failed(options.map_name) ||
+			custom_edition_main_network_load_failed(options.map_name))
 		{
 			game->local_data.game_objects_loaded = FALSE;
 			return FALSE;

@@ -6,6 +6,7 @@
 #include "interface/ui_widget.h"
 #include "networking/network_game_globals.h"
 #include "mcc_cache.h"
+#include "custom_edition_cache.h"
 #include "mcc_main.h"
 #include "mcc_errors.h"
 #include "mcc_maps.h"
@@ -109,6 +110,52 @@ boolean mcc_main_load_failed(char const *name)
     errors_clear();
     main_goto_main_menu();
     main_menu_load();
+    return TRUE;
+}
+
+/* A Custom Edition map the game cannot run (custom_edition_cache.c logs
+ * why) goes back to the menus with that said, as an MCC map's does, and
+ * not to an empty screen: its load is not retried. */
+static void custom_edition_main_error_text(char const *name, wchar_t *text, size_t size)
+{
+    char message[512];
+    char const *leaf = name;
+    char const *cursor;
+    size_t i;
+
+    for (cursor = name; *cursor; cursor++) {
+        if (*cursor == '\\' || *cursor == '/') leaf = cursor + 1;
+    }
+    snprintf(message, sizeof(message),
+        "The map %.64s could not be loaded: this build cannot run it. See debug.txt for why.", leaf);
+    for (i = 0; message[i] && i < size - 1; i++) text[i] = (unsigned char)message[i];
+    text[i] = 0;
+}
+
+boolean custom_edition_main_load_failed(char const *name)
+{
+    wchar_t text[512];
+    if (!custom_edition_level_name(name)) return FALSE;
+    error(_error_silent, "custom edition: returning to the menu after failed load of %s", name);
+    custom_edition_main_error_text(name, text, 512);
+    display_error_text_when_main_menu_loaded(text);
+    errors_clear();
+    main_goto_main_menu();
+    main_menu_load();
+    return TRUE;
+}
+
+boolean custom_edition_main_network_load_failed(char const *name)
+{
+    wchar_t text[512];
+    if (!custom_edition_level_name(name)) return FALSE;
+    error(_error_silent, "custom edition: ending the network session after failed load of %s", name);
+    custom_edition_main_error_text(name, text, 512);
+    display_error_text_when_main_menu_loaded(text);
+    errors_clear();
+    /* (as mcc_main_network_load_failed: queued, from the receive callback) */
+    network_game_abort();
+    main_goto_main_menu();
     return TRUE;
 }
 
