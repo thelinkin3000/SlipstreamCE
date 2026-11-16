@@ -1060,6 +1060,9 @@ static void do_page(void)
 			snprintf(error, sizeof(error), "%s", steam_cm_error(steam.cm));
 			session_drop();
 		}
+		/* (the makers' names: without them the details leave "by" out) */
+		else if (count > 0 && steam_cm_workshop_authors(steam.cm, files, count) < 0)
+			steam_log("steam: the items' makers could not be named: %s", steam_cm_error(steam.cm));
 	}
 	pthread_mutex_unlock(&steam.session_lock);
 	steam_log("steam: workshop page %d (%s, %s, \"%s\"): %d items of %u%s%s", page, sort_names[sort],
@@ -2559,7 +2562,8 @@ static void details_build(int place, char *title, int title_size, char *text, in
 		else if (queue_find(1, file->id) >= 0)
 			queued_text(queue_find(1, file->id), body, sizeof(body));
 		else
-			snprintf(body, sizeof(body), "%s, %u subscribers. %s\n%.300s", size, (unsigned)file->subscriptions,
+			snprintf(body, sizeof(body), "%s%s%s%s, %u subscribers. %s\n%.300s", file->author[0] ? "By " : "",
+				file->author, file->author[0] ? ". " : "", size, (unsigned)file->subscriptions,
 				installed == 1 ? "Installed: A again downloads it." :
 				installed == 2 ? "Update: A downloads it." : "A installs it.",
 				file->description);

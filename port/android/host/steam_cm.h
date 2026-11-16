@@ -126,7 +126,11 @@ struct steam_workshop_file
 	uint64_t size;
 	uint32_t updated;
 	uint32_t subscriptions;
+	/* its maker's SteamID (0: not said) */
+	uint64_t creator;
 	char title[96];
+	/* its maker's Steam name, from steam_cm_workshop_authors ("" until then, or if unknown) */
+	char author[64];
 	char description[600];
 	char preview_url[STEAM_URL_SIZE];
 	/* its tags, comma separated */
@@ -140,5 +144,8 @@ int steam_cm_workshop_query(struct steam_cm *cm, uint32_t app, char const *tags,
 	enum steam_workshop_sort sort, int page, struct steam_workshop_file *files, int capacity, uint32_t *total);
 /* one item's details (its manifest and title, for an id typed in); 1 found */
 int steam_cm_workshop_details(struct steam_cm *cm, uint64_t id, struct steam_workshop_file *file);
+/* the files' makers' Steam names into their author, in one request: how many
+were named, -1 on failure (the files' authors are left as they were) */
+int steam_cm_workshop_authors(struct steam_cm *cm, struct steam_workshop_file *files, int count);
 
 #endif
