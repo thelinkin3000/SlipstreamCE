@@ -8492,7 +8492,11 @@ static void game_engine_update_weapons(
 				((item->object.scale >= 0.5f) &&
 					(item->object.scale <= 3.f)) ||
 				/* port: MCC-authored miniature items retain their tag scale. */
-				mcc_item_small_scale(item->object.scale));
+				mcc_item_small_scale(item->object.scale) ||
+				/* port: and a Custom Edition or Halo PC map's items theirs, which
+				Halo PC took whatever they were (HaloMD's dragonball_1: asserted
+				every tick, ten thousand times a minute) */
+				(custom_edition_cache_tags_loaded() && item->object.scale > 0.f));
 		}
 
 		/*
