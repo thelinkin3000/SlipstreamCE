@@ -687,12 +687,21 @@ static void validate_data_extent(
 		return;
 	}
 	VALIDATE_MOVE(data->address);
-	if (data->size &&
-		(!region_contains(validation, data->address, data->size) || !claim(data->address, data->size)))
+	if (data->size && !region_contains(validation, data->address, data->size))
 	{
-		tag_validate_refuse(validation, "has %ld bytes at %08lx, outside the tags or overlapping another's",
+		tag_validate_refuse(validation, "has %ld bytes at %08lx, outside the tags",
 			data->size, (unsigned long)data->address);
 		return;
+	}
+	/* (data in the tags that runs into another's, as a hand-lengthened
+	string can (HaloMD's bgplus_5: a HUD message 6 bytes into the next),
+	is the one that came first's: this one is none, rather than the map
+	refused; no two may still hold the same bytes) */
+	if (data->size && !claim(data->address, data->size))
+	{
+		tag_validate_correct(validation, "has %ld bytes at %08lx, overlapping another's: none",
+			data->size, (unsigned long)data->address);
+		data->size = 0;
 	}
 	if (!data->size)
 		data->address = NULL;
