@@ -270,6 +270,64 @@ static boolean custom_edition_model_part_verify(
 	return TRUE;
 }
 
+/* Halo PC draws a part's strip as it is, so a strip index past the part's
+vertices draws whatever vertices follow them there: a stray triangle. Some
+maps' tools left such indices (HaloMD's acrophobia_1: its flamethrower). Each
+is given the index before it in the strip (the first, the strip's first
+index in range), so the triangles it was in are drawn as none, and the part
+passes custom_edition_model_part_verify instead of the map being refused.
+The number of indices given another. */
+static long model_strips_repair(
+	struct model const *model,
+	struct custom_edition_load_report const *report,
+	byte *model_data)
+{
+	long repaired = 0;
+	long geometry_index;
+
+	for (geometry_index = 0; geometry_index < model->geometries.count; geometry_index++)
+	{
+		struct model_geometry const *geometry = TAG_BLOCK_GET_ELEMENT(
+			&model->geometries,
+			geometry_index,
+			struct model_geometry);
+		long part_index;
+
+		for (part_index = 0; part_index < geometry->parts.count; part_index++)
+		{
+			struct custom_edition_model_part const *part = TAG_BLOCK_GET_ELEMENT(
+				&geometry->parts,
+				part_index,
+				struct custom_edition_model_part);
+			word *strip = (word *)(model_data + report->model_index_data_offset + part->strip_offset);
+			long count = part->strip_triangle_count + 2;
+			long fill = NONE;
+			long index;
+
+			if (part->vertex_count <= 0 || part->strip_triangle_count < 0)
+				continue;
+			for (index = 0; index < count && fill == NONE; index++)
+			{
+				if (strip[index] < part->vertex_count)
+					fill = strip[index];
+			}
+			if (fill == NONE)
+				continue;
+			for (index = 0; index < count; index++)
+			{
+				if (strip[index] >= part->vertex_count)
+				{
+					strip[index] = (word)fill;
+					repaired++;
+				}
+				fill = strip[index];
+			}
+		}
+	}
+
+	return repaired;
+}
+
 /* whether the model has more nodes than the renderer skins at once, and so
 is drawn a part's own nodes at a time */
 static boolean model_has_many_nodes(
@@ -838,6 +896,17 @@ boolean custom_edition_models_convert(
 		{
 			error(_error_silent, "custom edition: the model '%s', of %ld nodes, is drawn a part's nodes at a time",
 				custom_edition_cache_tag_name(tag_cache, loaded_bytes, tag_index), model->nodes.count);
+		}
+	}
+	tag_index = NONE;
+	while ((model = custom_edition_cache_tag_next(tag_cache, loaded_bytes, GBXMODEL_GROUP_TAG, sizeof(*model), &tag_index)) != NULL)
+	{
+		long repaired = model_strips_repair(model, report, model_data);
+
+		if (repaired)
+		{
+			error(_error_silent, "custom edition: %ld strip indices of the model '%s' named vertices past their part's: those triangles are drawn as none",
+				repaired, custom_edition_cache_tag_name(tag_cache, loaded_bytes, tag_index));
 		}
 	}
 	tag_index = NONE;
