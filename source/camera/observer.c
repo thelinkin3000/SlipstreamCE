@@ -102,6 +102,7 @@ symbols in this file:
 
 #include "cseries/cseries.h"
 #include "observer.h"
+#include "errors.h" /* port: observer_set_camera says a bad command */
 #include "director.h" /* port: director_unattended_scripted_camera */
 
 #include "game/players.h"
@@ -125,11 +126,10 @@ enum
 
 /* ---------- macros */
 
-#define match_assert_valid_observer_command(file, line, command) \
-	match_vassert( \
-		file, \
-		line, \
-		(command) && \
+/* port: the command check on its own, so a release build can say what was
+wrong (observer_set_camera) */
+#define valid_observer_command(command) \
+		((command) && \
 		(!TEST_FLAG((command)->flags, _observer_command_valid_bit) || \
 		(valid_real_vector3d_axes2(&(command)->forward, &(command)->up) && \
 			valid_real((command)->focus_position.x) && (command)->focus_position.x>=-5000.f && (command)->focus_position.x<=5000.f && \
@@ -141,7 +141,13 @@ enum
 			valid_real_vector3d(&(command)->focus_velocity) && \
 			valid_real((command)->focus_distance) && (command)->focus_distance>=0.f && (command)->focus_distance<=5000.f && \
 			valid_real((command)->field_of_view) && (command)->field_of_view>=0.001f && (command)->field_of_view<=_pi / 2.f && \
-			valid_real((command)->timer) && (command)->timer>=0.f && (command)->timer<=3600.f)), \
+			valid_real((command)->timer) && (command)->timer>=0.f && (command)->timer<=3600.f)))
+
+#define match_assert_valid_observer_command(file, line, command) \
+	match_vassert( \
+		file, \
+		line, \
+		valid_observer_command(command), \
 		csprintf( \
 			temporary, \
 			"Invalid camera command.\nF: (%f, %f, %f) U: (%f, %f, %f)\nP: (%f, %f, %f) O: (%f, %f, %f)\nD: %f V: (%f, %f, %f), FOV: %f, T: %f, FL: %ld", \
@@ -506,6 +512,29 @@ void observer_set_camera(
 	struct observer_command *command)
 {
 	struct observer *observer = observer_get(local_player_index);
+
+	/* port: a release build's assert says only its line: the first bad
+	command of a map is logged whole, so a map that gives the camera one
+	(HaloMD's sphere_1) can be told apart */
+	{
+		static long reported_scenario = NONE;
+
+		if (!valid_observer_command(command) && reported_scenario != global_scenario_index)
+		{
+			reported_scenario = global_scenario_index;
+			error(_error_silent,
+				"observer: player %d's camera command is invalid: forward (%f, %f, %f) up (%f, %f, %f) position (%f, %f, %f) offset (%f, %f, %f) distance %f velocity (%f, %f, %f) fov %f timer %f flags %ld",
+				local_player_index,
+				command ? command->forward.i : 0.f, command ? command->forward.j : 0.f, command ? command->forward.k : 0.f,
+				command ? command->up.i : 0.f, command ? command->up.j : 0.f, command ? command->up.k : 0.f,
+				command ? command->focus_position.x : 0.f, command ? command->focus_position.y : 0.f, command ? command->focus_position.z : 0.f,
+				command ? command->focus_offset.i : 0.f, command ? command->focus_offset.j : 0.f, command ? command->focus_offset.k : 0.f,
+				command ? command->focus_distance : 0.f,
+				command ? command->focus_velocity.i : 0.f, command ? command->focus_velocity.j : 0.f, command ? command->focus_velocity.k : 0.f,
+				command ? command->field_of_view : 0.f, command ? command->timer : 0.f,
+				command ? (long)command->flags : 0L);
+		}
+	}
 
 	match_assert_valid_observer_command(
 		"c:\\halo\\SOURCE\\camera\\observer.c",

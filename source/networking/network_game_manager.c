@@ -836,6 +836,11 @@ boolean network_game_create_game_objects(
 
 			if (!network_game_spawn_player(&game->players[player_index]))
 			{
+				/* port: said, as this machine then never says it's loaded
+				and waits on an empty screen (HaloMD's a30_8) */
+				error(_error_silent, "network game: player %ld (machine %ld, controller %ld) could not be made for '%s': the game's objects are not loaded",
+					player_index, (long)game->players[player_index].machine_index,
+					(long)game->players[player_index].controller_index, options.map_name);
 				game->local_data.game_objects_loaded = FALSE;
 				break;
 			}
