@@ -1367,6 +1367,7 @@ static void file_read(unsigned char const *data, size_t size, struct steam_works
 		switch (field)
 		{
 		case 2: file->id = value; break;
+		case 3: file->creator = value; break;
 		case 8: file->size = value; break;
 		case 11: steam_pb_text(bytes, length, file->preview_url, sizeof(file->preview_url)); break;
 		case 14: file->manifest = value; break;
@@ -1462,6 +1463,97 @@ int steam_cm_workshop_query(struct steam_cm *cm, uint32_t app, char const *tags,
 	}
 	message_free(answer);
 	return count;
+}
+
+/* (Player.GetPlayerLinkDetails: the request's steamids are field 1; the
+answer's accounts are field 1, each with its public_data in field 1, which
+has the steamid in field 1 and the persona_name in field 10) */
+int steam_cm_workshop_authors(struct steam_cm *cm, struct steam_workshop_file *files, int count)
+{
+	struct steam_pb request;
+	struct cm_message *answer;
+	struct steam_pb_reader reader;
+	int field, wire;
+	uint64_t value;
+	unsigned char const *data;
+	size_t size;
+	int i, j, asked = 0, named = 0;
+
+	memset(&request, 0, sizeof(request));
+	for (i = 0; i < count; i++)
+	{
+		int repeated = 0;
+
+		if (!files[i].creator)
+			continue;
+		for (j = 0; j < i && !repeated; j++)
+			repeated = files[j].creator == files[i].creator;
+		if (!repeated)
+		{
+			steam_pb_varint(&request, 1, files[i].creator);
+			asked++;
+		}
+	}
+	if (!asked)
+	{
+		steam_pb_free(&request);
+		return 0;
+	}
+	answer = cm_call(cm, "Player.GetPlayerLinkDetails#1", &request);
+	steam_pb_free(&request);
+	if (!answer)
+		return -1;
+	reader.at = answer->body;
+	reader.end = answer->body + answer->body_size;
+	reader.failed = 0;
+	while (steam_pb_next(&reader, &field, &wire, &value, &data, &size))
+	{
+		struct steam_pb_reader account;
+		int account_field, account_wire;
+		uint64_t account_value;
+		unsigned char const *account_data;
+		size_t account_size;
+
+		if (field != 1 || !data)
+			continue;
+		account.at = data;
+		account.end = data + size;
+		account.failed = 0;
+		while (steam_pb_next(&account, &account_field, &account_wire, &account_value, &account_data, &account_size))
+		{
+			struct steam_pb_reader public_data;
+			int public_field, public_wire;
+			uint64_t public_value;
+			unsigned char const *public_bytes;
+			size_t public_size;
+			uint64_t steam_id = 0;
+			char name[sizeof(files[0].author)];
+
+			if (account_field != 1 || !account_data)
+				continue;
+			name[0] = 0;
+			public_data.at = account_data;
+			public_data.end = account_data + account_size;
+			public_data.failed = 0;
+			while (steam_pb_next(&public_data, &public_field, &public_wire, &public_value, &public_bytes, &public_size))
+			{
+				if (public_field == 1)
+					steam_id = public_value;
+				else if (public_field == 10 && public_bytes)
+					steam_pb_text(public_bytes, public_size, name, sizeof(name));
+			}
+			if (!steam_id || !name[0])
+				continue;
+			for (i = 0; i < count; i++)
+				if (files[i].creator == steam_id)
+				{
+					memcpy(files[i].author, name, sizeof(files[i].author));
+					named++;
+				}
+		}
+	}
+	message_free(answer);
+	return named;
 }
 
 int steam_cm_workshop_details(struct steam_cm *cm, uint64_t id, struct steam_workshop_file *file)
