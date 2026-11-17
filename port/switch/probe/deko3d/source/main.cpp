@@ -18,6 +18,12 @@ sdmc:/deko3d_probe.txt.
    and drawn again, to see that the GPU sees CPU writes after a cache flush.
 4. If the deko3d image has dumped the game's shaders (DEKO3D.md, phase 4),
    how long UAM takes on each of them, and on all of them together.
+5. The same shaders read into memory first and compiled into memory, on one
+   thread twice and on two and three threads three times each, with every
+   wait on UAM's locks and on newlib's malloc lock timed (the memory
+   corpus, below): what keeps several compile threads from being faster.
+   It runs before step 4, which (with the multi-thread runs that write to
+   the card) is left out by naming "corpus" in the skip file.
 
 Each step is logged before it runs, so a crash leaves the step that crashed
 as the last line. A case can be skipped by naming it on a line of
@@ -42,6 +48,11 @@ one failed; press A (or wait 20 seconds) to exit, which also tests input.
 #include <sys/stat.h>
 
 extern "C" int probe_compile(int fragment, const char *glsl, const char *path);
+extern "C" int probe_compile_memory(int fragment, const char *glsl, char **dksh, size_t *size);
+/* the host's allocator for UAM (port/switch/host/host_uam_alloc.c): while
+set, UAM's allocations go to newlib's malloc */
+extern "C" int host_uam_alloc_bypass;
+#include "host_uam_alloc.h"
 
 #define LOG_PATH "sdmc:/deko3d_probe.txt"
 #define SKIP_PATH "sdmc:/deko3d_probe_skip.txt"
@@ -1137,6 +1148,406 @@ static void corpus_compile(void)
 	say("corpus: both stages together: %.1f ms", totals[0] + totals[1]);
 }
 
+/* ---------- the corpus in memory, its locks timed
+
+DEKO3D.md, phase 5, step 1 again: two and three compile threads were slower
+than one (74-77 s and 95-96 s against 43 s), the guess being Mesa's global
+type table's lock. Those runs also read each shader from the card and wrote
+each DKSH back to it inside the timed loop. Here the corpus is read into
+memory first and compiled into memory (open_memstream, as the game's host
+does), so the runs time compiling alone, and every lock the threads wait on
+is timed:
+
+- each pthread mutex UAM takes (its c11 locks: glsl_type::hash_mutex,
+  builtins_lock and the rest), by address: UAM's pthread_mutex_lock is
+  renamed to probe_mutex_lock (the Makefile), which tries the lock first
+  and times only a wait. The addresses are named afterwards from the
+  probe's symbols (deko3d.elf), probe_compile's address giving the base;
+- newlib's malloc lock (__malloc_lock, wrapped at the link): Mesa allocates
+  all the time, and that lock is one for the whole process.
+
+The runs: one thread twice (whether one thread makes the same bytes twice:
+the earlier runs' one-byte differences), then two and three threads three
+times each, every DKSH compared with the first run's in memory. */
+
+/* the waits of one worker (a pthread key finds them: the malloc lock is
+taken by every thread, and only the workers' are counted) */
+struct lock_waits
+{
+	/* UAM's mutexes, by address */
+	struct
+	{
+		void *mutex;
+		unsigned long acquired, waited;
+		u64 ticks;
+	} mutexes[32];
+	unsigned long malloc_acquired, malloc_waited;
+	u64 malloc_ticks;
+};
+
+static pthread_key_t lock_waits_key;
+
+static struct lock_waits *lock_waits_mine(void)
+{
+	return (struct lock_waits *)pthread_getspecific(lock_waits_key);
+}
+
+static void mutex_note(struct lock_waits *waits, void *mutex, u64 ticks, bool waited)
+{
+	int index;
+
+	for (index = 0; index < 32; index++)
+	{
+		if (!waits->mutexes[index].mutex)
+			waits->mutexes[index].mutex = mutex;
+		if (waits->mutexes[index].mutex == mutex)
+		{
+			waits->mutexes[index].acquired++;
+			if (waited)
+			{
+				waits->mutexes[index].waited++;
+				waits->mutexes[index].ticks += ticks;
+			}
+			return;
+		}
+	}
+}
+
+/* UAM's pthread_mutex_lock (the Makefile renames its calls to this) */
+extern "C" int probe_mutex_lock(pthread_mutex_t *mutex)
+{
+	struct lock_waits *waits = lock_waits_mine();
+	u64 start;
+	int result;
+
+	if (pthread_mutex_trylock(mutex) == 0)
+	{
+		if (waits)
+			mutex_note(waits, mutex, 0, false);
+		return 0;
+	}
+	start = armGetSystemTick();
+	result = pthread_mutex_lock(mutex);
+	if (waits)
+		mutex_note(waits, mutex, armGetSystemTick() - start, true);
+	return result;
+}
+
+/* newlib's malloc lock (-Wl,--wrap=__malloc_lock): the time to take it, of
+which more than a few ticks is a wait */
+extern "C" void __real___malloc_lock(struct _reent *reent);
+extern "C" void __wrap___malloc_lock(struct _reent *reent)
+{
+	struct lock_waits *waits = lock_waits_mine();
+	u64 start, ticks;
+
+	if (!waits)
+	{
+		__real___malloc_lock(reent);
+		return;
+	}
+	start = armGetSystemTick();
+	__real___malloc_lock(reent);
+	ticks = armGetSystemTick() - start;
+	waits->malloc_acquired++;
+	/* (19.2 MHz: 20 ticks is about a microsecond, past any lock taken
+	free) */
+	if (ticks > 20)
+	{
+		waits->malloc_waited++;
+		waits->malloc_ticks += ticks;
+	}
+}
+
+static char *memory_sources[CORPUS_MAXIMUM];
+/* the allocator UAM's runs use, for the log */
+static const char *memory_allocator = "newlib";
+static int memory_fragment[CORPUS_MAXIMUM];
+
+struct memory_output
+{
+	char *dksh;
+	size_t size;
+	int ok;
+};
+
+/* the first one-thread run's, which the others are compared with */
+static struct memory_output memory_reference[CORPUS_MAXIMUM];
+static struct memory_output memory_run[CORPUS_MAXIMUM];
+
+struct memory_share
+{
+	pthread_mutex_t lock;
+	size_t next;
+	unsigned long threads, run, started;
+	struct memory_output *outputs;
+	/* the workers' waits, added up as each ends; and each one's compile
+	time */
+	struct lock_waits total;
+	double busy[3];
+};
+
+static void memory_place(struct memory_share *share, unsigned long *mine_out)
+{
+	u64 allowed = 0;
+	unsigned long mine, pick;
+	int core = -1, index;
+
+	pthread_mutex_lock(&share->lock);
+	mine = share->started++;
+	pthread_mutex_unlock(&share->lock);
+	if (R_SUCCEEDED(svcGetInfo(&allowed, InfoType_CoreMask, CUR_PROCESS_HANDLE, 0)) && allowed)
+	{
+		pick = mine % (unsigned long)__builtin_popcountll(allowed);
+		for (index = 0; index < 64; index++)
+		{
+			if (!(allowed & (1ULL << index)))
+				continue;
+			if (!pick--)
+			{
+				core = index;
+				break;
+			}
+		}
+		if (core >= 0)
+			svcSetThreadCoreMask(CUR_THREAD_HANDLE, core, 1u << core);
+	}
+	*mine_out = mine;
+	pthread_mutex_lock(&share->lock);
+	say("memory corpus, %s, on %lu threads (run %lu): worker %lu on core %d", memory_allocator, share->threads,
+		share->run, mine, (int)svcGetCurrentProcessorNumber());
+	pthread_mutex_unlock(&share->lock);
+}
+
+static void *memory_worker(void *context)
+{
+	struct memory_share *share = (struct memory_share *)context;
+	struct lock_waits *waits = (struct lock_waits *)calloc(1, sizeof(*waits));
+	unsigned long mine;
+	u64 busy = 0;
+	int index;
+
+	memory_place(share, &mine);
+	pthread_setspecific(lock_waits_key, waits);
+	for (;;)
+	{
+		size_t which;
+		u64 start;
+
+		pthread_mutex_lock(&share->lock);
+		which = share->next;
+		share->next = which < corpus_count ? which + 1 : which;
+		pthread_mutex_unlock(&share->lock);
+		if (which >= corpus_count)
+			break;
+		start = armGetSystemTick();
+		share->outputs[which].ok = memory_sources[which] && probe_compile_memory(memory_fragment[which],
+			memory_sources[which], &share->outputs[which].dksh, &share->outputs[which].size);
+		busy += armGetSystemTick() - start;
+	}
+	pthread_setspecific(lock_waits_key, NULL);
+	/* (its free blocks to the pool, for the next run's workers) */
+	host_uam_alloc_thread_end();
+	pthread_mutex_lock(&share->lock);
+	/* (this worker's waits into the run's: each mutex by its address) */
+	for (index = 0; waits && index < 32 && waits->mutexes[index].mutex; index++)
+	{
+		int slot;
+
+		for (slot = 0; slot < 32; slot++)
+		{
+			if (!share->total.mutexes[slot].mutex)
+				share->total.mutexes[slot].mutex = waits->mutexes[index].mutex;
+			if (share->total.mutexes[slot].mutex == waits->mutexes[index].mutex)
+			{
+				share->total.mutexes[slot].acquired += waits->mutexes[index].acquired;
+				share->total.mutexes[slot].waited += waits->mutexes[index].waited;
+				share->total.mutexes[slot].ticks += waits->mutexes[index].ticks;
+				break;
+			}
+		}
+	}
+	if (waits)
+	{
+		share->total.malloc_acquired += waits->malloc_acquired;
+		share->total.malloc_waited += waits->malloc_waited;
+		share->total.malloc_ticks += waits->malloc_ticks;
+	}
+	if (mine < 3)
+		share->busy[mine] = (double)armTicksToNs(busy) / 1000000.0;
+	pthread_mutex_unlock(&share->lock);
+	free(waits);
+	return NULL;
+}
+
+/* one run of the corpus on `threads` threads into memory_run (or, for the
+first, memory_reference), compared with the reference */
+static void memory_corpus_run(unsigned long threads, unsigned long run, bool reference)
+{
+	struct memory_share share;
+	pthread_t thread_ids[3];
+	pthread_attr_t attributes;
+	struct memory_output *outputs = reference ? memory_reference : memory_run;
+	u64 start;
+	double wall;
+	unsigned long compiled = 0, failed = 0, different = 0, index;
+	int listed = 0;
+
+	for (index = 0; index < corpus_count; index++)
+	{
+		if (!reference)
+			free(memory_run[index].dksh);
+		memset(&outputs[index], 0, sizeof(outputs[index]));
+	}
+	memset(&share, 0, sizeof(share));
+	pthread_mutex_init(&share.lock, NULL);
+	share.threads = threads;
+	share.run = run;
+	share.outputs = outputs;
+	pthread_attr_init(&attributes);
+	/* Mesa's compiler recurses; two megabytes a thread */
+	pthread_attr_setstacksize(&attributes, 2 * 1024 * 1024);
+	start = armGetSystemTick();
+	for (index = 0; index < threads; index++)
+		pthread_create(&thread_ids[index], &attributes, memory_worker, &share);
+	pthread_attr_destroy(&attributes);
+	for (index = 0; index < threads; index++)
+		pthread_join(thread_ids[index], NULL);
+	wall = milliseconds_since(start);
+	pthread_mutex_destroy(&share.lock);
+	for (index = 0; index < corpus_count; index++)
+	{
+		if (outputs[index].ok)
+			compiled++;
+		else
+			failed++;
+		if (!reference && (outputs[index].ok != memory_reference[index].ok ||
+			outputs[index].size != memory_reference[index].size ||
+			(outputs[index].size && memcmp(outputs[index].dksh, memory_reference[index].dksh, outputs[index].size))))
+		{
+			different++;
+			if (listed < 8)
+			{
+				size_t byte, differing = 0, first = 0;
+
+				for (byte = 0; byte < outputs[index].size && byte < memory_reference[index].size; byte++)
+				{
+					if (outputs[index].dksh[byte] != memory_reference[index].dksh[byte])
+					{
+						if (!differing)
+							first = byte;
+						differing++;
+					}
+				}
+				say("memory corpus, %s, on %lu threads (run %lu): %s differs: %lu bytes (size %lu against %lu), "
+					"the first at 0x%lx: %02x against %02x", memory_allocator, threads, run, corpus_names[index],
+					(unsigned long)differing, (unsigned long)outputs[index].size,
+					(unsigned long)memory_reference[index].size, (unsigned long)first,
+					differing ? (unsigned char)outputs[index].dksh[first] : 0,
+					differing ? (unsigned char)memory_reference[index].dksh[first] : 0);
+				listed++;
+			}
+		}
+	}
+	say("memory corpus, %s, on %lu threads (run %lu): %lu compiled, %lu failed, %lu different from the first run; "
+		"%.1f ms; each worker compiling %.1f / %.1f / %.1f ms", memory_allocator, threads, run, compiled, failed,
+		different, wall,
+		share.busy[0], share.busy[1], share.busy[2]);
+	if (strcmp(memory_allocator, "newlib"))
+	{
+		struct host_uam_alloc_figures figures;
+
+		host_uam_alloc_figures(&figures);
+		say("  host_uam_alloc: %u regions, %.1f MB given to pages, %.1f MB free in the pool", figures.regions,
+			(double)figures.bytes / (1024.0 * 1024.0), (double)figures.pooled / (1024.0 * 1024.0));
+	}
+	say("  malloc lock: taken %lu times, waited on %lu times, %.1f ms waiting in all", share.total.malloc_acquired,
+		share.total.malloc_waited, (double)armTicksToNs(share.total.malloc_ticks) / 1000000.0);
+	for (index = 0; index < 32 && share.total.mutexes[index].mutex; index++)
+		say("  mutex %p: taken %lu times, waited on %lu times, %.1f ms waiting in all", share.total.mutexes[index].mutex,
+			share.total.mutexes[index].acquired, share.total.mutexes[index].waited,
+			(double)armTicksToNs(share.total.mutexes[index].ticks) / 1000000.0);
+}
+
+static void memory_corpus(void)
+{
+	size_t index;
+	unsigned long threads, run;
+	u64 start = armGetSystemTick();
+
+	if (skipped("memory_corpus"))
+	{
+		say("memory corpus: skipped");
+		return;
+	}
+	if (!corpus_count)
+		corpus_count = corpus_list(corpus_names);
+	if (!corpus_count)
+	{
+		say("memory corpus: no %s (the deko3d image has not dumped the game's shaders); skipping", CORPUS_DIRECTORY);
+		return;
+	}
+	pthread_key_create(&lock_waits_key, NULL);
+	/* (the addresses below are named from deko3d.elf's symbols: the base is
+	this one's address there less its address here) */
+	say("memory corpus: probe_compile is at %p, probe_mutex_lock at %p", (void *)probe_compile,
+		(void *)probe_mutex_lock);
+	for (index = 0; index < corpus_count; index++)
+	{
+		char path[320];
+		FILE *file;
+		long size;
+
+		memory_fragment[index] = has_suffix(corpus_names[index], ".frag") ? 1 : 0;
+		snprintf(path, sizeof(path), "%s/%s", CORPUS_DIRECTORY, corpus_names[index]);
+		file = fopen(path, "rb");
+		if (!file)
+			continue;
+		fseek(file, 0, SEEK_END);
+		size = ftell(file);
+		fseek(file, 0, SEEK_SET);
+		memory_sources[index] = (char *)malloc((size_t)size + 1);
+		if (memory_sources[index] && fread(memory_sources[index], 1, (size_t)size, file) == (size_t)size)
+			memory_sources[index][size] = 0;
+		else
+		{
+			free(memory_sources[index]);
+			memory_sources[index] = NULL;
+		}
+		fclose(file);
+	}
+	say("memory corpus: %u shaders read into memory in %.1f ms", (unsigned)corpus_count, milliseconds_since(start));
+	/* newlib's malloc, as before: one thread (the runs' reference) and two */
+	host_uam_alloc_bypass = 1;
+	memory_allocator = "newlib";
+	memory_corpus_run(1, 1, true);
+	memory_corpus_run(2, 1, false);
+	/* the host's allocator for UAM: one thread twice, two threads three
+	times, three twice */
+	host_uam_alloc_bypass = 0;
+	memory_allocator = "host_uam_alloc";
+	for (run = 1; run <= 2; run++)
+		memory_corpus_run(1, run, false);
+	for (threads = 2; threads <= 3; threads++)
+		for (run = 1; run <= (threads == 2 ? 3ul : 2ul); run++)
+			memory_corpus_run(threads, run, false);
+	{
+		struct host_uam_alloc_figures figures;
+
+		host_uam_alloc_figures(&figures);
+		say("memory corpus: host_uam_alloc took %u regions from newlib, %.1f MB given to pages, %.1f MB of free "
+			"blocks in the pool", figures.regions, (double)figures.bytes / (1024.0 * 1024.0),
+			(double)figures.pooled / (1024.0 * 1024.0));
+	}
+	for (index = 0; index < corpus_count; index++)
+	{
+		free(memory_sources[index]);
+		free(memory_reference[index].dksh);
+		free(memory_run[index].dksh);
+	}
+	say("memory corpus: done");
+}
+
 /* ---------- the probe */
 
 int main(int argc, char **argv)
@@ -1240,10 +1651,15 @@ int main(int argc, char **argv)
 		memory_case("code/gpu_first", _alias_code, false, true);
 		say("memory: %d of %d cases passed; the GPU reads the window's kind of memory through its alias: %s",
 			cases_passed, cases_run, heap && map_memory && code ? "yes" : "NO");
-		corpus_compile();
+		/* the corpus in memory, its locks timed (first: it is what this
+		build is for) */
+		memory_corpus();
+		if (!skipped("corpus"))
+			corpus_compile();
 		/* the one-thread run above wrote its DKSH files; the multi-thread
 		runs compare theirs against them (three runs each, DEKO3D.md phase
 		5 step 1) */
+		if (!skipped("corpus") && !skipped("corpus_threads"))
 		{
 			unsigned long threads, run;
 

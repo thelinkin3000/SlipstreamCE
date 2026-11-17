@@ -121,6 +121,13 @@ symbols in this file:
 #include "text/draw_string.h"
 #include <xtl.h>
 #include "custom_edition_cache.h" /* port: port/linux/game/custom_edition_cache.c */
+#include "mcc_cache.h" /* port: port/linux/game/mcc_cache.h */
+#include "mcc_texture_cache.h" /* port: port/linux/game/mcc_texture_cache.h */
+
+#ifdef HALO_ANDROID
+#include "android_ce_texture_cache.h" /* port: port/linux/game/android_ce_texture_cache.c */
+#include "../../port/android/include/android_render_policy.h" /* port: Android chip policy */
+#endif
 
 /* ---------- constants */
 
@@ -347,6 +354,10 @@ static unsigned long texture_cache_last_failure_time = 0;
 void texture_cache_delete(
 	void)
 {
+#ifdef HALO_ANDROID
+	/* port: release CE heap pixels before their bitmap owners disappear. */
+	android_ce_texture_reset();
+#endif
 	data_dispose(xbox_texture_cache_globals.textures);
 	lruv_delete(xbox_texture_cache_globals.cache);
 
@@ -364,6 +375,10 @@ void texture_cache_open(
 void texture_cache_idle(
 	void)
 {
+#ifdef HALO_ANDROID
+	/* port: release the preceding frame's CE residency locks. */
+	android_ce_texture_idle();
+#endif
 	lruv_idle(xbox_texture_cache_globals.cache);
 
 	return;
@@ -399,6 +414,10 @@ void texture_cache_bitmap_delete(
 {
 	long cache_block_index;
 
+#ifdef HALO_ANDROID
+	/* port: independent CE allocations have no Xbox LRU block index. */
+	android_ce_texture_delete(bitmap);
+#endif
 	if (TEST_FLAG(bitmap->flags, _bitmap_cached_bit))
 	{
 		cache_block_index = bitmap->cache_block_index;
@@ -551,6 +570,10 @@ void texture_cache_flush(
 {
 	IDirect3DDevice8_KickPushBuffer(global_d3d_device);
 	IDirect3DDevice8_IsBusy(global_d3d_device);
+#ifdef HALO_ANDROID
+	/* port: include CE pixels in map unload, reload and explicit flush. */
+	android_ce_texture_reset();
+#endif
 	lruv_flush(xbox_texture_cache_globals.cache);
 
 	return;
@@ -769,6 +792,11 @@ static boolean texture_cache_bitmap_valid(
 		bitmap->mipmap_count<=floor_log2(MAX(bitmap->width, MAX(bitmap->height, bitmap->depth))) &&
 		bitmap->pixels_size>=0;
 
+	/* port: Only MCC-owned normalized resources take this admission path. Their
+	linear rows have already been padded by the MCC bitmap adapter. */
+	if (mcc_cache_tags_loaded() && mcc_cache_bitmap_valid(bitmap))
+		return TRUE;
+
 	if (valid)
 	{
 		boolean compressed_format =
@@ -810,6 +838,21 @@ static boolean texture_cache_bitmap_valid(
 
 	return valid;
 }
+
+#ifdef HALO_ANDROID
+/* port: CE/mod readers fill and convert pixels synchronously before the
+ * independent hardware header is published to the renderer. */
+static void texture_cache_read_android_ce(struct bitmap_data *bitmap, void *header)
+{
+	extern boolean mod_bitmaps_read(struct bitmap_data *bitmap, void *buffer);
+	boolean loaded = FALSE;
+
+	texture_cache_initialize_hardware_format(bitmap, header);
+	if (!mod_bitmaps_read(bitmap, bitmap->base_address))
+		cache_file_read(bitmap->tag_index, bitmap->pixels_offset, bitmap->pixels_size,
+			bitmap->base_address, &loaded, TRUE);
+}
+#endif
 
 static boolean texture_cache_start_loading_bitmap(
 	struct bitmap_data *bitmap,
@@ -1022,10 +1065,33 @@ void *_texture_cache_bitmap_get_hardware_format(
 {
 	void *hardware_format = NULL;
 
+	/* port: an MCC map's textures have hardware headers of their own
+	(port/linux/game/mcc_texture_cache.c) */
+	if (mcc_cache_tags_loaded())
+	{
+		hardware_format = mcc_texture_cache_get(bitmap, load);
+		if (hardware_format || mcc_cache_bitmap_valid(bitmap))
+			return hardware_format;
+	}
+
 	match_assert(
 		"c:\\halo\\SOURCE\\cache\\xbox_texture_cache.c",
 		210,
 		load || !block);
+#ifdef HALO_ANDROID
+	/* port: CE's frame working set is not bounded by the Xbox texture arena.
+	 * Keep dynamic textures and both other map families on their own paths. */
+	if (android_texture_fixes && custom_edition_cache_tags_loaded() && android_ce_texture_enabled() &&
+		!mcc_cache_tags_loaded() &&
+		TEST_FLAG(bitmap->flags, _bitmap_cached_bit))
+	{
+		if (texture_cache_bitmap_valid(bitmap))
+			hardware_format = android_ce_texture_get(bitmap,
+				MAX(rasterizer_xbox_bitmap_get_pixel_data_size(bitmap), bitmap->pixels_size),
+				load, texture_cache_read_android_ce);
+	}
+	else
+#endif
 	if (TEST_FLAG(bitmap->flags, _bitmap_cached_bit))
 	{
 		/* port: a cache block that isn't this bitmap's (a map's stale index)

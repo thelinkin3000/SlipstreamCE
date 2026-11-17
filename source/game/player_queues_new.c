@@ -105,6 +105,8 @@ symbols in this file:
 /* ---------- headers */
 
 #include "cseries/cseries.h"
+#include "mcc_grenades.h" /* port: port/linux/game/mcc_grenades.h */
+#include "mcc_player.h" /* port: port/linux/game/mcc_player.h */
 #include "cseries/cseries_windows.h"
 #include "cseries/errors.h"
 #include "game/game.h"
@@ -748,9 +750,11 @@ boolean update_client_dequeue(
 	if (game_connection() == _game_connection_network_client)
 		return update_client_dequeue_distributed(actions);
 	update = update_client_get_update(update_client_globals.next_update_number_to_dequeue);
+	/* port: a dedicated server's game goes on with nobody in it, its update
+	holding no action (port/linux/game/server_director.c ends it) */
 	if (!update ||
 		update_client_globals.next_update_number_to_dequeue>update_client_globals.latest_update_number_received ||
-		update->update.action_count<=0 ||
+		(update->update.action_count<=0 && !(halo_server_mode() && update->update.action_count == 0)) ||
 		update->update.action_count>MAXIMUM_NUMBER_OF_PLAYERS)
 	{
 		return FALSE;
@@ -774,6 +778,8 @@ boolean update_client_dequeue(
 				"c:\\halo\\SOURCE\\game\\player_queues_new.c",
 				0x1C9,
 				(NONE == queue->desired_weapon_index) || (queue->desired_weapon_index>=0 && queue->desired_weapon_index<MAXIMUM_WEAPONS_PER_UNIT));
+			/* port: MCC's grenade types go beyond the legacy table's */
+			if (!mcc_player_choice_supported(queue->desired_grenade_index))
 			match_assert(
 				"c:\\halo\\SOURCE\\game\\player_queues_new.c",
 				0x1CA,
@@ -800,6 +806,8 @@ boolean update_client_dequeue(
 			"c:\\halo\\SOURCE\\game\\player_queues_new.c",
 			0x1E6,
 			(NONE == actions[queue_index].desired_weapon_index) || (actions[queue_index].desired_weapon_index>=0 && actions[queue_index].desired_weapon_index<MAXIMUM_WEAPONS_PER_UNIT));
+		/* port: MCC's grenade types go beyond the legacy table's */
+		if (!mcc_player_choice_supported(actions[queue_index].desired_grenade_index))
 		match_assert(
 			"c:\\halo\\SOURCE\\game\\player_queues_new.c",
 			0x1E7,
@@ -823,8 +831,9 @@ long update_client_get_maximum_possible_server_time(
 	{
 		struct update *update = update_client_get_update(update_number);
 
+		/* port: as update_client_dequeue, a dedicated server's empty game */
 		if (!update ||
-			update->update.action_count<=0 ||
+			(update->update.action_count<=0 && !(halo_server_mode() && update->update.action_count == 0)) ||
 			update->update.action_count>MAXIMUM_NUMBER_OF_PLAYERS)
 		{
 			break;
@@ -1021,11 +1030,15 @@ void update_queues_reset_and_fill_with_lies(
 	}
 	if (update_server_globals.initialized)
 	{
+		struct data_iterator iterator;
 		struct update_server_queue_datum *queue;
 
 		update_server_start();
-		queue = datum_get(update_server_globals.queues, 0);
-		queue->next_update_number = update_server_globals.next_update_number_to_build;
+		/* port: co-op player slots can have gaps, including slot zero.
+		Reset every live queue after a checkpoint load, not just slot zero. */
+		data_iterator_new(&iterator, update_server_globals.queues);
+		while ((queue = data_iterator_next(&iterator)) != NULL)
+			queue->next_update_number = update_server_globals.next_update_number_to_build;
 	}
 	else if (update_client_globals.initialized)
 	{
@@ -1075,6 +1088,9 @@ static void update_server_take_local_actions(
 static boolean distributed_action_valid(
 	struct player_action const *action)
 {
+	/* port: an MCC map's actions are checked against its own grenade types */
+	if (mcc_grenades_active())
+		return mcc_player_action_valid(action);
 	return valid_real(action->desired_facing.yaw) && valid_real(action->desired_facing.pitch) &&
 		valid_real(action->throttle.i) && valid_real(action->throttle.j) && valid_real(action->primary_trigger) &&
 		(action->desired_weapon_index == NONE ||
@@ -1135,6 +1151,24 @@ void update_server_handle_distributed_input(
 	update_server_distributed_inputs[absolute_index].received_time =
 		game_time_initialized() ? game_time_get() : 0;
 	queue->current_action = *action;
+}
+
+/* port: a bot's action this tick (port/linux/game/bots.c), which the host's
+tick runs in place of what the bot's queue held, written into the update the
+tick ran: the distributed netcode relays each player's input from there to
+the clients (network_distributed.c), which drive the bot with it */
+void update_server_note_bot_action(
+	short player_index,
+	struct player_action const *action)
+{
+	long update_number = update_server_ticked_update_number();
+	struct update *update = update_number != NONE ? update_server_get_update(update_number) : NULL;
+
+	if (update && update->update_number == update_number && player_index >= 0 &&
+		player_index < (short)update->update.action_count)
+	{
+		update->update.actions[player_index] = *action;
+	}
 }
 
 long update_server_ticked_update_number(

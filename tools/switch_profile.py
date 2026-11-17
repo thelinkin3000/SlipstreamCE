@@ -14,6 +14,11 @@ Usage: python3 tools/switch_profile.py --fetch           # every file on the car
        ... --thread all   (default: the game thread)
        ... --top 40       (rows per table)
        ... --folded out.txt   (collapsed stacks, for flamegraph.pl or speedscope)
+       python3 tools/switch_profile.py --fetch --spikes  # the slow frames', one each
+
+With the profiler on, a frame of 40 ms or more also has its own samples
+written alone, to spike_NNN.txt (the first 40 of a run); --spikes reads those,
+each by itself, instead of the windows.
 
 The images must be the ones the console ran (build/switch, as deployed): a
 profile of another build names the wrong functions, and nothing can tell.
@@ -36,15 +41,15 @@ DEFAULT_PORT = 5000
 REMOTE = "/switch/halo/profile"
 
 
-def fetch(host, port, windows):
+def fetch(host, port, windows, prefix="profile"):
     LOCAL.mkdir(parents=True, exist_ok=True)
     ftp = ftplib.FTP()
     ftp.connect(host, port, timeout=10)
     ftp.login()
     names = sorted(name.rsplit("/", 1)[-1] for name in ftp.nlst(REMOTE))
-    names = [name for name in names if re.match(r"profile_\d+\.txt$", name)]
+    names = [name for name in names if re.match(prefix + r"_\d+\.txt$", name)]
     if windows:
-        names = [name for name in names if int(name[8:11]) in windows]
+        names = [name for name in names if int(name[len(prefix) + 1:len(prefix) + 4]) in windows]
     paths = []
     for name in names:
         path = LOCAL / name
@@ -69,6 +74,8 @@ def parse(path):
             profile["image"] = words[1]
         elif words[0] == "anchor":
             profile["anchor"] = (words[1], int(words[2], 16))
+        elif words[0] == "spike":
+            profile["spike"] = float(words[1])
         elif words[0] == "dropped":
             profile["dropped"] = int(words[1])
         elif words[0] == "thread":
@@ -125,22 +132,37 @@ def main():
     parser.add_argument("--thread", default="game", help="game (default), all, or a thread slot number")
     parser.add_argument("--top", type=int, default=30)
     parser.add_argument("--folded", type=Path, help="also write collapsed stacks here")
+    parser.add_argument("--spikes", action="store_true", help="the slow frames' files (spike_NNN.txt), each alone")
+    parser.add_argument("--images", type=Path, default=BUILD,
+                        help="the folder of the images the console ran (halo_guest.elf, and halo.elf for the host's "
+                             "names): build/switch by default; a release's unzipped folder for a player's profile "
+                             "(without its halo.elf, which a release does not carry, the host's frames are addresses)")
     args = parser.parse_args()
 
+    prefix = "spike" if args.spikes else "profile"
     if args.fetch:
-        paths = fetch(args.host, args.port, {int(word) for word in args.files})
+        paths = fetch(args.host, args.port, {int(word) for word in args.files}, prefix)
     else:
-        paths = [Path(word) for word in args.files] or sorted(LOCAL.glob("profile_*.txt"))
+        paths = [Path(word) for word in args.files] or sorted(LOCAL.glob(f"{prefix}_*.txt"))
+    if args.spikes:
+        status = 0
+        for path in paths:
+            print(f"==== {path.name}: a {parse(path).get('spike', 0.0):.1f} ms frame")
+            status |= report(args, [parse(path)])
+            print()
+        return status
     if not paths:
         print("no profiles (set profiler = true under [debug] in config.toml, play, then --fetch)", file=sys.stderr)
         return 1
-    profiles = [parse(path) for path in paths]
+    return report(args, [parse(path) for path in paths])
 
-    image = BUILD / profiles[0]["image"]
-    host_elf = BUILD / "halo.elf"
+
+def report(args, profiles):
+    image = args.images / profiles[0]["image"]
+    host_elf = args.images / "halo.elf"
     guest_ranges = load_ranges(image)
     anchor_name, anchor_runtime = profiles[0]["anchor"]
-    anchor_link = symbol_address(host_elf, anchor_name)
+    anchor_link = symbol_address(host_elf, anchor_name) if host_elf.exists() else None
     host_shift = anchor_runtime - anchor_link if anchor_link is not None else None
     if any(profile["anchor"] != profiles[0]["anchor"] or profile["image"] != profiles[0]["image"]
            for profile in profiles):

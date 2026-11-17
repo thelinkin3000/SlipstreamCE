@@ -4,6 +4,14 @@ HOST_GL.C
 OpenGL ES for the guest. Its generated entry points (guest_gl.c) import
 hostgl_<function>, resolved here to the driver's function; the arguments
 already have host types by then. Only strings need copying back.
+
+The Linux builds can instead give the guest desktop OpenGL 4.5
+(HALO_DESKTOP_GL, tools/linux_guest_build.py: the x86-64 build's renderer,
+and the arm64 build's with --linux-arm64-gl=desktop): the entry
+points are then desktop GL's, from GLVND's libOpenGL. This file's own calls
+are the same functions in either API, which the host links from libGLESv2,
+or from libOpenGL for desktop GL: GLVND's entry points, which dispatch to
+the current context whatever its API and window system (EGL or GLX).
 */
 
 #include "host.h"
@@ -40,6 +48,11 @@ struct gl_count host_gl_counts[GL_STUB_COUNT] __attribute__((visibility("hidden"
 static char *gl_names[GL_STUB_COUNT];
 static int gl_names_used;
 int host_gl_statistics;
+
+#if defined(__aarch64__)
+/* (the stubs are AArch64's: on another host the GL calls go uncounted, and
+the Vulkan image, Android's only, does not run) */
+#define HOST_GL_STUBS 1
 
 /* one stub per count: bump the call count (an exclusive load and store, so that
 guest threads' calls are not lost), record the caller, return zero in the
@@ -98,15 +111,21 @@ __asm__(
 	".set host_gl_pass_index, host_gl_pass_index + 1\n"
 	".endr\n");
 extern char host_gl_pass_stubs[];
+#endif
 
 /* the count's index for a function's name, made the first time; -1 when they are all taken */
 static int gl_count_index(const char *name);
 
 static void *gl_stub(const char *name)
 {
+#ifdef HOST_GL_STUBS
 	int index = gl_count_index(name);
 
 	return index >= 0 ? host_gl_stubs + (size_t)index * GL_STUB_SIZE : NULL;
+#else
+	(void)name;
+	return NULL;
+#endif
 }
 
 static int gl_count_index(const char *name)
@@ -199,11 +218,23 @@ void *host_gl_resolve(const char *name)
 		return stub;
 	}
 	if (!library)
+#ifdef __ANDROID__
 		library = dlopen("libGLESv3.so", RTLD_NOW | RTLD_GLOBAL);
+#elif defined(HALO_DESKTOP_GL)
+	{
+		library = dlopen("libOpenGL.so.0", RTLD_NOW | RTLD_GLOBAL);
+		if (!library)
+			library = dlopen("libGL.so.1", RTLD_NOW | RTLD_GLOBAL);
+	}
+#else
+		/* Linux arm64 (port/linux/host): ES 3 is in libGLESv2 */
+		library = dlopen("libGLESv2.so.2", RTLD_NOW | RTLD_GLOBAL);
+#endif
 	if (library)
 		function = dlsym(library, name);
 	if (!function)
 		function = (void *)eglGetProcAddress(name);
+#ifdef HOST_GL_STUBS
 	/* counted on the way (debug.gpu_stats) */
 	if (function && host_gl_statistics)
 	{
@@ -215,6 +246,7 @@ void *host_gl_resolve(const char *name)
 			return host_gl_pass_stubs + (size_t)index * GL_STUB_SIZE;
 		}
 	}
+#endif
 	return function;
 }
 
@@ -295,6 +327,18 @@ waiting to run would otherwise read a later frame's vertices. */
 
 static GLsync frame_fences[FRAME_FENCE_SLOTS];
 
+static void finish_frame_without_fence(void)
+{
+	static int reported;
+
+	if (!reported)
+	{
+		host_logf(HOST_LOG_WARN, "GPU: frame fence unavailable or incomplete; finishing queued work before buffer reuse");
+		reported = 1;
+	}
+	glFinish();
+}
+
 void host_gl_fence_frame(uint32_t slot)
 {
 	if (host_renderer_vulkan)
@@ -304,16 +348,23 @@ void host_gl_fence_frame(uint32_t slot)
 	if (frame_fences[slot])
 		glDeleteSync(frame_fences[slot]);
 	frame_fences[slot] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+	if (!frame_fences[slot])
+		finish_frame_without_fence();
 }
 
 void host_gl_wait_frame(uint32_t slot)
 {
+	GLenum status;
+
 	if (host_renderer_vulkan)
 		return;
 	if (slot >= FRAME_FENCE_SLOTS || !frame_fences[slot])
 		return;
-	/* at most a second: a lost context must not hang the game */
-	glClientWaitSync(frame_fences[slot], GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000ull);
+	/* A timeout or failed wait does not release the GPU's ownership of the
+	ring slot. Its next unsynchronized upload must wait for completion too. */
+	status = glClientWaitSync(frame_fences[slot], GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000ull);
+	if (status != GL_ALREADY_SIGNALED && status != GL_CONDITION_SATISFIED)
+		finish_frame_without_fence();
 	glDeleteSync(frame_fences[slot]);
 	frame_fences[slot] = NULL;
 }
@@ -349,4 +400,43 @@ void host_gl_buffer_write(uint32_t target, uint32_t offset, uint32_t size, const
 	}
 	memcpy(mapping, data, size);
 	glUnmapBuffer(target);
+}
+
+/* ---------- desktop OpenGL (HALO_DESKTOP_GL) */
+
+/* debug.gl_debug: the guest's glDebugMessageCallback (guest_gl.c) asks for
+this logger instead, its own callback being guest code the driver cannot
+call */
+static void GL_APIENTRY host_gl_debug_message(GLenum origin, GLenum type, GLuint id, GLenum severity,
+	GLsizei length, const GLchar *message, const void *user)
+{
+	(void)origin; (void)id; (void)length; (void)user;
+	if (severity != GL_DEBUG_SEVERITY_NOTIFICATION)
+		host_logf(HOST_LOG_WARN, "GL %s: %s", type == GL_DEBUG_TYPE_ERROR ? "error" : "debug", message);
+}
+
+void host_gl_debug_output(void)
+{
+	glDebugMessageCallback(host_gl_debug_message, NULL);
+}
+
+/* The desktop renderer's visibility test results are a query buffer the GPU
+writes as each test completes, which the CPU reads through a persistent
+mapping (d3d8_gl.c): the mapping is a host address the guest cannot use, so
+the host keeps it, and each frame copies the results into guest memory. */
+static const volatile void *results_mapping;
+
+int host_gl_map_results(uint32_t buffer, uint32_t size)
+{
+	/* (GL_MAP_PERSISTENT_BIT and GL_MAP_COHERENT_BIT, desktop GL's names) */
+	glBindBuffer(GL_COPY_READ_BUFFER, buffer);
+	results_mapping = glMapBufferRange(GL_COPY_READ_BUFFER, 0, size, GL_MAP_READ_BIT | 0x0040 | 0x0080);
+	glBindBuffer(GL_COPY_READ_BUFFER, 0);
+	return results_mapping != NULL;
+}
+
+void host_gl_read_results(void *data, uint32_t size)
+{
+	if (results_mapping)
+		memcpy(data, (const void *)results_mapping, size);
 }

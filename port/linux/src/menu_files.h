@@ -24,8 +24,8 @@ extern const unsigned int menu_files_embedded_count;
 decoded from its PNG on first use, and its mip levels; 0 if it is none */
 unsigned int menu_art_texture(unsigned long data, unsigned long *levels);
 
-#if defined(HALO_SWITCH) || defined(HALO_ANDROID)
-/* the deko3d renderer's: the file of the art registered for the bitmap whose
+#if defined(HALO_SWITCH) || defined(HALO_ANDROID) || defined(HALO_PS5)
+/* the deko3d and Vulkan renderers': the file of the art registered for the bitmap whose
 pixels are at data (NULL if none), and that file's contents (NULL if it
 cannot be read) */
 const char *menu_art_name(unsigned long data);

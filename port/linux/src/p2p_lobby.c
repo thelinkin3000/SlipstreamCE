@@ -18,8 +18,10 @@ false details:
 	p2p_seal_token; a tombstone's zero), players, most players, the
 	gametype's engine (1 each), the game's name,
 	map and gametype (a length byte, then up to 32, 32 and 24 characters of
-	printable ASCII), a stamp (8, reserved: zero), and the signature (64) of
-	"hceu-lobby-1" and all before it.
+	printable ASCII), a stamp (8: the game's kind, an OpenCE gametype's mode
+	and Hardcore, port/linux/game/game_modes.h's game_modes_kind; the rest
+	reserved, zero), and the signature (64) of "hceu-lobby-1" and all before
+	it.
 
 Each host has a slot, hceu/3/lobby/s/<its key's hash in hex>: its listing,
 retained on every broker (and expiring there after LISTING_EXPIRY seconds
@@ -35,8 +37,10 @@ one deletes or keeps is no authority, so
   keeps the newest of each host (by sequence), drops one not heard in
   GAME_EXPIRY (on its own clock; a retained copy is taken only if its time
   is within RETAINED_WINDOW of this machine's, from a host that died and
-  left it), takes a host's closing listing (a tombstone) as its end, and
-  ignores an emptied slot (a wipe is not a delete).
+  left it, and a live one only within LIVE_WINDOW, so an old listing
+  published again by someone else does not list a game long gone), takes
+  a host's closing listing (a tombstone) as its end, and ignores an
+  emptied slot (a wipe is not a delete).
 A host that stops publishes a tombstone, then clears its slot. Going private
 makes a new invite (p2p.c), so a listing seen before lets no one in.
 
@@ -50,7 +54,27 @@ going private does.
 
 Checking signatures takes work, and anyone can send listings: at most
 VERIFY_BUDGET milliseconds of it each pass of the p2p thread, from a queue
-of MAXIMUM_QUEUED; the rest is dropped (hosts publish again).
+of MAXIMUM_QUEUED; the rest is dropped (hosts publish again). A listing that
+could not be shown (another network version's, or one outside its time
+window) is dropped before it takes a place there (listing_wanted): on
+subscribing, a broker sends every slot it keeps, and on a public one most
+are games long gone, which filled the queue and crowded out live games.
+
+A game a browser cannot show is counted, by its host (p2p_lobby_hidden_games,
+for the browser to say how many there are): one of a newer network version,
+and a live listing whose time is more than LIVE_WINDOW from this machine's
+clock - a clock that is wrong, this one or the host's. A platform that learns
+the right time says how far off this machine's clock is
+(HALO_CLOCK_OFFSET, the Switch's from GitHub: p2p_lobby_clock_offset).
+
+Each game's host is probed for its ping (p2p_probe_start: the tunnel to it
+timed, p2p.c), a few at once, in the order the browser shows the games
+(p2p_lobby_shown), those it does not show last, again each PROBE_REFRESH
+and on Refresh. A game with a password is not: its token is sealed. The
+probes wait for the listings queued to be shown first, so that they start
+in the order shown, but at most PROBE_HOLD after the browser opens or
+Refresh: anyone can send listings, and a queue kept full would hold them
+back for good.
 */
 
 #include "platform.h"
@@ -58,6 +82,9 @@ of MAXIMUM_QUEUED; the rest is dropped (hosts publish again).
 #include "port_config.h"
 #include "p2p_internal.h"
 #include "halo_port_limits.h"
+#include "server_mode.h"
+#include "server_master.h"
+#include "master_list.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -74,6 +101,8 @@ enum
 	_listing_closed = 8,
 	/* its token sealed with a password's key */
 	_listing_password = 16,
+	/* a dedicated server's (halo --server: server_mode.c) */
+	_listing_dedicated = 32,
 	STAMP_SIZE = 8,
 	/* the signed part's end: everything but the signature */
 	MAXIMUM_LISTING_SIZE = 2 + 1 + 2 + 1 + 4 + 4 + P2P_KEY_SIZE + P2P_SEALED_TOKEN_SIZE + 3 +
@@ -83,17 +112,21 @@ enum
 		P2P_SIGNATURE_SIZE,
 	MAXIMUM_GAMES = 256,
 	MAXIMUM_TOMBSTONES = 256,
-	MAXIMUM_QUEUED = 64,
+	MAXIMUM_QUEUED = 128,
 
 	/* milliseconds */
 	REPUBLISH_INTERVAL = 30000,
 	TRIGGER_INTERVAL = 5000,
 	QUERY_JITTER = 2000,
 	GAME_EXPIRY = 90000,
+	PROBE_REFRESH = 120000,
+	PROBE_HOLD = 1000,
 	TOMBSTONE_TIME = 600000,
 	VERIFY_BUDGET = 2,
 	/* seconds */
 	RETAINED_WINDOW = 600,
+	/* (wide: a host whose clock is off is still listed) */
+	LIVE_WINDOW = 3600,
 };
 
 static const char signature_label[] = "hceu-lobby-1";
@@ -113,7 +146,7 @@ struct listing
 	unsigned char token[P2P_TOKEN_SIZE];
 	/* (_listing_password: its token, sealed) */
 	unsigned char sealed_token[P2P_SEALED_TOKEN_SIZE];
-	int player_count, maximum_player_count, engine_type;
+	int player_count, maximum_player_count, engine_type, kind;
 	char name[P2P_LISTING_NAME_SIZE + 1];
 	char map[P2P_LISTING_MAP_SIZE + 1];
 	char gametype[P2P_LISTING_GAMETYPE_SIZE + 1];
@@ -131,6 +164,26 @@ struct game
 	unsigned char payload[MAXIMUM_LISTING_SIZE];
 	int payload_size;
 	struct p2p_listing listing;
+	/* its invite's token (none: a password's game); its host's ping
+	(-1: not known), whether it is being probed, and when it last was (0:
+	due; else odd, and never ahead of the clock, which elapsed reads as
+	long past); whether Refresh asked for it to be timed again, until that
+	probe ends */
+	int has_token;
+	unsigned char token[P2P_TOKEN_SIZE];
+	int ping;
+	int probing;
+	unsigned long probed_time;
+	int refreshing;
+	/* its place in the browser's list, from 1 (0: not shown) */
+	int shown;
+	/* listed by a master server (master_list.c) lately: not probed (the
+	player's address is not told to every server listed), and when */
+	int master;
+	/* (a master's entry's word that the game is a dedicated server's: a
+	player's public game a publisher key publishes is not) */
+	int master_dedicated;
+	unsigned long master_time;
 };
 
 struct tombstone
@@ -157,11 +210,18 @@ static struct
 	char map[P2P_LISTING_MAP_SIZE + 1];
 	char gametype[P2P_LISTING_GAMETYPE_SIZE + 1];
 	int engine_type;
+	int kind;
 	int flags;
 	int player_count, maximum_player_count;
+	/* the counts the last publish was made with (a change publishes again) */
+	int published_player_count, published_maximum_player_count;
 	/* the password's key (p2p_set_hosting_password), if it has one */
 	int has_password;
 	unsigned char password_key[P2P_PASSWORD_KEY_SIZE];
+	/* hosting for the internet: its invite's token, for the master servers'
+	listing too (p2p_lobby_host_listing) */
+	int hosting_token_valid;
+	unsigned char hosting_token[P2P_TOKEN_SIZE];
 	/* listed: with this token; its listing as last published */
 	int listed;
 	unsigned char token[P2P_TOKEN_SIZE];
@@ -174,8 +234,12 @@ static struct
 	int republish_wanted;
 	unsigned long republish_time;
 
-	/* browsing */
+	/* browsing, and whether it just stopped (p2p_lobby_browse_ended) */
 	int browsing;
+	int browse_ended;
+	/* when the browser opened or was refreshed (the probes wait at most
+	PROBE_HOLD from it for the queue) */
+	unsigned long browse_time;
 	int query_wanted;
 	struct queued queue[MAXIMUM_QUEUED];
 	int queue_count;
@@ -185,6 +249,16 @@ static struct
 	/* the identifiers of games joining failed */
 	unsigned char failed[MAXIMUM_GAMES][P2P_IDENTIFIER_SIZE];
 	int failed_count;
+	/* the hosts heard listing a game that is not shown, and why (an old
+	build sees none of the games, nor does a wrong clock: the browser says
+	so), each forgotten as a game is (GAME_EXPIRY) */
+	struct
+	{
+		unsigned char key_hash[P2P_KEY_HASH_SIZE];
+		unsigned long heard_time;
+		int used;
+		int reason;
+	} hidden[MAXIMUM_GAMES];
 } lobby;
 
 static int elapsed(unsigned long since, unsigned long time)
@@ -252,8 +326,8 @@ static int put_text(unsigned char *bytes, const char *text, int maximum)
 }
 
 /* the listing of the game hosted, signed: flags (_listing_closed for a
-tombstone) */
-static int listing_make(unsigned char *bytes, int flags)
+tombstone), with the invite's token */
+static int listing_make_token(unsigned char *bytes, int flags, const unsigned char *token)
 {
 	unsigned char *signed_part = bytes;
 	unsigned char data[sizeof(signature_label) - 1 + MAXIMUM_LISTING_SIZE];
@@ -261,6 +335,8 @@ static int listing_make(unsigned char *bytes, int flags)
 
 	if (lobby.has_password && !(flags & _listing_closed))
 		flags |= _listing_password;
+	if (halo_server_mode())
+		flags |= _listing_dedicated;
 	bytes[size++] = 'H';
 	bytes[size++] = 'L';
 	bytes[size++] = LISTING_FORMAT;
@@ -275,7 +351,7 @@ static int listing_make(unsigned char *bytes, int flags)
 	size += P2P_KEY_SIZE;
 	if (flags & _listing_password)
 	{
-		p2p_seal_token(lobby.password_key, p2p_signing_key(), lobby.token, bytes + size);
+		p2p_seal_token(lobby.password_key, p2p_signing_key(), token, bytes + size);
 		size += P2P_SEALED_TOKEN_SIZE;
 	}
 	else
@@ -284,7 +360,7 @@ static int listing_make(unsigned char *bytes, int flags)
 		if (flags & _listing_closed)
 			memset(bytes + size, 0, P2P_TOKEN_SIZE);
 		else
-			memcpy(bytes + size, lobby.token, P2P_TOKEN_SIZE);
+			memcpy(bytes + size, token, P2P_TOKEN_SIZE);
 		size += P2P_TOKEN_SIZE;
 	}
 	bytes[size++] = (unsigned char)(lobby.player_count > 255 ? 255 : lobby.player_count);
@@ -294,11 +370,17 @@ static int listing_make(unsigned char *bytes, int flags)
 	size += put_text(bytes + size, lobby.map, P2P_LISTING_MAP_SIZE);
 	size += put_text(bytes + size, lobby.gametype, P2P_LISTING_GAMETYPE_SIZE);
 	memset(bytes + size, 0, STAMP_SIZE);
+	bytes[size] = (unsigned char)lobby.kind;
 	size += STAMP_SIZE;
 	memcpy(data, signature_label, sizeof(signature_label) - 1);
 	memcpy(data + sizeof(signature_label) - 1, signed_part, (size_t)size);
 	p2p_sign(data, (int)(sizeof(signature_label) - 1) + size, bytes + size);
 	return size + P2P_SIGNATURE_SIZE;
+}
+
+static int listing_make(unsigned char *bytes, int flags)
+{
+	return listing_make_token(bytes, flags, lobby.token);
 }
 
 static int get_text(const unsigned char *bytes, int size, int *offset, char *text, int maximum)
@@ -358,11 +440,26 @@ static int listing_read(const unsigned char *bytes, int size, struct listing *li
 	{
 		return 0;
 	}
+	/* (the stamp: the game's kind first; a listing too short for it fails
+	the size check below) */
+	listing->kind = offset < size ? bytes[offset] : 0;
 	offset += STAMP_SIZE;
 	if (offset + P2P_SIGNATURE_SIZE != size)
 		return 0;
 	listing->signed_size = offset;
 	return 1;
+}
+
+/* whether a listing is of about now: a slot's retained copy within
+RETAINED_WINDOW (a host that died left it, and nothing cleared it), a live
+one within LIVE_WINDOW (not one long gone, published again by someone who
+kept it) */
+static int listing_current(const struct listing *listing, int retained)
+{
+	long difference = (long)(listing->time - (unsigned long)time(NULL));
+	long window = retained ? RETAINED_WINDOW : LIVE_WINDOW;
+
+	return difference <= window && difference >= -window;
 }
 
 static int listing_signed(const unsigned char *bytes, const struct listing *listing)
@@ -413,18 +510,35 @@ static void stop_listing(void)
 
 static void update_hosting(const unsigned char *token, int player_count, int maximum_player_count)
 {
-	int want = token && lobby.public && config_boolean("network.public_lobby");
+	/* (a dedicated server is listed by the master servers, not among the
+	games players host: server_master.c; server.list_on_brokers, until
+	there are masters, lists it here too. Hosting from the menus is listed
+	here as a player's game is: a console has no publisher key for the
+	masters, and was listed nowhere) */
+	int want = token && lobby.public && config_boolean("network.public_lobby") &&
+		(!halo_server_headless() || config_boolean("server.list_on_brokers"));
+
+	lobby.hosting_token_valid = token != NULL;
+	if (token)
+		memcpy(lobby.hosting_token, token, P2P_TOKEN_SIZE);
+	if (token)
+	{
+		lobby.player_count = player_count;
+		lobby.maximum_player_count = maximum_player_count;
+	}
 
 	if (lobby.listed && (!want || memcmp(token, lobby.token, P2P_TOKEN_SIZE)))
 		stop_listing();
 	if (!want)
 		return;
-	if (player_count != lobby.player_count || maximum_player_count != lobby.maximum_player_count)
+	if (player_count != lobby.published_player_count || maximum_player_count != lobby.published_maximum_player_count)
 	{
-		lobby.player_count = player_count;
-		lobby.maximum_player_count = maximum_player_count;
+		lobby.published_player_count = player_count;
+		lobby.published_maximum_player_count = maximum_player_count;
 		if (lobby.listed)
 			republish_soon(0);
+		/* (and to the master servers, if they list it) */
+		server_master_changed();
 	}
 	if (!lobby.listed)
 	{
@@ -513,6 +627,8 @@ static int identifier_failed(const unsigned char *identifier)
 	return 0;
 }
 
+static int listing_wanted(const unsigned char *payload, int size, int retained, const unsigned char *key_hash);
+
 void p2p_lobby_slot_heard(const char *hash_text, const unsigned char *payload, int size, int retained)
 {
 	unsigned char key_hash[P2P_KEY_HASH_SIZE];
@@ -546,6 +662,8 @@ void p2p_lobby_slot_heard(const char *hash_text, const unsigned char *payload, i
 		game->heard_time = p2p_now();
 		return;
 	}
+	if (!listing_wanted(payload, size, retained, key_hash))
+		return;
 	for (index = 0; index < lobby.queue_count; index++)
 	{
 		if (lobby.queue[index].size == size && !memcmp(lobby.queue[index].payload, payload, (size_t)size))
@@ -558,6 +676,48 @@ void p2p_lobby_slot_heard(const char *hash_text, const unsigned char *payload, i
 	memcpy(queued->payload, payload, (size_t)size);
 	queued->size = size;
 	queued->retained = retained;
+}
+
+enum
+{
+	_hidden_newer,
+	_hidden_clock,
+};
+
+/* a host heard listing a game that is not shown (lobby.hidden) */
+static void hidden_heard(const unsigned char *key_hash, int reason)
+{
+	int index, free_index = -1;
+
+	for (index = 0; index < MAXIMUM_GAMES; index++)
+	{
+		if (lobby.hidden[index].used && !memcmp(lobby.hidden[index].key_hash, key_hash, P2P_KEY_HASH_SIZE))
+		{
+			lobby.hidden[index].heard_time = p2p_now();
+			lobby.hidden[index].reason = reason;
+			return;
+		}
+		if (!lobby.hidden[index].used && free_index < 0)
+			free_index = index;
+	}
+	if (free_index < 0)
+		return;
+	memcpy(lobby.hidden[free_index].key_hash, key_hash, P2P_KEY_HASH_SIZE);
+	lobby.hidden[free_index].heard_time = p2p_now();
+	lobby.hidden[free_index].reason = reason;
+	lobby.hidden[free_index].used = 1;
+}
+
+/* a host whose game is shown now, or has stopped: no longer counted */
+static void hidden_forget(const unsigned char *key_hash)
+{
+	int index;
+
+	for (index = 0; index < MAXIMUM_GAMES; index++)
+	{
+		if (lobby.hidden[index].used && !memcmp(lobby.hidden[index].key_hash, key_hash, P2P_KEY_HASH_SIZE))
+			lobby.hidden[index].used = 0;
+	}
 }
 
 /* a queued listing, its signature checked: taken or not */
@@ -574,6 +734,7 @@ static void listing_take(const struct queued *queued, const struct listing *list
 		return;
 	if (game && listing->sequence <= game->sequence)
 		return;
+	hidden_forget(queued->key_hash);
 	if (listing->flags & _listing_closed)
 	{
 		if (!tombstone)
@@ -607,6 +768,7 @@ static void listing_take(const struct queued *queued, const struct listing *list
 		game = &lobby.games[index];
 		memset(game, 0, sizeof(*game));
 		memcpy(game->key_hash, queued->key_hash, P2P_KEY_HASH_SIZE);
+		game->ping = -1;
 		game->used = 1;
 	}
 	game->sequence = listing->sequence;
@@ -615,6 +777,8 @@ static void listing_take(const struct queued *queued, const struct listing *list
 	game->payload_size = queued->size;
 	shown = &game->listing;
 	shown->locked = (listing->flags & _listing_password) != 0;
+	game->has_token = !shown->locked;
+	memcpy(game->token, listing->token, P2P_TOKEN_SIZE);
 	if (shown->locked)
 	{
 		/* (its invite once the password opens its token: p2p_listing_unlock) */
@@ -637,12 +801,92 @@ static void listing_take(const struct queued *queued, const struct listing *list
 	shown->player_count = (unsigned char)listing->player_count;
 	shown->maximum_player_count = (unsigned char)listing->maximum_player_count;
 	shown->engine_type = (unsigned char)listing->engine_type;
+	shown->kind = (unsigned char)listing->kind;
 	shown->open = (listing->flags & _listing_open) != 0;
 	shown->in_progress = (listing->flags & _listing_in_progress) != 0;
 	shown->has_teams = (listing->flags & _listing_has_teams) != 0;
-	shown->ping = -1;
+	/* (a dedicated server's on a master's word alone: the listing's own
+	flag is its host's, which any host can set, so a game the brokers alone
+	list is the players' however it calls itself) */
+	shown->dedicated = game->master && game->master_dedicated;
+	shown->network_version = (unsigned short)listing->version;
 }
 
+/* the game as the browser shows it */
+static void game_listed(const struct game *game, struct p2p_listing *listing)
+{
+	*listing = game->listing;
+	listing->failed = (unsigned char)identifier_failed(listing->identifier);
+	listing->ping = (short)game->ping;
+	listing->probing = (unsigned char)game->probing;
+	listing->refreshing = (unsigned char)game->refreshing;
+}
+
+/* the hosts' pings: those not known lately probed, in the order shown,
+while there is room (a few refused, and the rest wait for a later pass) */
+static void update_probes(void)
+{
+	unsigned char started[MAXIMUM_GAMES] = { 0 };
+	int refused = 0;
+
+	while (refused < P2P_MAXIMUM_PROBES)
+	{
+		struct game *next = NULL;
+		int index;
+
+		for (index = 0; index < MAXIMUM_GAMES; index++)
+		{
+			struct game *game = &lobby.games[index];
+
+			if (!game->used || !game->has_token || game->probing || game->master || started[index] ||
+				(game->probed_time && !elapsed(game->probed_time, PROBE_REFRESH)))
+			{
+				continue;
+			}
+			if (!next || (game->shown && (!next->shown || game->shown < next->shown)))
+				next = game;
+		}
+		if (!next)
+			break;
+		/* (each game once a pass: a refused one stays wanted) */
+		started[next - lobby.games] = 1;
+		/* (set first: a probe that needs no tunnel ends at once,
+		p2p_lobby_probed) */
+		next->probing = 1;
+		next->probed_time = (p2p_now() - 1) | 1;
+		if (!p2p_probe_start(next->key_hash, next->token))
+		{
+			next->probing = 0;
+			next->probed_time = 0;
+			refused++;
+		}
+	}
+}
+
+/* whether a listing heard is worth a queue place: one this version can show,
+of about now. Another version's is not (a newer one's host counted, not
+shown: its key hash only, unverified, so it is no more than a count), nor one
+outside its time window (a live one's host counted: one listing now, whose
+clock or this machine's is wrong; a retained copy may be one long gone, which
+is no game). Its header is not verified yet, so a forged one can only keep its
+own listing out; the queue's checks, the signature's included, still decide
+what is shown. */
+static int listing_wanted(const unsigned char *payload, int size, int retained, const unsigned char *key_hash)
+{
+	struct listing listing;
+
+	if (!listing_read(payload, size, &listing))
+		return 0;
+	if (listing.version != HALO_PORT_NETWORK_VERSION)
+	{
+		if (listing.version > HALO_PORT_NETWORK_VERSION && !(listing.flags & _listing_closed))
+			hidden_heard(key_hash, _hidden_newer);
+		return 0;
+	}
+	if (!listing_current(&listing, retained) && !retained && !(listing.flags & _listing_closed))
+		hidden_heard(key_hash, _hidden_clock);
+	return listing_current(&listing, retained);
+}
 static void update_browsing(void)
 {
 	unsigned long start = p2p_now();
@@ -662,19 +906,14 @@ static void update_browsing(void)
 		int good;
 
 		memmove(lobby.queue, lobby.queue + 1, sizeof(*lobby.queue) * (size_t)(--lobby.queue_count));
+		/* (listing_wanted let it in; its key and its time are checked
+		again here, where its signature is: the time it was queued at may
+		have run out) */
 		if (!listing_read(queued.payload, queued.size, &listing) || listing.version != HALO_PORT_NETWORK_VERSION ||
-			!signing_key_hash(listing.key, key_hash) || memcmp(key_hash, queued.key_hash, P2P_KEY_HASH_SIZE))
+			!signing_key_hash(listing.key, key_hash) || memcmp(key_hash, queued.key_hash, P2P_KEY_HASH_SIZE) ||
+			!listing_current(&listing, queued.retained))
 		{
 			continue;
-		}
-		/* a slot's retained copy: only one of about now (a host that died
-		left it, and nothing cleared it) */
-		if (queued.retained)
-		{
-			long difference = (long)(listing.time - (unsigned long)time(NULL));
-
-			if (difference > RETAINED_WINDOW || difference < -RETAINED_WINDOW)
-				continue;
 		}
 		/* (the work, without the lock: the game's threads need not wait) */
 		pthread_mutex_unlock(&p2p_lock);
@@ -689,7 +928,139 @@ static void update_browsing(void)
 	{
 		if (lobby.games[index].used && elapsed(lobby.games[index].heard_time, GAME_EXPIRY))
 			lobby.games[index].used = 0;
+		if (lobby.games[index].used && lobby.games[index].master && elapsed(lobby.games[index].master_time, GAME_EXPIRY))
+		{
+			lobby.games[index].master = 0;
+			lobby.games[index].listing.master = 0;
+			lobby.games[index].listing.master_key_id_count = 0;
+		}
+		if (lobby.hidden[index].used && elapsed(lobby.hidden[index].heard_time, GAME_EXPIRY))
+			lobby.hidden[index].used = 0;
 	}
+	/* (the listings still waiting are shown before the probes start, which
+	then start in the order shown, unless they keep coming) */
+	if (lobby.browsing && (!lobby.queue_count || elapsed(lobby.browse_time, PROBE_HOLD)))
+		update_probes();
+}
+
+void p2p_lobby_probed(const unsigned char *identifier, int ping)
+{
+	int index;
+
+	for (index = 0; index < MAXIMUM_GAMES; index++)
+	{
+		struct game *game = &lobby.games[index];
+
+		if (game->used && !memcmp(game->listing.identifier, identifier, P2P_IDENTIFIER_SIZE))
+		{
+			game->probing = 0;
+			game->refreshing = 0;
+			game->probed_time = (p2p_now() - 1) | 1;
+			/* (one not reached this time keeps the last it had) */
+			if (ping >= 0)
+				game->ping = ping;
+		}
+	}
+}
+
+/* ---------- the master servers' (master_list.c, server_master.c) */
+
+int p2p_lobby_host_listing(unsigned char *bytes, int size)
+{
+	int made = 0;
+
+	if (size < MAXIMUM_LISTING_SIZE)
+		return 0;
+	pthread_mutex_lock(&p2p_lock);
+	/* (public, as the brokers' listing is: network.public_lobby too) */
+	if (lobby.hosting_token_valid && lobby.public && config_boolean("network.public_lobby"))
+	{
+		made = listing_make_token(bytes, lobby.flags, lobby.hosting_token);
+		/* (its token listed: going private makes a new invite, p2p.c) */
+		p2p_token_listed(lobby.hosting_token);
+	}
+	pthread_mutex_unlock(&p2p_lock);
+	return made;
+}
+
+int p2p_lobby_take_master_listing(const unsigned char *payload, int size, const char *publisher, const char *region,
+	int network_version_shown, int dedicated, const unsigned char *master_key_id)
+{
+	struct listing listing;
+	struct queued queued;
+	struct game *game;
+	int taken = 0;
+
+	(void)network_version_shown;
+	if (size < MINIMUM_LISTING_SIZE || size > MAXIMUM_LISTING_SIZE || !listing_read(payload, size, &listing) ||
+		(listing.flags & _listing_closed) || !signing_key_hash(listing.key, queued.key_hash) ||
+		!listing_signed(payload, &listing))
+	{
+		return 0;
+	}
+	memcpy(queued.payload, payload, (size_t)size);
+	queued.size = size;
+	queued.retained = 0;
+	pthread_mutex_lock(&p2p_lock);
+	if (lobby.browsing)
+	{
+		game = find_game(queued.key_hash);
+		/* (the same listing again: heard; a newer one: taken; another
+		version's is shown, greyed, by the menus: network_version) */
+		if (game && game->payload_size == size && !memcmp(game->payload, payload, (size_t)size))
+		{
+			game->heard_time = p2p_now();
+		}
+		else
+		{
+			if (game)
+				game->master = 1;
+			listing_take(&queued, &listing);
+			game = find_game(queued.key_hash);
+		}
+		if (game)
+		{
+			game->master = 1;
+			game->master_dedicated = dedicated != 0;
+			game->master_time = p2p_now();
+			game->listing.dedicated = dedicated != 0;
+			game->listing.master = 1;
+			snprintf(game->listing.publisher, sizeof(game->listing.publisher), "%s", publisher ? publisher : "");
+			snprintf(game->listing.region, sizeof(game->listing.region), "%s", region ? region : "");
+			if (game->listing.master_count < 255)
+				game->listing.master_count++;
+			/* (the master among those that list it: a Discord link's pass
+			is shown from one of them, player_link.c) */
+			if (master_key_id)
+			{
+				int known;
+
+				for (known = 0; known < game->listing.master_key_id_count &&
+					memcmp(game->listing.master_key_ids[known], master_key_id, P2P_LISTING_MASTER_KEY_ID_SIZE); known++)
+				{
+				}
+				if (known == game->listing.master_key_id_count && known < P2P_LISTING_MAXIMUM_MASTERS)
+				{
+					memcpy(game->listing.master_key_ids[known], master_key_id, P2P_LISTING_MASTER_KEY_ID_SIZE);
+					game->listing.master_key_id_count++;
+				}
+			}
+			taken = 1;
+		}
+	}
+	pthread_mutex_unlock(&p2p_lock);
+	return taken;
+}
+
+void p2p_lobby_masters_heard(void)
+{
+	int index;
+
+	/* (each game's count of the masters listing it, counted again) */
+	pthread_mutex_lock(&p2p_lock);
+	for (index = 0; index < MAXIMUM_GAMES; index++)
+		lobby.games[index].listing.master_count = 0;
+	pthread_mutex_unlock(&p2p_lock);
 }
 
 /* ---------- p2p.c's side */
@@ -718,12 +1089,28 @@ void p2p_lobby_quit(void)
 
 void p2p_set_hosting_public(int public)
 {
+	int changed;
+
 	pthread_mutex_lock(&p2p_lock);
 	/* (a new invite going private: p2p.c) */
 	if (lobby.public && !public)
 		p2p_new_invite_if_listed();
+	changed = lobby.public != (public ? 1 : 0);
 	lobby.public = public ? 1 : 0;
 	pthread_mutex_unlock(&p2p_lock);
+	/* (the master servers told at once: listed, or withdrawn) */
+	if (changed)
+		server_master_changed();
+}
+
+int p2p_hosting_listed(void)
+{
+	int listed;
+
+	pthread_mutex_lock(&p2p_lock);
+	listed = lobby.public && config_boolean("network.public_lobby");
+	pthread_mutex_unlock(&p2p_lock);
+	return listed;
 }
 
 void p2p_set_hosting_password(const char *password)
@@ -753,8 +1140,8 @@ void p2p_set_hosting_password(const char *password)
 	memset(key, 0, sizeof(key));
 }
 
-void p2p_set_game_listing(const char *name, const char *map, const char *gametype, int engine_type, int open,
-	int in_progress, int has_teams)
+void p2p_set_game_listing(const char *name, const char *map, const char *gametype, int engine_type, int kind,
+	int open, int in_progress, int has_teams)
 {
 	char new_name[P2P_LISTING_NAME_SIZE + 1];
 	char new_map[P2P_LISTING_MAP_SIZE + 1];
@@ -769,7 +1156,7 @@ void p2p_set_game_listing(const char *name, const char *map, const char *gametyp
 	/* (only the game's server writes these: unchanged, it need not wait for
 	the lock) */
 	if (!strcmp(new_name, lobby.name) && !strcmp(new_map, lobby.map) && !strcmp(new_gametype, lobby.gametype) &&
-		engine_type == lobby.engine_type && flags == lobby.flags)
+		engine_type == lobby.engine_type && (kind & 0xFF) == lobby.kind && flags == lobby.flags)
 	{
 		return;
 	}
@@ -778,10 +1165,12 @@ void p2p_set_game_listing(const char *name, const char *map, const char *gametyp
 	memcpy(lobby.map, new_map, sizeof(lobby.map));
 	memcpy(lobby.gametype, new_gametype, sizeof(lobby.gametype));
 	lobby.engine_type = engine_type;
+	lobby.kind = kind & 0xFF;
 	lobby.flags = flags;
 	if (lobby.listed)
 		republish_soon(0);
 	pthread_mutex_unlock(&p2p_lock);
+	server_master_changed();
 }
 
 void p2p_lobby_browse(int on)
@@ -791,28 +1180,57 @@ void p2p_lobby_browse(int on)
 	if (on != lobby.browsing)
 	{
 		lobby.browsing = on;
+		lobby.browse_ended = !on;
+		lobby.browse_time = p2p_now();
 		if (!on)
 		{
 			memset(lobby.games, 0, sizeof(lobby.games));
+			memset(lobby.hidden, 0, sizeof(lobby.hidden));
 			lobby.queue_count = 0;
 		}
 		lobby.query_wanted = on;
 		p2p_signal_lobby_topics(lobby.listed, on);
 	}
 	pthread_mutex_unlock(&p2p_lock);
+	/* (the master servers' lists too, while the browser is open) */
+	master_list_browse(on);
 }
 
 void p2p_lobby_refresh(void)
 {
+	int index;
+
 	pthread_mutex_lock(&p2p_lock);
 	if (lobby.browsing)
+	{
 		lobby.query_wanted = 1;
+		lobby.browse_time = p2p_now();
+	}
+	/* (the pings timed again, a probe under way included; a master
+	server's game is not timed) */
+	for (index = 0; index < MAXIMUM_GAMES; index++)
+	{
+		struct game *game = &lobby.games[index];
+
+		if (!game->probing)
+			game->probed_time = 0;
+		game->refreshing = game->used && game->has_token && !game->master;
+	}
 	pthread_mutex_unlock(&p2p_lock);
+	master_list_refresh();
 }
 
 int p2p_lobby_browsing(void)
 {
 	return lobby.browsing;
+}
+
+int p2p_lobby_browse_ended(void)
+{
+	int ended = lobby.browse_ended;
+
+	lobby.browse_ended = 0;
+	return ended;
 }
 
 /* the order shown: the most players first; then those joining has not
@@ -821,6 +1239,8 @@ static int listing_order(const void *first, const void *second)
 {
 	const struct p2p_listing *a = first, *b = second;
 
+	if (a->dedicated != b->dedicated)
+		return b->dedicated - a->dedicated;
 	if (a->player_count != b->player_count)
 		return b->player_count - a->player_count;
 	if (a->failed != b->failed)
@@ -840,13 +1260,32 @@ int p2p_lobby_games(struct p2p_listing *games, int maximum_count)
 	{
 		if (!lobby.games[index].used)
 			continue;
-		games[count] = lobby.games[index].listing;
-		games[count].failed = (unsigned char)identifier_failed(games[count].identifier);
+		game_listed(&lobby.games[index], &games[count]);
 		count++;
 	}
 	pthread_mutex_unlock(&p2p_lock);
 	qsort(games, (size_t)count, sizeof(*games), listing_order);
 	return count;
+}
+
+void p2p_lobby_shown(const struct p2p_listing *games, int count)
+{
+	int place, index;
+
+	pthread_mutex_lock(&p2p_lock);
+	for (index = 0; index < MAXIMUM_GAMES; index++)
+		lobby.games[index].shown = 0;
+	for (place = 0; place < count; place++)
+	{
+		for (index = 0; index < MAXIMUM_GAMES; index++)
+		{
+			struct game *game = &lobby.games[index];
+
+			if (game->used && !memcmp(game->listing.identifier, games[place].identifier, P2P_IDENTIFIER_SIZE))
+				game->shown = place + 1;
+		}
+	}
+	pthread_mutex_unlock(&p2p_lock);
 }
 
 int p2p_listing_unlock(struct p2p_listing *listing, const char *password)
@@ -871,10 +1310,199 @@ int p2p_listing_unlock(struct p2p_listing *listing, const char *password)
 	return opened;
 }
 
+int p2p_lobby_hidden_games(int *newer, int *wrong_clock)
+{
+	int index;
+
+	*newer = *wrong_clock = 0;
+	pthread_mutex_lock(&p2p_lock);
+	for (index = 0; index < MAXIMUM_GAMES; index++)
+	{
+		if (lobby.hidden[index].used)
+			++*(lobby.hidden[index].reason == _hidden_newer ? newer : wrong_clock);
+	}
+	pthread_mutex_unlock(&p2p_lock);
+	return *newer + *wrong_clock;
+}
+
+int p2p_lobby_clock_offset(long *seconds)
+{
+	const char *text = getenv("HALO_CLOCK_OFFSET");
+	char *end;
+	long value;
+
+	if (!text || !*text)
+		return 0;
+	value = strtol(text, &end, 10);
+	if (*end)
+		return 0;
+	*seconds = value;
+	return 1;
+}
+
 void p2p_lobby_mark_failed(const unsigned char *identifier)
 {
 	pthread_mutex_lock(&p2p_lock);
 	if (!identifier_failed(identifier) && lobby.failed_count < MAXIMUM_GAMES)
 		memcpy(lobby.failed[lobby.failed_count++], identifier, P2P_IDENTIFIER_SIZE);
 	pthread_mutex_unlock(&p2p_lock);
+}
+
+int p2p_lobby_brokers_reached(void)
+{
+	int reached;
+
+	pthread_mutex_lock(&p2p_lock);
+	reached = p2p_signal_connected();
+	pthread_mutex_unlock(&p2p_lock);
+	return reached;
+}
+
+/* ---------- what the server browser shows (pure: the harness tests these) */
+
+static const char *const sort_names[NUMBER_OF_P2P_LOBBY_SORTS] =
+{
+	"servers", "players", "name", "map", "type", "locked", "ping",
+};
+
+int p2p_lobby_filter(struct p2p_listing *games, int count, const struct p2p_lobby_choices *choices,
+	int (*map_state)(const char *map))
+{
+	int read, written = 0;
+
+	for (read = 0; read < count; read++)
+	{
+		const struct p2p_listing *game = &games[read];
+		int state = map_state ? map_state(game->map) : P2P_LOBBY_MAP_INSTALLED;
+
+		if ((choices->source == P2P_LOBBY_SOURCE_DEDICATED && !game->dedicated) ||
+			(choices->source == P2P_LOBBY_SOURCE_PLAYERS && game->dedicated))
+		{
+			continue;
+		}
+		if (!choices->show_empty && game->player_count == 0)
+			continue;
+		if (!choices->show_full && game->maximum_player_count && game->player_count >= game->maximum_player_count)
+			continue;
+		if (choices->engine_type && game->engine_type != choices->engine_type)
+			continue;
+		if ((choices->maps == P2P_LOBBY_MAPS_NO && state != P2P_LOBBY_MAP_INSTALLED) ||
+			(choices->maps == P2P_LOBBY_MAPS_DOWNLOADABLE && state == P2P_LOBBY_MAP_MISSING))
+		{
+			continue;
+		}
+		if (written != read)
+			games[written] = games[read];
+		written++;
+	}
+	return written;
+}
+
+/* names A to Z, whatever their letters' case */
+static int text_order(const char *first, const char *second)
+{
+	for (;; first++, second++)
+	{
+		int a = *first >= 'A' && *first <= 'Z' ? *first + 'a' - 'A' : (unsigned char)*first;
+		int b = *second >= 'A' && *second <= 'Z' ? *second + 'a' - 'A' : (unsigned char)*second;
+
+		if (a != b || !a)
+			return a - b;
+	}
+}
+
+/* the order's: below 0 if first comes first */
+static int sort_order(const struct p2p_listing *first, const struct p2p_listing *second, int order)
+{
+	int difference = 0;
+
+	switch (order)
+	{
+	case P2P_LOBBY_SORT_PLAYERS:
+		difference = second->player_count - first->player_count;
+		break;
+	case P2P_LOBBY_SORT_MAP:
+		difference = text_order(first->map, second->map);
+		break;
+	case P2P_LOBBY_SORT_TYPE:
+		difference = first->engine_type != second->engine_type ? first->engine_type - second->engine_type :
+			first->kind != second->kind ? first->kind - second->kind : text_order(first->gametype, second->gametype);
+		break;
+	case P2P_LOBBY_SORT_LOCKED:
+		difference = second->locked - first->locked;
+		break;
+	case P2P_LOBBY_SORT_PING:
+		/* (those with none known go after these: p2p_lobby_sort) */
+		difference = first->ping - second->ping;
+		break;
+	case P2P_LOBBY_SORT_SERVERS:
+		/* (as p2p_lobby_games has them: then those joining has not failed,
+		and the open ones) */
+		difference = second->dedicated - first->dedicated;
+		if (!difference)
+			difference = second->player_count - first->player_count;
+		if (!difference)
+			difference = first->failed - second->failed;
+		if (!difference)
+			difference = second->open - first->open;
+		break;
+	}
+	return difference ? difference : text_order(first->name, second->name);
+}
+
+/* where a game goes whichever way the order is: those of another network
+version last, and by ping, those whose ping is not known yet (not timed, or
+a password's, whose host is not) after those whose is */
+static int sort_group(const struct p2p_listing *game, int order)
+{
+	if (game->network_version != HALO_PORT_NETWORK_VERSION)
+		return 2;
+	return order == P2P_LOBBY_SORT_PING && game->ping < 0;
+}
+
+void p2p_lobby_sort(struct p2p_listing *games, int count, int order, int reverse)
+{
+	int index;
+
+	/* (an insertion sort: stable, and the games are a few hundred at most) */
+	for (index = 1; index < count; index++)
+	{
+		struct p2p_listing game = games[index];
+		int group = sort_group(&game, order);
+		int place = index;
+
+		while (place > 0)
+		{
+			const struct p2p_listing *before = &games[place - 1];
+			int before_group = sort_group(before, order);
+			int difference = sort_order(before, &game, order);
+
+			if (before_group != group ? before_group < group : (reverse ? -difference : difference) <= 0)
+				break;
+			games[place] = games[place - 1];
+			place--;
+		}
+		games[place] = game;
+	}
+}
+
+int p2p_lobby_sort_parse(const char *text, int *reverse)
+{
+	int order;
+
+	*reverse = text && *text == '-';
+	for (order = 0; text && order < NUMBER_OF_P2P_LOBBY_SORTS; order++)
+	{
+		if (!strcmp(text + *reverse, sort_names[order]))
+			return order;
+	}
+	*reverse = 0;
+	return P2P_LOBBY_SORT_PLAYERS;
+}
+
+void p2p_lobby_sort_text(int order, int reverse, char *text, int size)
+{
+	if (order < 0 || order >= NUMBER_OF_P2P_LOBBY_SORTS)
+		order = P2P_LOBBY_SORT_PLAYERS;
+	snprintf(text, (size_t)size, "%s%s", reverse ? "-" : "", sort_names[order]);
 }

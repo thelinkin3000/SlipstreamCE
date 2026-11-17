@@ -84,6 +84,7 @@ symbols in this file:
 #include "saved games/saved_game_files.h"
 #include "tag_files/files.h"
 #include "game/game_engine_playlist.h"
+#include "game_modes.h" /* port: port/linux/game/game_modes.c */
 #include "text/text_group.h"
 #include "tag_files/tag_groups.h"
 /* the saved game file checksum is an XDK content signature. */
@@ -100,7 +101,9 @@ enum
 	which do not pass. */
 	PLAYLIST_PROFILE_OPTIONS_OFFSET = 0x100,
 	PLAYLIST_PROFILE_OPTIONS_MAGIC = 0x4F565047, /* 'GPVO' little-endian */
-	PLAYLIST_PROFILE_OPTIONS_VERSION = 1,
+	/* port: version 2 adds OpenCE's gametypes' options (game_engine.h's
+	struct game_variant_options from mode on); version 1's are read too */
+	PLAYLIST_PROFILE_OPTIONS_VERSION = 2,
 	MAXIMUM_GAME_VARIANT_NAME_LENGTH = 12,
 	NUMBER_OF_DEFAULT_PLAYLIST_PROFILES = 26,
 };
@@ -123,6 +126,10 @@ struct playlist_profile_data
 	boolean first_time;
 };
 #pragma pack(pop)
+
+/* port: OpenCE's gametypes follow the Xbox's (game_modes.h) */
+typedef char verify_game_modes_first_default_playlist_profile[
+	GAME_MODES_FIRST_DEFAULT_PLAYLIST_PROFILE == NUMBER_OF_DEFAULT_PLAYLIST_PROFILES ? 1 : -1];
 
 typedef char verify_playlist_profile_building_functions_size[
 	sizeof(((struct playlist_profile_data *)0)->
@@ -429,6 +436,29 @@ boolean playlist_profile_get_from_path(
 	return success;
 }
 
+/* port: a saved gametype's file, read whole already, its PC options too
+(the Xbox's defaults for one saved without them): a dedicated server's
+file=<name> rotation entries, read from its gametypes folder by the
+platform layer (port/linux/game/server_gametypes.c) */
+boolean playlist_profile_get_from_data_with_options(
+	byte const *data,
+	unsigned long size,
+	struct game_variant *variant,
+	struct game_variant_options *options)
+{
+	XCALCSIG_SIGNATURE checksum;
+
+	if (!data || size < SAVED_GAME_FILE_BLOCK_SIZE)
+		return FALSE;
+	saved_game_file_generate_checksum(data, PLAYLIST_PROFILE_CHECKSUM_DATA_SIZE, &checksum);
+	if (csmemcmp(&checksum, data + PLAYLIST_PROFILE_CHECKSUM_DATA_SIZE, sizeof(checksum)))
+		return FALSE;
+	csmemcpy(variant, data, sizeof(struct game_variant));
+	if (!playlist_profile_options_from_block(data, options))
+		game_variant_options_default(variant, options);
+	return TRUE;
+}
+
 boolean playlist_profile_get_display_name(
 	long playlist_profile_index,
 	wchar_t *display_name)
@@ -554,40 +584,84 @@ static void playlist_profile_create_default_profiles_on_disk(
 	{
 		long profile_index;
 
+		/* port: then OpenCE's gametypes (game_modes.c), with their options */
 		for (profile_index = 0;
-			profile_index < NUMBER_OF_DEFAULT_PLAYLIST_PROFILES;
+			profile_index < NUMBER_OF_DEFAULT_PLAYLIST_PROFILES + game_modes_gametype_count();
 			profile_index++)
 		{
-			wchar_t *display_name;
+			wchar_t const *display_name;
 			boolean file_written = FALSE;
+			struct game_variant_options options;
 
-			variant = *playlist_profile_default_data.default_variant_building_functions[
-				profile_index](&temporary);
+			if (profile_index < NUMBER_OF_DEFAULT_PLAYLIST_PROFILES)
+			{
+				variant = *playlist_profile_default_data.default_variant_building_functions[
+					profile_index](&temporary);
+			}
+			else
+			{
+				game_modes_gametype((short)(profile_index - NUMBER_OF_DEFAULT_PLAYLIST_PROFILES), &variant,
+					&options);
+			}
 
-			_snprintf(path, MAXIMUM_FILENAME_LENGTH, "z:\\saved\\playlists\\default_playlist\\%02d", profile_index);
-			path[MAXIMUM_FILENAME_LENGTH] = 0;
-			directory_create_or_delete_contents(path);
-			csstrncat(path, "\\blam.lst", MAXIMUM_FILENAME_LENGTH);
-			path[MAXIMUM_FILENAME_LENGTH] = 0;
+			display_name = profile_index < NUMBER_OF_DEFAULT_PLAYLIST_PROFILES ?
+				unicode_string_list_get_string(string_list_index, (short)profile_index) :
+				game_modes_gametype_name((short)(profile_index - NUMBER_OF_DEFAULT_PLAYLIST_PROFILES));
 
-			display_name = unicode_string_list_get_string(
-				string_list_index,
-				(short)profile_index);
-
+			/* port: the block cleared (the options' place, unless written below) */
+			csmemset(block, 0, sizeof(block));
 			csmemcpy(
 				block,
 				&variant,
 				sizeof(struct game_variant));
-			ustrncpy(
-				(wchar_t *)block,
-				display_name,
-				MAXIMUM_GAME_VARIANT_NAME_LENGTH - 1);
+			/* port: (OpenCE's have their own short names: game_modes.c) */
+			if (profile_index < NUMBER_OF_DEFAULT_PLAYLIST_PROFILES)
+			{
+				ustrncpy(
+					(wchar_t *)block,
+					display_name,
+					MAXIMUM_GAME_VARIANT_NAME_LENGTH - 1);
+			}
 			((struct game_variant *)block)->human_readable_game_description[MAXIMUM_GAME_VARIANT_NAME_LENGTH - 1] = 0;
 			((struct game_variant *)block)->flags |= (short)(profile_index << 8);
 			saved_game_file_generate_checksum(
 				block,
 				PLAYLIST_PROFILE_CHECKSUM_DATA_SIZE,
 				(XCALCSIG_SIGNATURE *)(block + PLAYLIST_PROFILE_CHECKSUM_DATA_SIZE));
+			if (profile_index >= NUMBER_OF_DEFAULT_PLAYLIST_PROFILES)
+				playlist_profile_options_to_block(block, &options);
+
+			_snprintf(path, MAXIMUM_FILENAME_LENGTH, "z:\\saved\\playlists\\default_playlist\\%02d", profile_index);
+			path[MAXIMUM_FILENAME_LENGTH] = 0;
+			/* port: a gametype whose file already holds this is left as it
+			is. The Xbox's z: was emptied between runs, so it wrote them all
+			at every start; here z: is kept, and each folder emptied and its
+			file written again cost the Switch's card some forty calls, for
+			each of the thirty-odd gametypes, at every start. */
+			{
+				char existing_path[MAXIMUM_FILENAME_LENGTH+1];
+				byte existing[SAVED_GAME_FILE_BLOCK_SIZE];
+				boolean same = FALSE;
+
+				_snprintf(existing_path, MAXIMUM_FILENAME_LENGTH, "%s\\blam.lst", path);
+				existing_path[MAXIMUM_FILENAME_LENGTH] = 0;
+				if (file_reference_create_from_path(&file, existing_path, FALSE) &&
+					file_open(&file, FLAG(_permission_read_bit)))
+				{
+					same = file_get_eof(&file) == sizeof(existing) &&
+						file_read(&file, sizeof(existing), existing) &&
+						!csmemcmp(existing, block, sizeof(block));
+					file_close(&file);
+				}
+				if (same)
+				{
+					playlist_profile_globals.number_of_default_profiles++;
+					continue;
+				}
+			}
+			directory_create_or_delete_contents(path);
+			csstrncat(path, "\\blam.lst", MAXIMUM_FILENAME_LENGTH);
+			path[MAXIMUM_FILENAME_LENGTH] = 0;
 
 			if (file_reference_create_from_path(&file, path, FALSE) &&
 				file_create(&file) &&
@@ -623,6 +697,85 @@ static void playlist_profile_create_default_profiles_on_disk(
 	return;
 }
 
+/* port: gametype files' blocks, kept by their index while the saved games'
+index is the same (saved_game_files_index_generation) and nothing here has
+written one. A gametype list read every gametype's file to sort them
+(OpenCE's or not) and to show the one chosen, each an open, a read and the
+card's lock waited for while a map was copied: 0.7 s to open the list on
+the Switch. */
+#define PLAYLIST_BLOCKS_KEPT 64
+static struct playlist_block_kept
+{
+	boolean used;
+	long index;
+	unsigned long generation;
+	byte block[SAVED_GAME_FILE_BLOCK_SIZE];
+} *playlist_blocks_kept;
+static short playlist_blocks_next;
+
+static unsigned long playlist_blocks_changes;
+
+/* port: a number that changes whenever a gametype's file may have (its
+blocks forgotten: one written), for what the menus keep of the gametypes */
+unsigned long playlist_profile_changes(
+	void)
+{
+	return playlist_blocks_changes;
+}
+
+static void playlist_blocks_forget(
+	void)
+{
+	playlist_blocks_changes++;
+	if (playlist_blocks_kept)
+		csmemset(playlist_blocks_kept, 0, PLAYLIST_BLOCKS_KEPT * sizeof(*playlist_blocks_kept));
+}
+
+/* the profile's file's block: kept, or read (and kept); with the saved
+games' mutex held */
+static boolean playlist_block_get(
+	long playlist_profile_index,
+	byte *block)
+{
+	struct file_reference file;
+	unsigned long generation = saved_game_files_index_generation();
+	short index;
+	boolean success = FALSE;
+
+	if (!playlist_blocks_kept)
+	{
+		playlist_blocks_kept = malloc(PLAYLIST_BLOCKS_KEPT * sizeof(*playlist_blocks_kept));
+		playlist_blocks_forget();
+	}
+	for (index = 0; playlist_blocks_kept && index < PLAYLIST_BLOCKS_KEPT; index++)
+	{
+		struct playlist_block_kept const *kept = &playlist_blocks_kept[index];
+
+		if (kept->used && kept->index == playlist_profile_index && kept->generation == generation)
+		{
+			csmemcpy(block, kept->block, SAVED_GAME_FILE_BLOCK_SIZE);
+			return TRUE;
+		}
+	}
+	if (saved_game_file_open(&file, playlist_profile_index))
+	{
+		success = file_read(&file, SAVED_GAME_FILE_BLOCK_SIZE, block);
+		saved_game_file_close(&file, playlist_profile_index);
+	}
+	/* (kept only if the index did not change while it was read) */
+	if (success && playlist_blocks_kept && generation == saved_game_files_index_generation())
+	{
+		struct playlist_block_kept *kept = &playlist_blocks_kept[playlist_blocks_next];
+
+		playlist_blocks_next = (short)((playlist_blocks_next + 1) % PLAYLIST_BLOCKS_KEPT);
+		kept->used = TRUE;
+		kept->index = playlist_profile_index;
+		kept->generation = generation;
+		csmemcpy(kept->block, block, SAVED_GAME_FILE_BLOCK_SIZE);
+	}
+	return success;
+}
+
 static boolean playlist_profile_read(
 	long playlist_profile_index,
 	struct game_variant *variant)
@@ -655,59 +808,49 @@ static boolean playlist_profile_read(
 	{
 		if (saved_game_files_take_mutex())
 		{
-			if (saved_game_file_open(&file, playlist_profile_index))
+			/* port: kept, or read (playlist_block_get) */
+			if (playlist_block_get(playlist_profile_index, block))
 			{
-				if (file_read(&file, sizeof(block), block))
+				saved_game_file_generate_checksum(
+					block,
+					PLAYLIST_PROFILE_CHECKSUM_DATA_SIZE,
+					&checksum);
+
+				if (!csmemcmp(
+					&checksum,
+					block + PLAYLIST_PROFILE_CHECKSUM_DATA_SIZE,
+					sizeof(checksum)))
 				{
-					saved_game_file_generate_checksum(
+					csmemcpy(
+						variant,
 						block,
-						PLAYLIST_PROFILE_CHECKSUM_DATA_SIZE,
-						&checksum);
-
-					if (!csmemcmp(
-						&checksum,
-						block + PLAYLIST_PROFILE_CHECKSUM_DATA_SIZE,
-						sizeof(checksum)))
-					{
-						csmemcpy(
-							variant,
-							block,
-							sizeof(struct game_variant));
-					}
-					else
-					{
-						default_variant = *build_game_variant_slayer(&temporary);
-						error(
-							_error_silent,
-							"checksum failed on playlist profile file, sanitizing memory resident version...");
-						default_variant.flags = 0;
-						ustrncpy(
-							(wchar_t *)&default_variant,
-							saved_game_file_get_display_name(playlist_profile_index),
-							MAXIMUM_GAME_VARIANT_NAME_LENGTH - 1);
-						default_variant.human_readable_game_description[MAXIMUM_GAME_VARIANT_NAME_LENGTH - 1] = 0;
-						csmemcpy(
-							variant,
-							&default_variant,
-							sizeof(struct game_variant));
-					}
-
-					success = TRUE;
+						sizeof(struct game_variant));
 				}
 				else
 				{
+					default_variant = *build_game_variant_slayer(&temporary);
 					error(
 						_error_silent,
-						"failed to read playlist profile from file");
+						"checksum failed on playlist profile file, sanitizing memory resident version...");
+					default_variant.flags = 0;
+					ustrncpy(
+						(wchar_t *)&default_variant,
+						saved_game_file_get_display_name(playlist_profile_index),
+						MAXIMUM_GAME_VARIANT_NAME_LENGTH - 1);
+					default_variant.human_readable_game_description[MAXIMUM_GAME_VARIANT_NAME_LENGTH - 1] = 0;
+					csmemcpy(
+						variant,
+						&default_variant,
+						sizeof(struct game_variant));
 				}
 
-				saved_game_file_close(&file, playlist_profile_index);
+				success = TRUE;
 			}
 			else
 			{
 				error(
 					_error_silent,
-					"failed to open playlist profile file");
+					"failed to read playlist profile from file");
 			}
 
 			saved_game_files_release_mutex();
@@ -847,6 +990,7 @@ static void playlist_profile_write(
 		playlist_profile_globals.thread = NULL;
 	}
 
+	playlist_blocks_forget(); /* port: (its block written) */
 	playlist_profile_globals.thread_input.playlist_profile_index = playlist_profile_index;
 	csmemcpy(
 		&playlist_profile_globals.thread_input.variant,
@@ -880,11 +1024,7 @@ static boolean playlist_profile_read_block(
 	}
 	if (saved_game_files_take_mutex())
 	{
-		if (saved_game_file_open(&file, playlist_profile_index))
-		{
-			success = file_read(&file, SAVED_GAME_FILE_BLOCK_SIZE, block);
-			saved_game_file_close(&file, playlist_profile_index);
-		}
+		success = playlist_block_get(playlist_profile_index, block); /* port */
 		saved_game_files_release_mutex();
 	}
 	return success;
@@ -907,15 +1047,20 @@ static boolean playlist_profile_options_from_block(
 	XCALCSIG_SIGNATURE checksum;
 
 	csmemcpy(&header, data, sizeof(header));
-	if (header.magic != PLAYLIST_PROFILE_OPTIONS_MAGIC || header.version != PLAYLIST_PROFILE_OPTIONS_VERSION ||
-		header.size != sizeof(*options))
+	if (header.magic != PLAYLIST_PROFILE_OPTIONS_MAGIC ||
+		(!(header.version == PLAYLIST_PROFILE_OPTIONS_VERSION && header.size == sizeof(*options)) &&
+		!(header.version == 1 && header.size == GAME_VARIANT_OPTIONS_V1_SIZE)))
 	{
 		return FALSE;
 	}
+	size = sizeof(header) + header.size;
 	saved_game_file_generate_checksum((byte *)data, size, &checksum);
 	if (csmemcmp(&checksum, data + size, sizeof(checksum)))
 		return FALSE;
-	csmemcpy(options, data + sizeof(header), sizeof(*options));
+	/* (version 1's: none of OpenCE's gametypes, their options the defaults) */
+	game_modes_options_default(options);
+	csmemcpy(options, data + sizeof(header), header.size);
+	game_modes_options_sanitize(options);
 	options->friendly_fire = (short)PIN(options->friendly_fire, 0, NUMBER_OF_FRIENDLY_FIRE_MODES - 1);
 	options->radar_players = (byte)PIN(options->radar_players, 0, NUMBER_OF_RADAR_PLAYERS - 1);
 	options->loadout = (byte)PIN(options->loadout, 0, NUMBER_OF_LOADOUTS - 1);

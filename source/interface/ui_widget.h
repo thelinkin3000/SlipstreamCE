@@ -66,6 +66,10 @@ enum
 
 /* ---------- prototypes/UI_WIDGET.C */
 
+/* port: MCC's menu actions name levels of its own catalog (mcc_maps.c) */
+boolean ui_widget_port_mcc_multiplayer_map_choose(char const *level_name);
+boolean ui_widget_port_mcc_cooperative_level_choose(char const *level_name, short difficulty);
+
 boolean event_controller_index_compatible_with_widget(
 	struct event_record const *event,
 	struct widget_instance const *widget);
@@ -188,6 +192,8 @@ void draw_string_and_hack_in_icons(
 	short height_adjust,
 	wchar_t const *instring,
 	boolean ignore_icon_color);
+/* port: where the last draw_string_and_hack_in_icons left its cursor */
+extern short draw_string_and_hack_in_icons_port_end_x;
 void ui_widgets_dispose(
 	void);
 boolean widget_event_function_list_widget_goto_next_item(

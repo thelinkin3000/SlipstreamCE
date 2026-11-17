@@ -28,13 +28,30 @@ You do not need the Xbox SDK.
 2. Enter `python configure.py`.
 3. Enter `ninja windows`.
 
-`configure.py` generates the Windows build only on Windows.
+`configure.py` generates the Windows build only on Windows, and with
+`--windows-cross`, which cross-compiles it from Linux: the same clang and
+lld build against an MSVC toolchain, whose directories
+`--windows-vctools-dir` (the versioned folder under `VC/Tools/MSVC`, the
+one with `include` and `lib`) and `--windows-sdk-dir` (the SDK folder with
+`Include` and `Lib`) name, or `VCToolsInstallDir` and `WindowsSdkDir`. The
+build passes them to clang in `INCLUDE` and `LIB`. `--windows-cc` names
+the cross compiler (a run-of-the-mill clang by default).
+
+    python configure.py --windows-cross \
+        --windows-vctools-dir "$VCToolsInstallDir" \
+        --windows-sdk-dir "$WindowsSdkDir"
+    ninja windows
+
+The toolchain can be an [msvc-wine](https://github.com/mstorsjo/msvc-wine)
+install or an unmodified MSVC from a Windows install (from an NTFS volume,
+for instance). The SDK must have a versioned folder in each of `Include`
+and `Lib` (`Include/<version>/um`): a plain `xwin splat` does not, a splat
+made with `xwin splat --use-winsysroot-style` does.
 
 The build uses all the instructions of the processor of the computer that
 builds it (`-march=native`). Such a build does not always start on a
 different computer. To make a build for other computers, enter
-`python configure.py --portable`. Refer to the build options in the main
-[README](../../README.md#build-options).
+`python configure.py --portable`.
 
 For a new optimization profile (`--pgo=train`), the build compiles the
 profile runtime of LLVM for 32-bit x86 (`pgo/halo_profile_runtime.c`).
@@ -64,6 +81,14 @@ Thus the Windows build needs fewer changes than the Linux build.
 
 The executable is large-address-aware, because the platform layer reserves
 the Xbox memory at `0x80000000`.
+
+`SDL3.dll` is delay-loaded with the MSVC `delayimp` helper. This lets
+`mcc_window_initialize` reserve MCC's `0x50000000` tag window before the
+first SDL call, including the early settings read for Custom Edition.
+The shipped SDL DLL keeps ASLR enabled. A reservation failure is reported
+once logging is connected, and map loading retries without replacing other
+allocations. See [MCC map limits](../../docs/mcc_maps.md) for the remaining
+address-space constraints.
 
 ### Headers
 

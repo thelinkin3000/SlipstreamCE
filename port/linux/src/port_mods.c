@@ -5,8 +5,9 @@ The mods (port_mods.h): folders in the data root's mods folder, each with a
 mod.toml saying what it is and a tags folder of Halo PC tag files, as the
 Halo Editing Kit and Invader write them (tags/sound/.../name.sound). The
 game plays a map's tags from the files of the mods that are on
-(port/linux/game/mods.c): only those of this machine's sounds, bitmaps and
-text, so that a mod changes nothing another machine of a network game sees.
+(port/linux/game/mods.c): only those of this machine's sounds, bitmaps,
+text and models (what is drawn of them), so that a mod changes nothing
+another machine of a network game sees.
 
 Every mod in the folder is on, in a load order: the folders' names'
 alphabetical order, except that the mods a mod must load after (those it
@@ -52,6 +53,7 @@ at startup whether to play them anyway, turn those named off, or quit
 #include "tomlc17.h"
 
 #include <SDL3/SDL.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -81,6 +83,12 @@ twice would otherwise be walked 2 to the depth times) */
 /* what the file reads go through on their way into the Xbox's memory, which
 the renderer watches (memory_watch.c) */
 #define READ_BOUNCE_SIZE 0x10000
+/* the mods' files kept open between reads (port_mods_file_read): a mod's
+bitmaps are read again each time the texture cache takes them back, and an
+open, a seek and a close each time were the most of a Switch's hitches with
+a mod of uncompressed textures (each a request to its file system); closed
+when the files are found again (files_dispose) */
+#define OPEN_FILES 8
 /* the most a folder name's character takes in load_order.toml (\\u00XX) */
 #define TOML_CHARACTER_LENGTH 6
 
@@ -107,6 +115,9 @@ struct port_mod
 	struct mod_names load_after;
 	struct mod_names load_before;
 	struct mod_names incompatible;
+	/* its bitmaps' multipurpose maps and HUD meters keep their channels
+	where the Xbox does (channel_order = "xbox"), not where Halo PC does */
+	int xbox_channels;
 	/* turned off in the Mods menu */
 	int disabled;
 	/* its place in the load order */
@@ -127,6 +138,9 @@ struct port_mod_file
 	/* lower case, backslashes */
 	char *key;
 	char *path;
+	/* (port_mods_file_stamp's answer, kept for the scan that found it) */
+	int stamped;
+	unsigned long size, stamp[2];
 };
 
 /* ---------- globals */
@@ -271,9 +285,44 @@ static void toml_names(toml_datum_t table, const char *key, const char *path, st
 	}
 }
 
+#ifdef HALO_GUEST
+typedef FILE *open_stream;
+#define OPEN_STREAM_CLOSE(stream) fclose(stream)
+#else
+typedef SDL_IOStream *open_stream;
+#define OPEN_STREAM_CLOSE(stream) SDL_CloseIO(stream)
+#endif
+
+static struct
+{
+	long file;
+	open_stream stream;
+	unsigned long used;
+} open_files[OPEN_FILES];
+static unsigned long open_files_clock;
+static pthread_mutex_t open_files_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* (under open_files_lock) every one closed */
+static void open_files_close(void)
+{
+	int index;
+
+	for (index = 0; index < OPEN_FILES; index++)
+	{
+		if (open_files[index].stream)
+			OPEN_STREAM_CLOSE(open_files[index].stream);
+		open_files[index].stream = NULL;
+		open_files[index].file = -1;
+	}
+}
+
 static void files_dispose(void)
 {
 	long index;
+
+	pthread_mutex_lock(&open_files_lock);
+	open_files_close();
+	pthread_mutex_unlock(&open_files_lock);
 
 	for (index = 0; index < port_mods.file_count; index++)
 	{
@@ -340,12 +389,24 @@ static const char *toml_text(toml_datum_t table, const char *key, const char *pa
 	return value.u.s;
 }
 
+/* channel_order's value: 1 for "xbox", 0 for "pc", -1 for anything else
+(not case-sensitive) */
+static int channel_order_xbox(const char *text)
+{
+	if (names_equal(text, "xbox"))
+		return 1;
+	if (names_equal(text, "pc"))
+		return 0;
+	return -1;
+}
+
 /* reads the mod.toml of the mod in `folder`; 0 when there is none */
 static int mod_read(struct port_mod *mod, const char *root, const char *folder)
 {
 	static const char *const keys[] =
 	{
 		"name", "id", "version", "authors", "description", "maps", "load_after", "load_before", "incompatible", "format",
+		"channel_order",
 	};
 	char path[MAXIMUM_PATH_LENGTH];
 	size_t size = 0;
@@ -436,6 +497,16 @@ static int mod_read(struct port_mod *mod, const char *root, const char *folder)
 	else if (value.type != TOML_UNKNOWN && value.type != TOML_ARRAY)
 	{
 		platform_log("mods: %s line %d: maps is not a list of maps", path, value.lineno);
+	}
+	value = toml_get(result.toptab, "channel_order");
+	if (value.type == TOML_STRING && channel_order_xbox(value.u.s) >= 0)
+	{
+		mod->xbox_channels = channel_order_xbox(value.u.s);
+	}
+	else if (value.type != TOML_UNKNOWN)
+	{
+		platform_log("mods: %s line %d: channel_order is not \"pc\" or \"xbox\": its bitmaps are taken as Halo PC's",
+			path, value.lineno);
 	}
 	value = toml_get(result.toptab, "format");
 	if (value.type == TOML_INT64 && value.u.int64 > MODS_FORMAT)
@@ -776,13 +847,13 @@ static int text_file_write(const char *path, const char *text)
 {
 	char temporary[MAXIMUM_PATH_LENGTH];
 	int written;
-#ifdef HALO_ARM64_GUEST
+#ifdef HALO_GUEST
 	FILE *file;
 #endif
 
 	if (snprintf(temporary, sizeof(temporary), "%s.new", path) >= (int)sizeof(temporary))
 		return 0;
-#ifdef HALO_ARM64_GUEST
+#ifdef HALO_GUEST
 	/* (the guest's own C library: SDL's are the host's) */
 	file = fopen(temporary, "wb");
 	if (!file)
@@ -801,6 +872,39 @@ static int text_file_write(const char *path, const char *text)
 		SDL_RemovePath(temporary);
 #endif
 	return written;
+}
+
+/* removes path: a folder's files and folders first (as deep as
+MAXIMUM_FOLDER_DEPTH); whether it is gone */
+static int path_remove(const char *path, int depth)
+{
+	struct posix_file_information information;
+
+	if (posix_stat(path, &information) != 0)
+		return 1;
+	if ((information.flags & _posix_file_is_directory) && depth <= MAXIMUM_FOLDER_DEPTH)
+	{
+		void *directory = posix_directory_open(path);
+		char name[256];
+
+		while (directory && posix_directory_next(directory, name, sizeof(name)))
+		{
+			char child[MAXIMUM_PATH_LENGTH];
+
+			if (!strcmp(name, ".") || !strcmp(name, ".."))
+				continue;
+			if (snprintf(child, sizeof(child), "%s/%s", path, name) < (int)sizeof(child))
+				path_remove(child, depth + 1);
+		}
+		if (directory)
+			posix_directory_close(directory);
+	}
+#ifdef HALO_GUEST
+	/* (musl's remove takes an empty folder too) */
+	return remove(path) == 0;
+#else
+	return SDL_RemovePath(path);
+#endif
 }
 
 static long file_add(long mod, const char *key, const char *path)
@@ -838,6 +942,7 @@ static long file_add(long mod, const char *key, const char *path)
 		return -1;
 	}
 	file->mod = mod;
+	file->stamped = 0;
 	file->hash = key_hash(key);
 	file->next = port_mods.buckets[file->hash % FILE_BUCKET_COUNT];
 	port_mods.buckets[file->hash % FILE_BUCKET_COUNT] = port_mods.file_count;
@@ -909,13 +1014,30 @@ static int mod_for_map(const struct port_mod *mod, const char *map_name)
 	return 0;
 }
 
+/* the mods folder: game.mods.path's (an absolute path, or one under the
+data root), else the data root's mods */
 static const char *mods_root(char *path, size_t size)
 {
-	snprintf(path, size, "%s/mods", platform_data_root());
+	const char *configured = config_string("game.mods.path");
+
+	if (!configured || !*configured)
+		snprintf(path, size, "%s/mods", platform_data_root());
+	/* (absolute: /..., a drive's C:\... or C:/..., the Switch's sdmc:/...) */
+	else if (configured[0] == '/' || configured[0] == '\\' || strstr(configured, ":/") || strstr(configured, ":\\"))
+		snprintf(path, size, "%s", configured);
+	else
+		snprintf(path, size, "%s/%s", platform_data_root(), configured);
 	return path;
 }
 
 /* ---------- public code */
+
+const char *port_mods_root(void)
+{
+	static char root[MAXIMUM_PATH_LENGTH];
+
+	return mods_root(root, sizeof(root));
+}
 
 long port_mods_scan(void)
 {
@@ -964,6 +1086,44 @@ long port_mods_scan(void)
 	return port_mods.played_count;
 }
 
+long port_mods_folders(void)
+{
+	char root[MAXIMUM_PATH_LENGTH];
+	void *directory = posix_directory_open(mods_root(root, sizeof(root)));
+	char name[256];
+	long count = 0;
+
+	while (directory && posix_directory_next(directory, name, sizeof(name)))
+	{
+		char path[MAXIMUM_PATH_LENGTH];
+		struct posix_file_information information;
+
+		snprintf(path, sizeof(path), "%s/%s", root, name);
+		if (name[0] != '.' && posix_stat(path, &information) == 0 && (information.flags & _posix_file_is_directory))
+			count++;
+	}
+	if (directory)
+		posix_directory_close(directory);
+	return count;
+}
+
+int port_mods_delete(long index)
+{
+	char root[MAXIMUM_PATH_LENGTH];
+	char path[MAXIMUM_PATH_LENGTH];
+
+	if (index < 0 || index >= port_mods.mod_count)
+		return 0;
+	/* (its files closed first; the list of them is the next scan's to
+	forget) */
+	pthread_mutex_lock(&open_files_lock);
+	open_files_close();
+	pthread_mutex_unlock(&open_files_lock);
+	snprintf(path, sizeof(path), "%s/%s", mods_root(root, sizeof(root)), port_mods.mods[index].folder);
+	platform_log("mods: deleting %s", path);
+	return path_remove(path, 0);
+}
+
 long port_mods_file_find(const char *tag_file, const char *map_name)
 {
 	char key[MAXIMUM_PATH_LENGTH];
@@ -988,18 +1148,30 @@ long port_mods_file_find(const char *tag_file, const char *map_name)
 	return found;
 }
 
+/* (port: looked at once a scan, and kept: the files are found again only
+when the mods are (port_mods_scan), and each map's load asked again for
+every file it played, a stat each, some 150 on the Switch's card at every
+return to the menus) */
 int port_mods_file_stamp(long file, unsigned long *size, unsigned long stamp[2])
 {
 	struct posix_file_information information;
+	struct port_mod_file *entry;
 
-	if (file < 0 || file >= port_mods.file_count || posix_stat(port_mods.files[file].path, &information) != 0 ||
-		information.size_high)
-	{
+	if (file < 0 || file >= port_mods.file_count)
 		return 0;
+	entry = &port_mods.files[file];
+	if (!entry->stamped)
+	{
+		if (posix_stat(entry->path, &information) != 0 || information.size_high)
+			return 0;
+		entry->size = information.size_low;
+		entry->stamp[0] = information.modification_seconds;
+		entry->stamp[1] = information.modification_nanoseconds;
+		entry->stamped = 1;
 	}
-	*size = information.size_low;
-	stamp[0] = information.modification_seconds;
-	stamp[1] = information.modification_nanoseconds;
+	*size = entry->size;
+	stamp[0] = entry->stamp[0];
+	stamp[1] = entry->stamp[1];
 	return 1;
 }
 
@@ -1010,24 +1182,51 @@ int port_mods_file_read(long file, unsigned long offset, void *buffer, unsigned 
 	unsigned char *staging = NULL;
 	unsigned long done = 0;
 	int read = 1;
-#ifdef HALO_ARM64_GUEST
+#ifdef HALO_GUEST
 	FILE *stream;
 #else
 	SDL_IOStream *stream;
 #endif
+
+	int slot = -1, index;
 
 	if (file < 0 || file >= port_mods.file_count)
 		return 0;
 	path = port_mods.files[file].path;
 	if (bounce && !(staging = malloc(READ_BOUNCE_SIZE)))
 		return 0;
-#ifdef HALO_ARM64_GUEST
-	stream = fopen(path, "rb");
+	pthread_mutex_lock(&open_files_lock);
+	/* (the file's stream if it is open, else the least lately used slot's,
+	closed, for it) */
+	for (index = 0; index < OPEN_FILES; index++)
+	{
+		if (open_files[index].stream && open_files[index].file == file)
+		{
+			slot = index;
+			break;
+		}
+		if (slot < 0 || !open_files[index].stream ||
+			(open_files[slot].stream && open_files[index].used < open_files[slot].used))
+			slot = index;
+	}
+	if (!open_files[slot].stream || open_files[slot].file != file)
+	{
+		if (open_files[slot].stream)
+			OPEN_STREAM_CLOSE(open_files[slot].stream);
+#ifdef HALO_GUEST
+		open_files[slot].stream = fopen(path, "rb");
+#else
+		/* (SDL's, for UTF-8 paths on Windows) */
+		open_files[slot].stream = SDL_IOFromFile(path, "rb");
+#endif
+		open_files[slot].file = open_files[slot].stream ? file : -1;
+	}
+	open_files[slot].used = ++open_files_clock;
+	stream = open_files[slot].stream;
+#ifdef HALO_GUEST
 	if (!stream || fseek(stream, (long)offset, SEEK_SET) != 0)
 		read = 0;
 #else
-	/* (SDL's, for UTF-8 paths on Windows) */
-	stream = SDL_IOFromFile(path, "rb");
 	if (!stream || SDL_SeekIO(stream, (Sint64)offset, SDL_IO_SEEK_SET) < 0)
 		read = 0;
 #endif
@@ -1038,7 +1237,7 @@ int port_mods_file_read(long file, unsigned long offset, void *buffer, unsigned 
 
 		if (bounce && wanted > READ_BOUNCE_SIZE)
 			wanted = READ_BOUNCE_SIZE;
-#ifdef HALO_ARM64_GUEST
+#ifdef HALO_GUEST
 		read = fread(bounce ? staging : destination, 1, wanted, stream) == wanted;
 #else
 		read = SDL_ReadIO(stream, bounce ? staging : destination, wanted) == wanted;
@@ -1050,21 +1249,31 @@ int port_mods_file_read(long file, unsigned long offset, void *buffer, unsigned 
 		}
 		done += wanted;
 	}
-	if (stream)
+	/* (a stream a read failed on is closed, to be opened again next time) */
+	if (!read && stream)
 	{
-#ifdef HALO_ARM64_GUEST
-		fclose(stream);
-#else
-		SDL_CloseIO(stream);
-#endif
+		OPEN_STREAM_CLOSE(stream);
+		open_files[slot].stream = NULL;
+		open_files[slot].file = -1;
 	}
+	pthread_mutex_unlock(&open_files_lock);
 	free(staging);
 	return read;
+}
+
+long port_mods_file_order(long file)
+{
+	return file >= 0 && file < port_mods.file_count ? port_mods.mods[port_mods.files[file].mod].order : -1;
 }
 
 const char *port_mods_file_mod(long file)
 {
 	return file >= 0 && file < port_mods.file_count ? port_mods.mods[port_mods.files[file].mod].folder : "";
+}
+
+int port_mods_file_xbox_channels(long file)
+{
+	return file >= 0 && file < port_mods.file_count && port_mods.mods[port_mods.files[file].mod].xbox_channels;
 }
 
 const char *port_mods_file_path(long file)
@@ -1096,6 +1305,40 @@ int port_mods_describe(long index, char *text, unsigned long size, const char *m
 		mod->refusal ? mod->refusal : "",
 		mod->order < 0 || mod->file_count ? "" : " (no tags folder, or nothing in it)");
 	return 1;
+}
+
+int port_mods_list(char *text, unsigned long size)
+{
+	long position;
+	int count = 0;
+	size_t length = 0;
+
+	if (!size)
+		return 0;
+	text[0] = 0;
+	for (position = 0; position < port_mods.mod_count; position++)
+	{
+		long index = port_mods.ordered[position];
+		const struct port_mod *mod;
+		int written;
+
+		if (index < 0 || index >= port_mods.mod_count)
+			continue;
+		mod = &port_mods.mods[index];
+		if (!mod_on(mod))
+			continue;
+		written = snprintf(text + length, size - length, "%s%s%s%s", count ? "\n" : "", mod->folder,
+			mod->version[0] ? " " : "", mod->version);
+		/* (a line that does not fit is left out whole) */
+		if (written < 0 || (size_t)written >= size - length)
+		{
+			text[length] = 0;
+			break;
+		}
+		length += (size_t)written;
+		count++;
+	}
+	return count;
 }
 
 unsigned long port_mods_scans(void)

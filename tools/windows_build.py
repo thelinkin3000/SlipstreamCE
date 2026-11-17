@@ -3,10 +3,14 @@
 Like the Linux build (tools/linux_build.py), it compiles the game sources
 with clang for 32-bit x86 Windows (i686-pc-windows-msvc), adds the platform layer shared with
 Linux (``port/linux/src``) and the Windows parts in ``port/windows``, and
-links ``build/windows/halo.exe`` with lld. It is generated only when
-configure.py runs on Windows. See port/windows/README.md for the design.
+links ``build/windows/halo.exe`` with lld. It is generated when
+configure.py runs on Windows, or with configure.py --windows-cross, which
+cross-compiles it from Linux (tools/windows_cross_build.py) against the
+MSVC toolchain of --windows-vctools-dir and --windows-sdk-dir. See
+port/windows/README.md for the design.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -19,11 +23,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .linux_build import (LINUX_PROFILE, MINIUPNPC_DIR, OPTIMISATION, STB_VORBIS_SOURCE, WINDOWS_PROFILE, XDK_INCLUDE,
+                          build_repository,
                           lto_mode, march_flag, miniupnpc_sources, pgo_mode, compile_launcher, configuration_defines,
                           game_defines_and_includes, game_sources, musl_math_cflags, musl_math_sources, opus_cflags,
                           opus_sources, pgo_profile, profile_use_flags, xdk_headers)
-from .embed_assets import hud_assets_build, hud_configure_inputs
+from .embed_assets import hud_assets_build, hud_configure_inputs, server_ui_build
 from .ninja_syntax import Writer
+from .windows_cross_build import cross_toolchain_prefix
 
 LINUX_DIR = Path("port/linux")
 PORT_DIR = Path("port/windows")
@@ -36,6 +42,8 @@ SDL_URL = (
     f"https://github.com/libsdl-org/SDL/releases/download/release-{SDL_VERSION}/"
     f"SDL3-devel-{SDL_VERSION}-VC.zip"
 )
+# (its SHA-256 when it was pinned: the DLL ships in the builds)
+SDL_SHA256 = "1a784cb2a5c64d56fe7a62090fe9d242d9865f235e4ea9678f1a6ba4e693e7de"
 THIRD_PARTY = BUILD / "third_party"
 SDL_DIR = THIRD_PARTY / f"SDL3-{SDL_VERSION}"
 
@@ -73,7 +81,8 @@ def updater_defines(release: bool) -> str:
     if not number.isdigit():
         number = "0"
     flavor = "release" if release else "debug"
-    return f'-DHALO_BUILD_NUMBER={number} -DHALO_BUILD_FLAVOR=\\"{flavor}\\"'
+    return (f'-DHALO_BUILD_NUMBER={number} -DHALO_BUILD_FLAVOR=\\"{flavor}\\" '
+            f'-DHALO_BUILD_REPOSITORY=\\"{build_repository()}\\"')
 
 WINDOWS_ABI_FLAGS = [
     "--target=i686-pc-windows-msvc",
@@ -146,7 +155,15 @@ def _load_config() -> Dict[str, Any]:
 
 def windows_configure_inputs() -> List[Path]:
     """Files whose change must re-run configure.py."""
-    return [Path(__file__), PORT_CONFIG, PORT_DIR / "src", LINUX_DIR / "src", LINUX_DIR / "game", *hud_configure_inputs()]
+    return [
+        Path(__file__),
+        Path(__file__).with_name("windows_cross_build.py"),
+        PORT_CONFIG,
+        PORT_DIR / "src",
+        LINUX_DIR / "src",
+        LINUX_DIR / "game",
+        *hud_configure_inputs(),
+    ]
 
 
 def _quote(path: Any) -> str:
@@ -164,6 +181,10 @@ def fetch_sdl() -> None:
     print(f"Downloading {SDL_URL}")
     with urllib.request.urlopen(SDL_URL) as response, open(archive, "wb") as f:
         shutil.copyfileobj(response, f)
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    if digest != SDL_SHA256:
+        archive.unlink()
+        raise SystemExit(f"{SDL_URL}: SHA-256 {digest}, not the pinned {SDL_SHA256}")
     with zipfile.ZipFile(archive) as z:
         z.extractall(THIRD_PARTY)
     archive.unlink()
@@ -258,7 +279,7 @@ def inline_export_wrapper(source: Path) -> Path:
 
 
 def generate_windows_build(n: Writer, sln: Any) -> None:
-    if sys.platform != "win32" or not PORT_CONFIG.is_file():
+    if (sys.platform != "win32" and not getattr(sln, "windows_cross", False)) or not PORT_CONFIG.is_file():
         return
     try:
         fetch_sdl()
@@ -277,6 +298,9 @@ def generate_windows_build(n: Writer, sln: Any) -> None:
     crt_include = PORT_DIR / "include" / "crt"
     posix_include = PORT_DIR / "include" / "posix"
 
+    # setup cross compilation if we're not on Windows
+    cross_prefix = cross_toolchain_prefix(sln) if sys.platform != "win32" else ""
+
     n.comment("Native Windows build (ninja windows)")
     n.variable("windows_cc", cc)
     # MSVC gives struct tags first named in a prototype file scope; clang
@@ -292,14 +316,17 @@ def generate_windows_build(n: Writer, sln: Any) -> None:
             implicit=[Path("tools/linux_msvc_semantics.py"), *game_headers])
     n.rule(
         name="windows_cc",
-        command=f"{compile_launcher(sln)}$windows_cc -MMD -MF $out.d $cflags -c $in -o $out",
+        command=f"{cross_prefix}{compile_launcher(sln)}$windows_cc -MMD -MF $out.d $cflags -c $in -o $out",
         description="WINDOWS CC $out",
         depfile="$out.d",
         deps="gcc",
     )
+    # ninja quotes the response file's paths for the shell that runs the
+    # rule: Windows quoting on Windows, POSIX quoting elsewhere
+    rsp_quoting = "windows" if sys.platform == "win32" else "posix"
     n.rule(
         name="windows_link",
-        command="$windows_cc $ldflags -o $out --rsp-quoting=windows @$out.rsp $libs",
+        command=f"{cross_prefix}$windows_cc $ldflags -o $out --rsp-quoting={rsp_quoting} @$out.rsp $libs",
         description="WINDOWS LINK $out",
         rspfile="$out.rsp",
         rspfile_content="$in_newline",
@@ -313,7 +340,7 @@ def generate_windows_build(n: Writer, sln: Any) -> None:
         description="WINDOWS RC $out",
     )
     resources = BUILD / "halo.res"
-    n.build(outputs=resources, rule="windows_rc", inputs=PORT_DIR / "halo.rc", implicit=[PORT_DIR / "opence-icon.ico"])
+    n.build(outputs=resources, rule="windows_rc", inputs=PORT_DIR / "halo.rc", implicit=[PORT_DIR / "slipstream-icon.ico"])
     n.rule(
         name="windows_copy",
         command="$python -c \"import shutil,sys; shutil.copyfile(sys.argv[1], sys.argv[2])\" $in $out",
@@ -322,6 +349,7 @@ def generate_windows_build(n: Writer, sln: Any) -> None:
 
     # the high-res HUD's textures (port/assets/hud; port/linux/src/hud_hires.c)
     embedded_assets = hud_assets_build(n, "windows", BUILD / "generated" / "hud_hires_assets.c")
+    embedded_assets += server_ui_build(n, "windows", BUILD / "generated" / "server_ui_assets.c")
 
     # (a debug build checks its stack frames (/GS), and stops at the first
     # one overrun, as at the first failed assertion; a release build does
@@ -337,6 +365,10 @@ def generate_windows_build(n: Writer, sln: Any) -> None:
         "--target=i686-pc-windows-msvc",
         "-fuse-ld=lld",
         "-g",
+        # Reserve the MCC tag window before SDL's ASLR placement. Keep the
+        # shipped DLL unchanged; the first SDL call loads it after reservation.
+        "-Wl,/DELAYLOAD:SDL3.dll",
+        "-ldelayimp",
         # the Xbox memory window is at 0x80000000, in the upper half of the
         # 32-bit address space
         "-Wl,/LARGEADDRESSAWARE",
@@ -434,10 +466,12 @@ def generate_windows_build(n: Writer, sln: Any) -> None:
         for source in sorted(linux_platform.glob("*.c")):
             if source.name in replaced:
                 continue
-            if source.name == "posix_dtls.c":
+            if source.name in ("posix_mcc_preview.c", "posix_mcc_share.c"):
+                add_object(source, win32_cflags)
+            elif source.name == "posix_dtls.c":
                 # (Mbed TLS sees the Windows SDK, as the win32_*.c do)
                 add_object(source, f"{win32_cflags} {mbedtls_include}")
-            elif source.name == "updater.c":
+            elif source.name in ("updater.c", "server_mode.c"):
                 add_object(source, f"{platform_cflags} {updater_defines(getattr(sln, 'port_release', False))}")
             else:
                 add_object(source, platform_cflags)
@@ -550,5 +584,9 @@ def generate_windows_build(n: Writer, sln: Any) -> None:
     # internet play's MQTT brokers, a file beside the game (network.brokers_file)
     brokers = BUILD / "brokers.txt"
     n.build(outputs=brokers, rule="windows_copy", inputs=Path("port/assets/network/brokers.txt"))
-    n.build(outputs="windows", rule="phony", inputs=[output, sdl_dll, brokers])
+    # the master servers of dedicated servers, a file beside the game too
+    # (network.masters_file, server.masters_file)
+    masters = BUILD / "masters.txt"
+    n.build(outputs=masters, rule="windows_copy", inputs=Path("port/assets/network/masters.txt"))
+    n.build(outputs="windows", rule="phony", inputs=[output, sdl_dll, brokers, masters])
     n.newline()

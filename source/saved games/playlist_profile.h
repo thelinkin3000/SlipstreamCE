@@ -28,6 +28,9 @@ void playlist_profiles_dispose(
 	void);
 word playlist_profile_number_of_default_profiles_on_disk(
 	void);
+/* port: changes whenever a gametype's file may have (playlist_profile.c) */
+unsigned long playlist_profile_changes(
+	void);
 boolean playlist_profile_get(
 	long playlist_profile_index,
 	struct game_variant *variant);
@@ -52,6 +55,13 @@ void playlist_profile_delete(
 boolean playlist_profile_get_from_path(
 	char *full_path,
 	struct game_variant *variant);
+/* port: ... from the file's bytes, read already, and its PC options too
+(playlist_profile.c) */
+boolean playlist_profile_get_from_data_with_options(
+	byte const *data,
+	unsigned long size,
+	struct game_variant *variant,
+	struct game_variant_options *options);
 boolean playlist_profile_get_display_name(
 	long playlist_profile_index,
 	wchar_t *display_name);

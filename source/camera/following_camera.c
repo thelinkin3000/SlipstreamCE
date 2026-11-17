@@ -41,6 +41,7 @@ symbols in this file:
 /* ---------- headers */
 
 #include "following_camera.h"
+#include "passenger_camera.h" /* port: port/linux/game/passenger_camera.c */
 #include "cseries/errors.h" /* port: (error, for a short camera track) */
 #include "observer.h"
 
@@ -195,11 +196,13 @@ void following_camera_update(
 {
 	struct player_control_unit_camera_info camera_info;
 	struct camera_command *command;
+	boolean passenger; /* port: only this local display view borrows a seat's camera */
 
 	match_assert("c:\\halo\\SOURCE\\camera\\following_camera.c", 138, camera);
 	match_assert("c:\\halo\\SOURCE\\camera\\following_camera.c", 139, result);
 
 	player_control_get_unit_camera_info(controls->local_player_index, &camera_info);
+	passenger = passenger_camera_info(controls->local_player_index, &camera_info);
 	command = &result->command;
 
 	command->position = camera_info.position;
@@ -234,7 +237,7 @@ void following_camera_update(
 			camera->crouched = crouched;
 		}
 
-		if (controls->active)
+		if (controls->active && !passenger) /* port: no free orbit outside the passenger's firing arc */
 		{
 			camera->facing_offset.yaw += controls->facing_delta.yaw;
 			camera->facing_offset.pitch += controls->facing_delta.pitch;
@@ -253,6 +256,9 @@ void following_camera_update(
 			facing.pitch + camera->facing_offset.pitch,
 			-_pi / 2.f,
 			_pi / 2.f);
+		/* port: keep the reference camera inside this passenger's weapon arc */
+		if (passenger)
+			passenger_camera_clamp_facing(controls->local_player_index, &facing);
 		vector3d_from_euler_angles2d(&command->forward, &facing);
 
 		match_vassert(
@@ -318,6 +324,60 @@ void following_camera_update(
 			command->flags));
 
 	camera->initialized = TRUE;
+	return;
+}
+
+/* port: the view following_camera_update gives the player of a unit in a
+seat, worked out from the unit alone, as the player has no local control
+(a replay's playback: port/linux/game/network_replay_playback.c). The
+seat's camera track (player_control_get_unit_camera_info's), the facing
+the unit's aim, and the observer's sums (observer_postcheck): focus is the
+point the camera looks from, before walls, and distance how far back of it
+the camera is along forward */
+void following_camera_unit_view(
+	long unit_index,
+	real_point3d *focus,
+	real_vector3d *forward,
+	real *distance)
+{
+	struct unit_datum *unit = unit_get(unit_index);
+	struct unit_camera const *camera = &unit_definition_get(unit->definition_index)->unit.camera;
+	real_euler_angles2d facing;
+	real_vector3d track_offset;
+	real_vector3d offset;
+	real_vector2d heading;
+	real depth;
+
+	if (unit->object.parent_object_index != NONE)
+	{
+		struct unit_datum *vehicle = vehicle_try_and_get(unit->object.parent_object_index);
+
+		if (vehicle)
+		{
+			camera = &TAG_BLOCK_GET_ELEMENT(
+				&vehicle_definition_get(vehicle->definition_index)->unit.seats,
+				unit->unit.parent_seat_index,
+				struct unit_seat)->camera;
+		}
+	}
+	unit_get_camera_position(unit_index, focus);
+	euler_angles2d_from_vector3d(&facing, &unit->unit.aiming_vector);
+	facing.pitch = PIN(facing.pitch, -_pi / 2.f, _pi / 2.f);
+	vector3d_from_euler_angles2d(forward, &facing);
+
+	camera_track_splut(camera, facing.pitch, &track_offset);
+	depth = magnitude3d(&track_offset);
+	offset.i = depth * cosine(facing.pitch) + track_offset.i;
+	offset.j = -track_offset.j;
+	offset.k = depth * sine(facing.pitch) + track_offset.k;
+	*distance = MAX(depth, 0.6f);
+
+	heading.i = forward->i;
+	heading.j = forward->j;
+	normalize2d(&heading);
+	focus->x += offset.i * heading.i + offset.j * heading.j;
+	focus->y += offset.i * heading.j - offset.j * heading.i;
+	focus->z += offset.k;
 	return;
 }
 

@@ -135,7 +135,8 @@ this list to generate the guest's entry points */
 	X(glGenQueries) \
 	X(glBeginQuery) \
 	X(glEndQuery) \
-	X(glGetQueryObjectuiv)
+	X(glGetQueryObjectuiv) \
+	X(glGetInternalformativ)
 /* entry points of extensions, which a driver may lack: loaded where the
 context has the extension, never required (gl_functions.c). On ES 3.0 and
 3.1 these stand in for glDrawElementsBaseVertex */
@@ -144,6 +145,9 @@ context has the extension, never required (gl_functions.c). On ES 3.0 and
 	X(glDrawElementsBaseVertexOES)
 /* ANDROID_GL_FUNCTIONS_END */
 #else
+/* OpenGL 4.5 core; tools/android_gl_stubs.py --desktop reads this list for
+the desktop guest builds' desktop renderer (tools/linux_guest_build.py) */
+/* DESKTOP_GL_FUNCTIONS_BEGIN */
 #define GL_FUNCTIONS(X) \
 	X(glGetString) \
 	X(glGetIntegerv) \
@@ -202,6 +206,7 @@ context has the extension, never required (gl_functions.c). On ES 3.0 and
 	X(glBindFramebuffer) \
 	X(glFramebufferTexture2D) \
 	X(glCheckFramebufferStatus) \
+	X(glGetFramebufferAttachmentParameteriv) \
 	X(glBlitFramebuffer) \
 	X(glDrawBuffers) \
 	X(glGenRenderbuffers) \
@@ -228,7 +233,6 @@ context has the extension, never required (gl_functions.c). On ES 3.0 and
 	X(glVertexAttribBinding) \
 	X(glBindVertexBuffer) \
 	X(glBindTextures) \
-	X(glGetQueryBufferObjectuiv) \
 	X(glVertexAttrib4fv) \
 	X(glVertexAttribI4ui) \
 	X(glDrawArrays) \
@@ -247,6 +251,10 @@ context has the extension, never required (gl_functions.c). On ES 3.0 and
 	X(glLinkProgram) \
 	X(glGetProgramiv) \
 	X(glGetProgramInfoLog) \
+	X(glProgramParameteri) \
+	X(glGetProgramBinary) \
+	X(glProgramBinary) \
+	X(glDeleteProgram) \
 	X(glUseProgram) \
 	X(glGetUniformLocation) \
 	X(glUniform1i) \
@@ -259,7 +267,14 @@ context has the extension, never required (gl_functions.c). On ES 3.0 and
 	X(glEndQuery) \
 	X(glGetQueryObjectuiv) \
 	X(glMemoryBarrier) \
+	X(glCreateQueries) \
+	X(glIsQuery) \
+	X(glGetQueryBufferObjectuiv) \
+	X(glFenceSync) \
+	X(glClientWaitSync) \
+	X(glDeleteSync) \
 	X(glDebugMessageCallback)
+/* DESKTOP_GL_FUNCTIONS_END */
 #endif
 
 #define GL_DECLARE_FUNCTION(name) extern __typeof__(&name) halo_##name;
@@ -379,6 +394,7 @@ pointers, sees the declarations without these aliases */
 #define glBeginQuery halo_glBeginQuery
 #define glEndQuery halo_glEndQuery
 #define glGetQueryObjectuiv halo_glGetQueryObjectuiv
+#define glGetInternalformativ halo_glGetInternalformativ
 #else
 #define glGetString halo_glGetString
 #define glGetIntegerv halo_glGetIntegerv
@@ -437,6 +453,7 @@ pointers, sees the declarations without these aliases */
 #define glBindFramebuffer halo_glBindFramebuffer
 #define glFramebufferTexture2D halo_glFramebufferTexture2D
 #define glCheckFramebufferStatus halo_glCheckFramebufferStatus
+#define glGetFramebufferAttachmentParameteriv halo_glGetFramebufferAttachmentParameteriv
 #define glBlitFramebuffer halo_glBlitFramebuffer
 #define glDrawBuffers halo_glDrawBuffers
 #define glGenRenderbuffers halo_glGenRenderbuffers
@@ -463,7 +480,6 @@ pointers, sees the declarations without these aliases */
 #define glVertexAttribBinding halo_glVertexAttribBinding
 #define glBindVertexBuffer halo_glBindVertexBuffer
 #define glBindTextures halo_glBindTextures
-#define glGetQueryBufferObjectuiv halo_glGetQueryBufferObjectuiv
 #define glVertexAttrib4fv halo_glVertexAttrib4fv
 #define glVertexAttribI4ui halo_glVertexAttribI4ui
 #define glDrawArrays halo_glDrawArrays
@@ -482,6 +498,10 @@ pointers, sees the declarations without these aliases */
 #define glLinkProgram halo_glLinkProgram
 #define glGetProgramiv halo_glGetProgramiv
 #define glGetProgramInfoLog halo_glGetProgramInfoLog
+#define glProgramParameteri halo_glProgramParameteri
+#define glGetProgramBinary halo_glGetProgramBinary
+#define glProgramBinary halo_glProgramBinary
+#define glDeleteProgram halo_glDeleteProgram
 #define glUseProgram halo_glUseProgram
 #define glGetUniformLocation halo_glGetUniformLocation
 #define glUniform1i halo_glUniform1i
@@ -494,6 +514,12 @@ pointers, sees the declarations without these aliases */
 #define glEndQuery halo_glEndQuery
 #define glGetQueryObjectuiv halo_glGetQueryObjectuiv
 #define glMemoryBarrier halo_glMemoryBarrier
+#define glCreateQueries halo_glCreateQueries
+#define glIsQuery halo_glIsQuery
+#define glGetQueryBufferObjectuiv halo_glGetQueryBufferObjectuiv
+#define glFenceSync halo_glFenceSync
+#define glClientWaitSync halo_glClientWaitSync
+#define glDeleteSync halo_glDeleteSync
 #define glDebugMessageCallback halo_glDebugMessageCallback
 
 #endif

@@ -135,7 +135,7 @@ TAG_DATA_ADDRESS(foo->bar).
 
 Where the window is where the game expects it these are the field itself, so
 the original code and the byte-matching build are unaffected. */
-#ifdef HALO_ANDROID
+#if defined(HALO_ANDROID) || defined(HALO_MOVABLE_WINDOW)
 #include "halo_port_window.h"
 
 void *tag_data_address(struct tag_data const *data);
@@ -176,7 +176,7 @@ static __inline__ void *tag_block_get_element_fast(
 	if (block && index >= 0 && index < block->count && block->address &&
 		(!block->definition || block->definition->element_size == element_size))
 	{
-#ifdef HALO_ANDROID
+#if defined(HALO_ANDROID) || defined(HALO_MOVABLE_WINDOW)
 		return (byte *)PORT_WINDOW_REBASE(block->address) + index * element_size;
 #else
 		return (char *)block->address + index * element_size;
@@ -187,7 +187,7 @@ static __inline__ void *tag_block_get_element_fast(
 
 /* the same, where the block is already a pointer: a macro that took the
 structure by value cannot be used on one */
-#ifdef HALO_ANDROID
+#if defined(HALO_ANDROID) || defined(HALO_MOVABLE_WINDOW)
 #define TAG_BLOCK_ADDRESS_AT(block) tag_block_address_inline(block)
 #else
 #define TAG_BLOCK_ADDRESS_AT(block) ((block)->address)
@@ -197,7 +197,7 @@ structure by value cannot be used on one */
 held in the tag data, which the map wrote as an address in the window the
 game was linked for. A read of that name has to go through here for the
 same reason ->address does. */
-#ifdef HALO_ANDROID
+#if defined(HALO_ANDROID) || defined(HALO_MOVABLE_WINDOW)
 char const *tag_reference_name(struct tag_reference const *reference);
 #define TAG_REFERENCE_NAME(reference) tag_reference_name(&(reference))
 #else

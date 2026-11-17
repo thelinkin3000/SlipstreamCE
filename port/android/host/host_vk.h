@@ -10,7 +10,8 @@ host_renderer_vulkan); this is for host_vk.c's own files.
 #ifndef HOST_VK_H
 #define HOST_VK_H
 
-#ifndef VK_USE_PLATFORM_ANDROID_KHR
+/* (the PS5's surface is a display plane, VK_KHR_display's, which needs no platform define: port/ps5/PS5.md, phase 4) */
+#if !defined(VK_USE_PLATFORM_ANDROID_KHR) && !defined(HALO_PS5)
 #define VK_USE_PLATFORM_ANDROID_KHR
 #endif
 #include "host_vk_driver.h"
@@ -26,10 +27,18 @@ instance is 1.0-level and the extension stands in for it */
 	X(vkDestroyInstance) X(vkEnumeratePhysicalDevices) X(vkGetPhysicalDeviceProperties) \
 	X(vkGetPhysicalDeviceQueueFamilyProperties) X(vkEnumerateDeviceExtensionProperties) \
 	X(vkGetPhysicalDeviceFeatures2) X(vkGetPhysicalDeviceProperties2) X(vkGetDeviceProcAddr) \
-	X(vkCreateAndroidSurfaceKHR) X(vkDestroySurfaceKHR) X(vkCreateDevice) \
+	HOST_VK_SURFACE_FUNCTIONS(X) X(vkDestroySurfaceKHR) X(vkCreateDevice) \
 	X(vkGetPhysicalDeviceMemoryProperties) X(vkGetPhysicalDeviceFormatProperties) \
+	X(vkGetPhysicalDeviceImageFormatProperties) \
 	X(vkGetPhysicalDeviceSurfaceSupportKHR) X(vkGetPhysicalDeviceSurfaceCapabilitiesKHR) \
 	X(vkGetPhysicalDeviceSurfaceFormatsKHR)
+#ifdef HALO_PS5
+#define HOST_VK_SURFACE_FUNCTIONS(X) \
+	X(vkCreateDisplayPlaneSurfaceKHR) X(vkGetPhysicalDeviceDisplayPropertiesKHR) X(vkGetDisplayModePropertiesKHR) \
+	X(vkGetPhysicalDeviceDisplayPlanePropertiesKHR) X(vkGetDisplayPlaneCapabilitiesKHR)
+#else
+#define HOST_VK_SURFACE_FUNCTIONS(X) X(vkCreateAndroidSurfaceKHR)
+#endif
 
 /* what the startup keeps: nothing in it is made twice (phase 2 adds the device) */
 struct host_vk
@@ -48,6 +57,8 @@ struct host_vk
 	int validation;
 	/* VkPhysicalDeviceDriverProperties.driverID, 0 if the driver does not say (names the pipeline cache's file) */
 	uint32_t driver_id;
+	/* the device has no dynamic rendering: each rendering is a render pass (host_vk_passes.c) */
+	int render_passes;
 	VkDebugUtilsMessengerEXT messenger;
 	/* the log line of the decision: which driver and device, for the device-lost report */
 	char line[600];
@@ -88,14 +99,26 @@ as a Vulkan function */
 	X(vkCmdSetBlendConstants) X(vkCmdSetStencilCompareMask) X(vkCmdSetStencilWriteMask) X(vkCmdSetStencilReference) \
 	X(vkCreateSampler) X(vkDestroySampler) X(vkCmdCopyBufferToImage) X(vkCmdCopyImage) \
 	X(vkCreateQueryPool) X(vkDestroyQueryPool) X(vkCmdResetQueryPool) X(vkCmdBeginQuery) X(vkCmdEndQuery) \
-	X(vkCmdCopyQueryPoolResults)
+	X(vkCmdCopyQueryPoolResults) X(vkCmdWriteTimestamp) X(vkGetQueryPoolResults) \
+	X(vkCreateRenderPass) X(vkDestroyRenderPass) X(vkCreateFramebuffer) X(vkDestroyFramebuffer) \
+	X(vkCmdBeginRenderPass) X(vkCmdEndRenderPass)
 
 #define X(name) extern PFN_##name name __attribute__((visibility("hidden")));
 HOST_VK_DEVICE_FUNCTIONS(X)
 #undef X
-/* dynamic rendering: core in 1.3, the extension's before */
+/* dynamic rendering: core in 1.3, the extension's before, or host_vk_passes.c's render passes (host_vk.render_passes) */
 extern PFN_vkCmdBeginRenderingKHR host_vk_cmd_begin_rendering __attribute__((visibility("hidden")));
 extern PFN_vkCmdEndRenderingKHR host_vk_cmd_end_rendering __attribute__((visibility("hidden")));
+
+/* host_vk_passes.c, with host_vk.render_passes (each a no-op without): the rendering entry points made render passes;
+a view that can be an attachment noted with its format and samples as it is made, and forgotten (with the framebuffers
+made of it) before it is destroyed; and the render pass a pipeline is made with for the formats of the renderings it is
+drawn in, with samples a pixel (resolved into a target of one sample, where a colour has more), else VK_NULL_HANDLE */
+void host_vk_passes_install(void);
+void host_vk_pass_view_note(VkImageView view, VkFormat format, VkSampleCountFlagBits samples);
+void host_vk_pass_view_forget(VkImageView view);
+VkRenderPass host_vk_pass_for_pipeline(const VkPipelineRenderingCreateInfo *rendering, VkSampleCountFlagBits samples,
+	int resolves);
 
 #define HOST_VK_FRAMES 2
 #define HOST_VK_SWAPCHAIN_IMAGES 16
@@ -120,6 +143,10 @@ struct host_vk_target
 	VkDeviceMemory multisample_memory;
 	VkImageView multisample_view;
 	VkImageLayout multisample_layout;
+	/* a draw has sampled it: made readable as soon as it is no longer drawn into (command_targets), so that the
+	rendering of the next draw that samples it need not end to make it so - an object's shadow map, cast onto the
+	level in the screen's rendering */
+	int sampled;
 	struct host_vk_target *next_in_bucket;
 };
 
@@ -127,6 +154,10 @@ struct host_vk_frame
 {
 	VkCommandPool pool;
 	VkCommandBuffer command;
+	/* the picture's present (host_vk_present_record), recorded after the frame's own commands went to the GPU: they
+	signal drawn, which it waits for, so that its fence is theirs too */
+	VkCommandBuffer present_command;
+	VkSemaphore drawn;
 	VkFence fence;
 	VkSemaphore acquired;
 	int recording; /* the command buffer is open */
@@ -147,7 +178,7 @@ struct host_vk_swapchain
 	uint32_t count;
 	VkImage images[HOST_VK_SWAPCHAIN_IMAGES];
 	VkSemaphore render_done[HOST_VK_SWAPCHAIN_IMAGES];
-	VkImageView views[HOST_VK_SWAPCHAIN_IMAGES]; /* only with debug.vk_present_marker */
+	VkImageView views[HOST_VK_SWAPCHAIN_IMAGES]; /* the images drawn into: host_vk_present.c */
 };
 
 struct host_vk_backend
@@ -162,8 +193,14 @@ struct host_vk_backend
 	VkPhysicalDeviceMemoryProperties memory;
 	VkFormat color_format, depth_format;
 	VkFilter blit_filter;
+	/* the colour targets' images can be sampled (their format's features): the picture is then presented by a draw,
+	host_vk_present.c */
+	int color_sampled;
 	/* the optional device features that were enabled */
-	int sampler_anisotropy, fill_mode_non_solid, occlusion_query_precise, texture_compression_bc;
+	int sampler_anisotropy, fill_mode_non_solid, occlusion_query_precise, texture_compression_bc, texture_compression_astc;
+	/* VK_EXT_multisampled_render_to_single_sampled: a multisampled rendering draws into the targets' own images, its samples
+	kept in the GPU's tile memory and resolved as they are stored (the sample counts it can, 0 when it is off) */
+	VkSampleCountFlags msrtss_counts;
 	VkFormatFeatureFlags swapchain_features;
 
 	struct host_vk_frame frames[HOST_VK_FRAMES];
@@ -179,6 +216,13 @@ struct host_vk_backend
 	uint64_t target_clock;
 	struct host_vk_target *last_color, *last_depth; /* the pair a command last named, for the statistics */
 	int rendering; /* a rendering is open on them */
+	/* a clear of the whole of the bound targets not made yet: the next rendering on them begins with it (its attachments'
+	load: VK_ATTACHMENT_LOAD_OP_CLEAR), rather than loading what they held and then clearing it (host_vk_render.c's
+	command_clear); its colour, depth and stencil, and which of them */
+	int clear_color_pending, clear_depth_pending, clear_stencil_pending;
+	VkClearColorValue clear_color;
+	float clear_depth;
+	uint32_t clear_stencil;
 	uint32_t area_width, area_height; /* its render area */
 
 	struct host_vk_swapchain chain;
@@ -190,6 +234,11 @@ struct host_vk_backend
 	cache every pipeline is made in, saved per driver */
 	VkDescriptorSetLayout draw_set_layout;
 	VkPipelineLayout draw_layout;
+	/* the dynamic lighting's model variants with occlusion: the draws' set, and the fields' (VK_PLASMA_SET) */
+	VkDescriptorSetLayout plasma_set_layout;
+	VkPipelineLayout plasma_layout;
+	/* the images they read (VK_COMMAND_PLASMA_OCCLUSION) */
+	uint32_t plasma_images[2];
 	VkPipelineCache pipeline_cache;
 
 	/* the built-in pipeline of clears of some channels only */
@@ -202,6 +251,12 @@ struct host_vk_backend
 	struct host_vk_counts
 	{
 		unsigned frames, hand_overs, targets, clears, presents, clears_drawn, clears_attachments, target_changes;
+		/* renderings ended to make a target readable for a draw (host_vk_draw.c), and targets made readable as
+		they were left instead (command_targets) */
+		unsigned sample_splits, read_ahead;
+		/* whole-target clears made by a rendering's load, and those that had to be made alone (the targets wanted
+		before a draw: command_clear) */
+		unsigned clears_loaded, clears_waited;
 		unsigned recreations;
 		unsigned data_records, data_bytes;
 		unsigned draws_ready, draws_skipped_shader, draws_skipped_pipeline;
@@ -215,7 +270,7 @@ extern struct host_vk_backend host_vkb;
 /* host_vk_texture.c (phase 6): the guest's textures as images */
 struct host_vk_image
 {
-	uint32_t id, kind, format, width, height, depth, levels, layers;
+	uint32_t id, kind, format, width, height, depth, levels, layers, swizzle;
 	VkImage image;
 	VkImageView view;
 	VkImageLayout layout;
@@ -235,6 +290,35 @@ struct host_vk_image *host_vk_image_get(uint32_t id);
 unsigned host_vk_texture_images(void);
 unsigned host_vk_texture_megabytes(void);
 
+/* host_vk_profile.c: the GPU's time by rendering, while a profile is recorded (debug.profile_run: the folder gpu.txt
+goes in, set before the device is made; empty, off). Each is nothing while it is off. */
+extern char host_vk_profile_folder[512];
+/* debug.gpu_split_parts: a rendering ended at each of the game's parts, to time each on its own (host_main.c) */
+extern int host_vk_profile_split;
+/* debug.original_multisample: multisampled targets get images of their samples beside their own, as before
+VK_EXT_multisampled_render_to_single_sampled (host_main.c) */
+extern int host_vk_original_multisample;
+void host_vk_profile_initialize(void);
+/* the slot's command buffer just begun (its fence passed): its last frame read, its queries reset */
+void host_vk_profile_frame_begin(unsigned slot, VkCommandBuffer command);
+void host_vk_profile_mark(const struct vk_command_marker *command);
+/* just before a rendering begins (outside it: what it draws into, "1042x480 colour+depth"), and just after it ends */
+void host_vk_profile_rendering_begin(VkCommandBuffer command, const char *what);
+void host_vk_profile_rendering_end(VkCommandBuffer command);
+/* the slot's command buffer about to end; presented: it is a frame shown */
+void host_vk_profile_frame_end(unsigned slot, VkCommandBuffer command, int presented);
+
+/* host_vk_hud.c: the high-res HUD's sheets, decoded by the host */
+void host_vk_hud_prepare_command(const struct vk_command_hud_prepare *command, uint32_t size);
+void host_vk_hud_forget_command(void);
+void host_vk_hud_image_command(const struct vk_command_hud_image *command);
+/* (host_vk_texture.c) a 2D BGRA image of id made with all its levels, from host memory (the largest first, one after
+another); 0 if it could not be */
+int host_vk_texture_from_levels(uint32_t id, unsigned width, unsigned height, unsigned levels, const unsigned char *texels);
+/* (host_vk_data.c) size bytes placed in the frame's upload ring, for a copy the frame makes: where they are to be written,
+and the buffer and offset the GPU reads them from; NULL if none can be made */
+unsigned char *host_vk_data_place(VkDeviceSize size, VkBuffer *buffer, VkDeviceSize *offset);
+
 /* host_vk_visibility.c (phase 6): the visibility tests, as occlusion queries */
 void host_vk_visibility_start(void);
 void host_vk_visibility_begin(void);
@@ -247,6 +331,8 @@ void host_vk_visibility_close(VkCommandBuffer command);
 void host_vk_visibility_frame_end(VkCommandBuffer command);
 /* the frame slot's fence has passed: its tests' counts become the slots' latest */
 void host_vk_visibility_retired(unsigned slot);
+/* the frame slot's command buffer just begun: its tests' queries reset, outside any rendering */
+void host_vk_visibility_frame_begin(unsigned slot, VkCommandBuffer command);
 
 /* host_vk_draw.c (phase 6): the mip composites */
 void host_vk_composite_command(const struct vk_command_composite *command);
@@ -268,6 +354,13 @@ int host_vk_check(VkResult result, const char *call);
 void host_vk_wait_fence(VkFence fence, const char *what, uint64_t number);
 /* the transition of a target to a layout (outside a rendering) */
 void host_vk_target_transition(VkCommandBuffer command, struct host_vk_target *target, VkImageLayout layout);
+/* the stages and accesses of a barrier from one layout to another: what was done in from must be done and its writes
+made available (source), before what is done in to begins (destination). Each barrier waits only for what the image
+was used for and holds back only what it is used for next, not all commands for all: on a GPU that draws in tiles, a
+full barrier between renderings stops the next one's vertices from being worked while the last one's pixels are (on a
+Galaxy S21 FE's Mali-G78, Damnation's frame took 9% longer on the GPU with full barriers) */
+void host_vk_barrier_scope(VkImageLayout from, VkImageLayout to, VkPipelineStageFlags *source_stage,
+	VkAccessFlags *source_access, VkPipelineStageFlags *destination_stage, VkAccessFlags *destination_access);
 /* ends the open rendering, if any */
 void host_vk_rendering_end(void);
 /* the target for a surface of a command, made (and cleared) the first time; NULL if there is none */
@@ -290,6 +383,11 @@ hand-over is dropped */
 int host_vk_data_command(const struct vk_command_data *command, uint32_t size);
 /* a command's data: the buffer and the offset in it of size bytes at offset in the data of id; 0 (said once)
 if the id or the range is not known */
+void host_vk_static_free_command(const struct vk_command_static_free *command);
+/* VK_COMMAND_DATA_PATCH: 0 if the record is bad (the rest of the hand-over is dropped) */
+int host_vk_data_patch_command(const struct vk_command_data_patch *command, uint32_t size);
+/* the frame slot's static buffers let go, destroyed: its fence has passed */
+void host_vk_static_frame_reset(unsigned slot);
 int host_vk_data_find(uint32_t id, uint32_t offset, uint32_t size, VkBuffer *buffer, VkDeviceSize *buffer_offset);
 /* the frame's data is let go (PRESENT): its ring is reset when the frame is used again */
 void host_vk_data_frame_end(void);
@@ -310,17 +408,23 @@ void host_vk_services_start(void);
 void host_vk_pipeline_command(const struct vk_command_pipeline *command);
 /* the pipeline for a draw's two shader handles and state, queued if new: the VkPipeline once it is ready, else VK_NULL_HANDLE
 (counted as skipped); B.lock is held */
-VkPipeline host_vk_pipeline_find(uint32_t vertex_handle, uint32_t pixel_handle, const struct vk_pipeline_state *state);
+VkPipeline host_vk_pipeline_find(uint32_t vertex_handle, uint32_t pixel_handle, const struct vk_pipeline_state *state,
+	int plasma_occlusion);
+void host_vk_plasma_occlusion_command(const struct vk_command_plasma_occlusion *command);
 /* the statistics line's part, and the services' tick (a frame): the cache is saved every five minutes if pipelines
 were made since */
 void host_vk_services_statistics(char *text, size_t size);
 void host_vk_services_tick(void);
+/* at each present: the next frame's time for compiling its draws' shaders starts (host_vk_shader_make) */
+void host_vk_shaders_present(void);
 /* the pipeline cache is written to the device (why says what asked: the log's line) */
 void host_vk_pipeline_cache_save(const char *why);
 /* host_vk_render.c: the device made if it is not yet, B.lock held */
 void host_vk_device_ensure_locked(void);
 /* the backend's device is made, if it can be: the services' imports need it. 1 if it is ready */
 int host_vk_backend_ensure(void);
+/* waits until the render thread has run every stream handed over (host_vk_render.c) */
+void host_vk_render_thread_drain(void);
 
 /* host_vk_present.c */
 /* the surface and swapchain for the window as it is now; 0 if there is no window to make one on */
@@ -334,5 +438,10 @@ uint32_t host_vk_present_record(VkCommandBuffer command, struct host_vk_target *
 /* after the frame was submitted: presents the image acquired by host_vk_present_record */
 void host_vk_present_queue(uint32_t image_index);
 void host_vk_present_destroy(void);
+#ifdef HALO_PS5
+/* port/ps5/host/host_vk_screenshot_ps5.c: after the blit, when a screenshot is due, the copy of the swapchain image (in
+*layout, which it leaves the image in) to a buffer, written to a file once the frame's fence has passed */
+void host_vk_screenshot_record(VkCommandBuffer command, VkImage image, VkImageLayout *layout);
+#endif
 
 #endif

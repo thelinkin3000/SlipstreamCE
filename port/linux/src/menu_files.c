@@ -22,6 +22,7 @@ high-res HUD's are (hud_hires.c).
 #include "menu_files.h"
 #include "platform.h"
 #include "port_config.h"
+#include "posix.h"
 #include "xgpu.h"
 
 #include "expat.h"
@@ -49,6 +50,10 @@ struct menu_file
 static struct menu_file *files;
 static long file_count;
 static char folder[1024];
+/* whether the menus folder is there at all (files_gather): port: where it is
+not, none of its files is looked for. Each embedded file's was, a failed
+open each, some 95 of them at every start on the Switch's card. */
+static int folder_present;
 
 static long file_find(const char *path)
 {
@@ -99,7 +104,7 @@ static long file_add(const char *path, const unsigned char *data, unsigned long 
 
 static unsigned char *file_read(const char *path, unsigned long *size)
 {
-#ifdef HALO_ARM64_GUEST
+#ifdef HALO_GUEST
 	FILE *file = fopen(path, "rb");
 	unsigned char *data = NULL;
 	long length;
@@ -147,14 +152,20 @@ static void files_gather(void)
 
 	config_folder(folder, sizeof(folder));
 	snprintf(folder + strlen(folder), sizeof(folder) - strlen(folder), "menus");
+	{
+		struct posix_file_information information;
+
+		folder_present = posix_stat(folder, &information) == 0 && (information.flags & _posix_file_is_directory);
+	}
 	for (index = 0; index < menu_files_embedded_count; index++)
 	{
 		const struct menu_file_embedded *embedded = &menu_files_embedded[index];
 		unsigned long size = 0;
-		unsigned char *data;
+		unsigned char *data = NULL;
 
 		snprintf(path, sizeof(path), "%s/%s", folder, embedded->path);
-		data = file_read(path, &size);
+		if (folder_present)
+			data = file_read(path, &size);
 		if (data)
 		{
 			platform_log("menus: %s replaces the built-in one", path);
@@ -236,6 +247,8 @@ static const unsigned char *file_data(const char *path, unsigned long *size)
 		char full[1200];
 		unsigned char *data;
 
+		if (!folder_present)
+			return NULL;
 		snprintf(full, sizeof(full), "%s/%s", folder, path);
 		data = file_read(full, size);
 		if (!data)
@@ -389,9 +402,11 @@ static long current_line(struct reader *reader)
 
 /* this build's platform, as the platform attribute names it (the Switch's
 game is built as Android's, with HALO_SWITCH too: "android" is the Android
-app's) */
+app's; the PS5's as the desktop's, with HALO_PS5: "desktop" is the PC's) */
 #if defined(HALO_SWITCH)
 #define MENU_PLATFORM "switch"
+#elif defined(HALO_PS5)
+#define MENU_PLATFORM "ps5"
 #elif defined(HALO_ANDROID)
 #define MENU_PLATFORM "android"
 #elif defined(HALO_WEB)
@@ -420,9 +435,10 @@ static int for_this_platform(struct reader *reader, const XML_Char **attributes)
 				if (length)
 				{
 					if ((length != 7 || strncmp(name, "desktop", 7)) && (length != 7 || strncmp(name, "android", 7)) &&
-						(length != 3 || strncmp(name, "web", 3)) && (length != 6 || strncmp(name, "switch", 6)))
+						(length != 3 || strncmp(name, "web", 3)) && (length != 6 || strncmp(name, "switch", 6)) &&
+						(length != 3 || strncmp(name, "ps5", 3)))
 					{
-						reader_error(reader, "platform=\"%s\" names one that is not desktop, android, switch or web",
+						reader_error(reader, "platform=\"%s\" names one that is not desktop, android, switch, ps5 or web",
 							attributes[index + 1]);
 						return 1;
 					}
@@ -1035,10 +1051,19 @@ static struct
 	int failed;
 } art[MAXIMUM_ART];
 static long art_count;
-#if defined(HALO_SWITCH) || defined(HALO_ANDROID)
+#if defined(HALO_SWITCH) || defined(HALO_ANDROID) || defined(HALO_PS5)
 /* changed whenever the art registered changes (menu_art_serial) */
 static unsigned long art_serial = 1;
 #endif
+/* a bit of 4096 for each bitmap's Data (art_filter_bit): a texture whose
+bit is clear is no menu's, found without searching the bitmaps, as the
+renderer asks for each texture it binds */
+static unsigned char art_filter[512];
+
+static unsigned long art_filter_bit(unsigned long data)
+{
+	return (unsigned long)((data * 2654435761UL) & 0xFFFFFFFFUL) >> 20;
+}
 
 void halo_menus_art_register(void const *texture, char const *png)
 {
@@ -1075,9 +1100,10 @@ void halo_menus_art_register(void const *texture, char const *png)
 	memset(&art[index], 0, sizeof(art[index]));
 	art[index].data = data;
 	art[index].png = strdup(png);
-#if defined(HALO_SWITCH) || defined(HALO_ANDROID)
+#if defined(HALO_SWITCH) || defined(HALO_ANDROID) || defined(HALO_PS5)
 	art_serial++;
 #endif
+	art_filter[art_filter_bit(data) >> 3] |= (unsigned char)(1 << (art_filter_bit(data) & 7));
 }
 
 void halo_menus_art_forget(void)
@@ -1094,15 +1120,19 @@ void halo_menus_art_forget(void)
 		}
 	}
 	art_count = 0;
-#if defined(HALO_SWITCH) || defined(HALO_ANDROID)
+#if defined(HALO_SWITCH) || defined(HALO_ANDROID) || defined(HALO_PS5)
 	art_serial++;
 #endif
+	memset(art_filter, 0, sizeof(art_filter));
 }
 
 unsigned int menu_art_texture(unsigned long data, unsigned long *levels)
 {
+	unsigned long bit = art_filter_bit(data);
 	long index;
 
+	if (!(art_filter[bit >> 3] & 1 << (bit & 7)))
+		return 0;
 	for (index = 0; index < art_count; index++)
 	{
 		if (art[index].data == data)
@@ -1128,7 +1158,7 @@ unsigned int menu_art_texture(unsigned long data, unsigned long *levels)
 	return art[index].texture;
 }
 
-#if defined(HALO_SWITCH) || defined(HALO_ANDROID)
+#if defined(HALO_SWITCH) || defined(HALO_ANDROID) || defined(HALO_PS5)
 unsigned long menu_art_serial(void)
 {
 	return art_serial;

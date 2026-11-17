@@ -40,11 +40,13 @@ import json
 import shutil
 import struct
 import sys
+import tempfile
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Optional
 from xml.sax.saxutils import quoteattr
 
+import numpy as np
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -68,19 +70,39 @@ LEFT_OUT = {
     # port_settings.WIDGET_PATCHES)
     "ui\\shell\\main_menu\\multiplayer_type_select\\checking_updates_screen_create",
     "ui\\shell\\main_menu\\multiplayer_type_select\\checking_updates_screen_join",
+    # (the server browser's Filters' PING, which is not known before a game
+    # is joined (the browser does not ping the master servers' servers), and
+    # TEAMPLAY OPTIONS, which the port's Filters leave to GAME TYPE)
+    "ui\\shell\\main_menu\\multiplayer_type_select\\join_game\\filters\\op_ping",
+    "ui\\shell\\main_menu\\multiplayer_type_select\\join_game\\filters\\op_game_options",
 }
 # children moved: (parent, child) to (x, y); the main menu's Quit a row below
 # Mods, which takes Credits' place; Multiplayer's Edit Gametypes and divider
 # below Co-op, keeping its 32-unit highlight inside the description panel's
 # bottom curve (port_settings.WIDGET_PATCHES)
 CHILD_OFFSETS = {
-    ("ui\\shell\\main_menu\\main_menu_select_list", "ui\\shell\\main_menu\\main_menu_item_quit_game"):
-        port_settings.QUIT_ITEM_PLACE,
+    # the server browser's source tab (ALL GAMES, DEDICATED, P2P GAMES), 20
+    # units wider than CE's for its words (port_settings.WIDGET_PATCHES): 9
+    # units left, so that its words and arrows are centred in the tab the
+    # screen's border picture outlines (its own box is gone)
+    ("ui\\shell\\main_menu\\multiplayer_type_select\\join_game\\op_browser_mode",
+     "ui\\shell\\main_menu\\multiplayer_type_select\\join_game\\browser_mode_spinner"): (16, 1),
+    # Player Options' rows 27 apart, not 30, so that the host's AIM ASSIST and
+    # SHIELD EFFECTS fit below them and above the help, which some fill with
+    # three lines (port_settings.WIDGET_PATCHES)
+    **{("ui\\shell\\main_menu\\settings_select\\multiplayer_setup\\player_options_edit\\player_options_menu",
+        f"ui\\shell\\main_menu\\settings_select\\multiplayer_setup\\player_options_edit\\op_{row}"): (54, 73 + 27 * index)
+       for index, row in enumerate(port_settings.PLAYER_OPTIONS_ROWS)},
+    # the main menu's items closer together, for MODS and THEATER
+    # (port_settings.MAIN_MENU_ITEMS)
+    **{("ui\\shell\\main_menu\\main_menu_select_list", f"ui\\shell\\main_menu\\main_menu_item_{item}"):
+       port_settings.main_menu_item_place(item)
+       for item in ("load_camp", "multiplayer", "profile", "settings", "quit_game")},
     ("ui\\shell\\main_menu\\multiplayer_type_select\\multiplayer_type_select_list",
-     "ui\\shell\\main_menu\\multiplayer_type_select\\multiplayer_type_gametypes_item"): (0, 358),
+     "ui\\shell\\main_menu\\multiplayer_type_select\\multiplayer_type_gametypes_item"): (0, 381),
     ("ui\\shell\\main_menu\\multiplayer_type_select\\multiplayer_type_select_screen",
-     "ui\\shell\\main_menu\\blueline"): (64, 349),
-    # the profile settings' rows, ten in the nine's room
+     "ui\\shell\\main_menu\\blueline"): (64, 376),
+    # the profile settings' rows, eleven in the nine's room
     # (port_settings.PROFILE_ROWS)
     **{("ui\\shell\\main_menu\\settings_select\\player_setup\\player_profile_edit\\profile_edit_select_list",
         f"ui\\shell\\main_menu\\settings_select\\player_setup\\player_profile_edit\\{row}"):
@@ -91,6 +113,15 @@ CHILD_OFFSETS = {
     **{("ui\\shell\\main_menu\\multiplayer_type_select\\join_game\\join_game_items_list",
         f"ui\\shell\\main_menu\\multiplayer_type_select\\join_game\\server_item_{row}"): (10, 102 + 17 * (row - 1))
        for row in range(1, 16)},
+    # the server browser's count of servers, wider to the left
+    # (port_settings.WIDGET_PATCHES)
+    ("ui\\shell\\main_menu\\multiplayer_type_select\\join_game\\screen_stats_container",
+     "ui\\shell\\main_menu\\multiplayer_type_select\\join_game\\server_count_label"): (410, 60),
+    # the server browser's Filters' rows, closed up where PING and TEAMPLAY
+    # OPTIONS were (LEFT_OUT)
+    **{("ui\\shell\\main_menu\\multiplayer_type_select\\join_game\\filters\\filters_options_menu",
+        f"ui\\shell\\main_menu\\multiplayer_type_select\\join_game\\filters\\op_{row}"): (54, 133 + 30 * index)
+       for index, row in enumerate(("game_type", "installed_maps"))},
     # the map lists' first row, the SINGLEPLAYER or MULTIPLAYER chooser
     # (port_settings.MAP_KIND_CHOOSER), where the gametype list has its own
     **{(f"ui\\shell\\main_menu\\{list_tag}", "ui\\shell\\main_menu\\new_select\\list_item_0"): (82, 73)
@@ -143,6 +174,28 @@ XBOX_FRAMES = {
     "shell/main_menu/settings_select/player_setup/player_profile_edit/profile_options__7": 3,
 }
 PLACEHOLDER_SCALE = 2
+# the menus' rows with an icon of their own (port/assets/menus/menu_icons): its frame, its file and the margin around
+# its artwork, which is 302 across in all of them; and where the artwork goes in the frame, the middle of the panel it
+# is drawn in, as About's logo (tools/slipstream_icon.py), and clear of the description's text. (Multiplayer's picture
+# had three frames for its seven rows: MENU_EXTRA_FRAMES)
+MENU_ICONS = {
+    "shell/main_menu/settings_select/player_setup/player_profile_edit/profile_options__4": ("audio.svg", 24),
+    "shell/main_menu/settings_select/player_setup/player_profile_edit/profile_options__5": ("video.svg", 49),
+    "shell/main_menu/settings_select/player_setup/player_profile_edit/profile_options__6": ("internet.svg", 24),
+    "shell/main_menu/settings_select/player_setup/player_profile_edit/profile_options__9": ("gameplay.svg", 24),
+    "shell/main_menu/multiplayer_type_select/mp_options__0": ("internet.svg", 24),
+    "shell/main_menu/multiplayer_type_select/mp_options__1": ("lan.svg", 24),
+    "shell/main_menu/multiplayer_type_select/mp_options__6": ("gametypes.svg", 24),
+}
+# the frames a picture has past the PC version's, for the rows it has past them: the number of the frame's file (another
+# frame's for the same picture again, a MENU_ICONS' for a new one), or None for nothing. Multiplayer's Create Internet,
+# Create LAN, Co-op, Host Server and Edit Gametypes; the profile settings' Gameplay
+MENU_EXTRA_FRAMES = {
+    "shell/main_menu/multiplayer_type_select/mp_options": [0, 1, None, 0, 6],
+    "shell/main_menu/settings_select/player_setup/player_profile_edit/profile_options": [9],
+}
+MENU_ICON_ARTWORK = 302
+MENU_ICON_SQUARE = (112, 35, 340)
 
 # the Xbox's functions that the PC version rewrote for its own widgets (its
 # column lists where the Xbox had spinners, and other children), which stop
@@ -157,6 +210,9 @@ WIRED = {
     "mouse emit x event", "emit custom activation event", "single prev cl item activated", "controls back handler",
     "gamespy back handler", "gamespy dismiss error", "gamespy dismiss filters", "gamespy screen init",
     "gamespy screen dispose", "mp type set mode",
+    # (the server browser's: menu_functions.c's lobby_browser_*)
+    "gamespy select header", "gamespy select button", "gamespy select item", "gamespy screen update",
+    "gamespy update filter settings",
     "campaign menu init", "campaign menu continue", "difficulty item select", "solo map list update",
     "load game menu init", "load game menu dispose", "load game menu activated", "load game list update",
     "load game menu delete request", "load game menu delete finish",
@@ -165,6 +221,20 @@ WIRED = {
 }
 
 # ---------- HEK tags
+
+
+def draw_menu_icon(svg: Path, margin: int, width: int, height: int, output: Path) -> None:
+    """a row's icon, alone in its frame (with the controllers beside it, as librsvg reads an image only from the
+    picture's folder)"""
+    x, y, side = MENU_ICON_SQUARE
+    zoom = side / MENU_ICON_ARTWORK
+    left = round(margin * zoom)
+    image = np.zeros((height, width, 4), np.uint8)
+    with tempfile.TemporaryDirectory() as directory:
+        for path in [svg, *(MENUS / "controllers").glob("*.svg")]:
+            shutil.copy2(path, directory)
+        image[y:y + side, x:x + side] = render_svg(Path(directory) / svg.name, zoom)[left:left + side, left:left + side]
+    Image.fromarray(bleed(image), "RGBA").save(output, optimize=True)
 
 
 class Tags:
@@ -282,6 +352,27 @@ def text_value(utf16: bytes) -> str:
     return text.replace("\r\n", "\\n").replace("\n", "\\n").replace("\r", "")
 
 
+def strings_xml(lists: dict) -> str:
+    """strings.xml: the PC version's string lists (each tag's strings), with
+    the port's changes to them (port_settings.STRING_OVERRIDES and
+    STRING_INSERTS), in English: the menus never take a map's loc.map text,
+    whose language is whichever edition it came from."""
+    lines = ['<?xml version="1.0" encoding="UTF-8"?>',
+             "<!-- The PC version's menus' text (tools/ce_menus.py) -->", "<menus>"]
+    for tag in sorted(lists):
+        strings = port_settings.STRING_OVERRIDES.get(our_name(tag), lists[tag])
+        for index, texts in port_settings.STRING_INSERTS.get(our_name(tag), []):
+            strings = strings[:index] + texts + strings[index:]
+        lines.append(f"\t<strings{attributes([('name', our_name(tag))])}>")
+        for text in strings:
+            # (a string that differs by platform, which keeps one place in the list on each)
+            for platform, words in (text.items() if isinstance(text, dict) else [(None, text)]):
+                lines.append(f"\t\t<string{attributes([('text', words), ('platform', platform)])}/>")
+        lines.append("\t</strings>")
+    lines.append("</menus>")
+    return "\n".join(lines) + "\n"
+
+
 def flag_names(value: int, names: list) -> str:
     return " ".join(name for bit, name in enumerate(names) if value >> bit & 1) or None
 
@@ -299,7 +390,6 @@ class Art:
         self.placeholder = Image.open(placeholder).convert("RGBA")
         self.pictures = []  # (frame, size, PC picture) of the frames drawn as the placeholder
         self.xbox_frames = []  # (PC frame, Xbox bitmap, its frame) drawn from the Xbox map
-        self.added_frames = []  # (our bitmap, Xbox bitmap, its frame): port_settings.BITMAP_FRAMES
         self.svgs = []
         self.pngs = []
 
@@ -374,16 +464,25 @@ class Art:
             self.draw(relative, index, len(data), width, height, MENUS / png, self.shown.get(tag, []))
             self.pngs.append(png)
             lines.append(f"\t\t<frame{attributes([('png', png), ('width', width), ('height', height)])}/>")
-        # (the port's frames after them: the Xbox map's, scaled)
-        for source, index, width, height, x, y in port_settings.BITMAP_FRAMES.get(our_name(tag), []):
-            self.added_frames.append((our_name(tag), source, index))
-            lines.append(f"\t\t<frame{attributes([('map', source), ('index', index), ('width', width), ('height', height), ('x', x or None), ('y', y or None)])}/>")
+        for number in MENU_EXTRA_FRAMES.get(relative, []):
+            if number is None:
+                lines.append(f"\t\t<frame{attributes([('png', 'ce/port/blank__0.png'), ('width', 16), ('height', 16)])}/>")
+                continue
+            png = f"ce/{relative}__{number}.png"
+            if png not in self.pngs:
+                self.draw(relative, number, len(data), width, height, MENUS / png, [])
+                self.pngs.append(png)
+            lines.append(f"\t\t<frame{attributes([('png', png), ('width', width), ('height', height)])}/>")
         lines.append("\t</bitmap>")
         return "\n".join(lines)
 
     def draw(self, relative: str, index: int, count: int, width: int, height: int, output: Path,
              shown: list) -> None:
         output.parent.mkdir(parents=True, exist_ok=True)
+        icon = MENU_ICONS.get(self.frame_sources(relative, index, count)[-1])
+        if icon:
+            draw_menu_icon(MENUS / "menu_icons" / icon[0], icon[1], width * PLACEHOLDER_SCALE, height * PLACEHOLDER_SCALE, output)
+            return
         for name in self.frame_sources(relative, index, count):
             svg = self.redraws / f"{name}.svg"
             if svg.is_file():
@@ -535,7 +634,8 @@ def widget_xml(tag: str, widget: dict, tags: Tags, functions: list, inputs: list
         name = patch.get("swap", {}).get(our_name(child_tag), our_name(child_tag))
         lines += [f"{inner}{line}" for line in patch.get("insert_before", {}).get(our_name(child_tag), [])]
         pairs = [("widget", name), ("x", x or None), ("y", y or None),
-                 ("controller", str(child["custom controller index"] + 1) if child["flags"] & 1 else None)]
+                 ("controller", str(child["custom controller index"] + 1) if child["flags"] & 1 else None),
+                 ("platform", patch.get("child_platforms", {}).get(name))]
         lines.append(f"{inner}<child{attributes(pairs)}/>")
     lines += [f"{inner}{line}" for line in patch.get("children", [])]
     lines.append(f"{indent}</widget>")
@@ -557,9 +657,17 @@ def pause_art(art):
         heights += list(port_settings.PAUSE_BOX_EXTRA_HEIGHTS)
         lines.append(art.port_picture(f"pause/pausebox_{piece}", [
             (port_settings.pause_box_svg(piece, height), 4 if piece == "center" else 16, 256) for height in heights]))
+    # (the in-game join box's: the 3-button box's frames alone, which the
+    # pause menu's own does not change: port_settings.py's _ingame_join)
+    for piece in ("left", "center", "right"):
+        width = 4 if piece == "center" else 16
+        lines.append(f'\t<bitmap name="pause/joinbox_{piece}">\n'
+                     f'\t\t<frame png="ce/port/pause/pausebox_{piece}__0.png" width="{width}" height="256"/>\n'
+                     '\t</bitmap>')
     for piece in ("left", "center", "right"):
         lines.append(art.port_picture(f"pause/objectives_{piece}", [
-            (port_settings.pause_box_svg(piece, 195, header=True), 4 if piece == "center" else 16, 256)]))
+            (port_settings.pause_box_svg(piece, height, header=True), 4 if piece == "center" else 16, 256)
+            for height in port_settings.PAUSE_BOX_EXTRA_HEIGHTS]))
     return lines
 
 
@@ -624,18 +732,9 @@ def main() -> None:
     for name, lines in [*port_settings.settings_files().items(), *port_settings.multiplayer_files().items()]:
         (CE / name).write_text("\n".join(lines))
     # their strings
-    lines = ['<?xml version="1.0" encoding="UTF-8"?>',
-             "<!-- The PC version's menus' text (tools/ce_menus.py) -->", "<menus>"]
-    for tag in sorted(string_lists):
-        strings = [text_value(item["string"]) for item in tags.load(tag, "unicode_string_list")["strings"]]
-        strings = port_settings.STRING_OVERRIDES.get(our_name(tag), strings)
-        for index, texts in port_settings.STRING_INSERTS.get(our_name(tag), []):
-            strings = strings[:index] + texts + strings[index:]
-        lines.append(f"\t<strings{attributes([('name', our_name(tag))])}>")
-        lines += [f"\t\t<string{attributes([('text', text)])}/>" for text in strings]
-        lines.append("\t</strings>")
-    lines.append("</menus>")
-    (CE / "strings.xml").write_text("\n".join(lines) + "\n")
+    (CE / "strings.xml").write_text(strings_xml({
+        tag: [text_value(item["string"]) for item in tags.load(tag, "unicode_string_list")["strings"]]
+        for tag in string_lists}))
     # their bitmaps
     lines = ['<?xml version="1.0" encoding="UTF-8"?>',
              "<!-- The PC version's menus' bitmaps, drawn from the redraws, else the PC version's own pictures"
@@ -649,12 +748,29 @@ def main() -> None:
         ((ROOT / "port/assets/icons/lucide" / f"{icon}.svg").read_text().replace('stroke="currentColor"',
                                                                                  'stroke="#FFFFFF"'), 24, 24)
         for icon in ("volume-2", "volume-x")]))
-    # (the main menu's MODS, in OpenCE as the redraws' items are, and the mods'
+    # (the main menu's MODS, in the redraws' own letters, and the mods'
     # status icons: Lucide's, port/assets/icons/lucide)
-    lines.append(art.port_picture("main_menu/menu_mods", port_settings.menu_item_frames("MODS")))
+    lines.append(art.port_picture("main_menu/menu_mods", port_settings.menu_item_frames("MODS", art.redraws)))
+    # (and its THEATER: port_settings._theater)
+    lines.append(art.port_picture("main_menu/menu_theater", port_settings.menu_item_frames("THEATER", art.redraws)))
     lines.append(art.port_picture("mods/status", port_settings.mod_status_frames(ROOT / "port/assets/icons/lucide")))
     lines.append(art.port_picture("mods/status_small",
                                   port_settings.mod_status_frames(ROOT / "port/assets/icons/lucide", 16)))
+    # (Credits' logo, already drawn: tools/slipstream_icon.py)
+    logo = f"{port_settings.CREDITS}/credits_logo"
+    art.pngs.append(f"ce/port/{logo}.png")
+    lines += [f"\t<bitmap{attributes([('name', logo)])}>",
+              f"\t\t<frame{attributes([('png', f'ce/port/{logo}.png'), ('width', 256), ('height', 256)])}/>",
+              "\t</bitmap>"]
+    # (the button-layout overlay's controllers, AL2009man's Gamepad Asset
+    # Pack's, beside the pictures that draw them: port_settings.CONTROLLERS)
+    (MENUS / "port_svg/controllers").mkdir(parents=True, exist_ok=True)
+    for controller in port_settings.CONTROLLERS:
+        shutil.copy2(MENUS / "controllers" / f"{controller}.svg", MENUS / "port_svg/controllers" / f"{controller}.svg")
+    lines += [art.port_picture(name, frames) for name, frames in port_settings.layout_overlay_pictures()]
+    lines += [art.port_picture(name, frames) for name, frames in port_settings.browser_hint_pictures()]
+    # (Host Server's screens' tabs, panels, rows and pills: port_settings._host)
+    lines += [art.port_picture(name, frames) for name, frames in port_settings.host_pictures()]
     # (nothing: what a game map draws for a frame of ui.map's it has not,
     # menu_tags.c)
     lines.append(art.port_picture("blank", [
@@ -686,15 +802,6 @@ def main() -> None:
         "| --- | --- |",
     ]
     report += [f"| `{name}.png` | `{tag}` frame {index} |" for name, tag, index in sorted(art.xbox_frames)]
-    report += [
-        "",
-        "These frames are added after a bitmap's, drawn scaled from the Xbox map's (the profile settings'",
-        "picture of Gamepad Setup: the Xbox's Controller Setup's pictures of the button settings).",
-        "",
-        "| Our bitmap | The Xbox's frame |",
-        "| --- | --- |",
-    ]
-    report += [f"| `{name}` | `{tag}` frame {index} |" for name, tag, index in art.added_frames]
     report += [
         "",
         "## Placeholders, to be redrawn",

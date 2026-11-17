@@ -71,6 +71,7 @@ symbols in this file:
 #include "effects/player_effects.h"
 #include "structures/structure_visibility.h"
 #include "rasterizer.h"
+#include "network_replay.h" /* port: port/linux/game/network_replay_playback.c */
 #include "rasterizer/rasterizer_lights.h"
 #include "profile.h"
 #include "progress_bar.h"
@@ -89,6 +90,7 @@ symbols in this file:
 #include "structures/structures.h"
 /* port: static transparent part links for the newly loaded model tags. */
 #include "models/models.h"
+#include "structure_culling.h" /* port: port/linux/game/structure_culling.c */
 
 /* ---------- constants */
 
@@ -167,6 +169,8 @@ void render_initialize(
 	void)
 {
 	render_objects_initialize();
+	/* port: the structure culling tests display.structure_culling asks for */
+	structure_culling_initialize();
 }
 
 void render_initialize_for_new_map(
@@ -263,6 +267,9 @@ void render_frame_pregame(
 	halo_screen_ui_offset(TRUE);
 	render_ui_widgets(0, &window->rasterizer_camera.viewport_bounds);
 	halo_screen_ui_offset(FALSE);
+	/* port: hosting from the menus, the host's screen here too, between
+	maps (port/linux/game/host_dashboard.c) */
+	host_dashboard_draw();
 	bink_playback_render();
 
 	{
@@ -324,6 +331,7 @@ static void render_window(
 	render.local_player_index = local_player_index;
 	render.camera = *camera;
 	render.frustum = *frustum;
+	object_functions_set_for_render(TRUE);
 	parameters.camera = *rasterizer_camera;
 	parameters.frustum = *rasterizer_frustum;
 	parameters.rasterizer_target = rasterizer_target;
@@ -336,13 +344,26 @@ static void render_window(
 	rasterizer_window_begin(&parameters);
 	halo_render_marker("window");
 
-	if (!bink_playback_in_progress())
+	/* port: a replay's skip ahead: its held frame in place of the view, the
+	replay's lines drawn over it after (port/linux/game/network_replay_playback.c) */
+	if (rasterizer_target == _render_target_primary && network_replay_frozen())
+	{
+		rasterizer_port_hold_draw();
+		/* (the planar fog's offset set for this view, which the structure's
+		preprocess forgets, else the next view's asserts: none drawn here) */
+		structure_render_port_forget_fog_offset();
+	}
+	else if (!bink_playback_in_progress())
 	{
 		build_sprite_prepare_for_window();
+		first_person_weapon_render_update();
+		/* port: before the first draw, so that the dynamic lighting's fields are
+		sent with no rendering to interrupt (plasma_occlusion_prepare_view). It
+		draws nothing, and the sky's queued lens flares go in after it */
+		lights_preprocess_scene();
 		halo_render_marker("sky");
 		render_sky();
-		first_person_weapon_render_update();
-		lights_preprocess_scene();
+		lights_submit_queued_lens_flares();
 		halo_render_marker("objects");
 		render_objects();
 		structure_render_preprocess();
@@ -444,27 +465,40 @@ static void render_window(
 		structure_render_fog_screen();
 		halo_render_marker("lens flares");
 		rasterizer_lens_flares_draw();
-		/* port: the 3D view antialiased (display.anti_aliasing), before the
-		HUD and menus are drawn over it */
+		/* port: the 3D view tone mapped (display.hdr) and antialiased
+		(display.anti_aliasing), before the HUD and menus are drawn over it */
 		if (rasterizer_target == _render_target_primary)
 		{
+			halo_screen_tone_map(
+				rasterizer_camera->viewport_bounds.x0,
+				rasterizer_camera->viewport_bounds.y0,
+				rasterizer_camera->viewport_bounds.x1,
+				rasterizer_camera->viewport_bounds.y1);
 			halo_screen_anti_alias(
 				rasterizer_camera->viewport_bounds.x0,
 				rasterizer_camera->viewport_bounds.y0,
 				rasterizer_camera->viewport_bounds.x1,
 				rasterizer_camera->viewport_bounds.y1);
+			/* port: a replay's skip ahead asked for this frame: its view held
+			(port/linux/game/network_replay_playback.c) */
+			if (network_replay_hold_wanted())
+				network_replay_hold_taken(rasterizer_port_hold_capture());
 		}
 		halo_render_marker("screen effect");
 		interface_draw_screen();
 		halo_render_marker("screen flash");
 		rasterizer_screen_flash();
-		halo_screen_ui_offset(TRUE);
+		/* port: the view's menus centred in it (a quarter's are 320 wide) */
+		halo_screen_ui_offset_view(rasterizer_camera->viewport_bounds.x1 - rasterizer_camera->viewport_bounds.x0);
 		halo_render_marker("ui widgets");
 		render_ui_widgets(local_player_index, &rasterizer_camera->viewport_bounds);
 		halo_screen_ui_offset(FALSE);
 	}
 
 	halo_render_marker("debug and end");
+	/* port: the sun's glow the window drew from the frame before's, made for the next (rasterizer_xbox_lights.c) */
+	rasterizer_sun_glow_frame_end();
+	rasterizer_water_frame_end();
 	bink_playback_render();
 	render_camera_debug_frustum(&render.camera, &render.frustum);
 	render_debug();
@@ -472,6 +506,7 @@ static void render_window(
 	rasterizer_debug_draw();
 	rasterizer_window_end();
 	profile_render_window_end();
+	object_functions_set_for_render(FALSE);
 
 	return;
 }

@@ -36,7 +36,7 @@ Built with the host's ABI, as the other posix_*.c.
 #include <sys/types.h>
 #include <unistd.h>
 
-#define UPDATE_USER_AGENT "halo-ce-universal-updater"
+#define UPDATE_USER_AGENT "slipstreamce-updater"
 #define MAXIMUM_REDIRECTS 8
 #define TIMEOUT_MILLISECONDS 20000
 #define MAXIMUM_HEADER_SIZE 16384
@@ -49,6 +49,13 @@ static const char *const certificate_bundles[] =
 	"/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
 	"/etc/ssl/ca-bundle.pem", /* openSUSE */
 	"/etc/ssl/cert.pem", /* Alpine, Arch, Void */
+};
+
+/* Android's folders of them, the first found used */
+static const char *const certificate_folders[] =
+{
+	"/apex/com.android.conscrypt/cacerts", /* Android 14 and later */
+	"/system/etc/security/cacerts",
 };
 
 static pthread_once_t certificates_once = PTHREAD_ONCE_INIT;
@@ -76,6 +83,17 @@ static void load_certificates(void)
 				fprintf(stderr, "halo-linux: update: SSL_CERT_FILE is ignored; the update server is checked "
 					"against %s\n", certificate_bundles[index]);
 			}
+			return;
+		}
+	}
+	/* Android's: a folder of one certificate a file, updated with the
+Conscrypt module from Android 14 (the system's own is the older one) */
+	for (index = 0; index < sizeof(certificate_folders) / sizeof(*certificate_folders); index++)
+	{
+		if (access(certificate_folders[index], R_OK) == 0 &&
+			mbedtls_x509_crt_parse_path(&certificates, certificate_folders[index]) >= 0 && certificates.version)
+		{
+			certificates_loaded = 1;
 			return;
 		}
 	}
@@ -137,11 +155,14 @@ struct connection
 	unsigned char buffer[16384];
 	size_t start, end;
 	int closed;
+	/* (an http:// address on this machine: no TLS) */
+	int plain;
 };
 
 static void connection_free(struct connection *connection)
 {
-	mbedtls_ssl_close_notify(&connection->ssl);
+	if (!connection->plain)
+		mbedtls_ssl_close_notify(&connection->ssl);
 	mbedtls_ssl_free(&connection->ssl);
 	mbedtls_ssl_config_free(&connection->config);
 	mbedtls_net_free(&connection->net);
@@ -157,6 +178,7 @@ static int connection_open(struct connection *connection, const char *host, cons
 	mbedtls_ssl_config_init(&connection->config);
 	connection->start = connection->end = 0;
 	connection->closed = 0;
+	connection->plain = 0;
 	if ((result = mbedtls_net_connect(&connection->net, host, port, MBEDTLS_NET_PROTO_TCP)) != 0)
 	{
 		set_error(error, error_size, "could not connect", result);
@@ -208,7 +230,8 @@ static int connection_write(struct connection *connection, const char *data, siz
 {
 	while (size)
 	{
-		int result = mbedtls_ssl_write(&connection->ssl, (const unsigned char *)data, size);
+		int result = connection->plain ? mbedtls_net_send(&connection->net, (const unsigned char *)data, size) :
+			mbedtls_ssl_write(&connection->ssl, (const unsigned char *)data, size);
 
 		if (result == MBEDTLS_ERR_SSL_WANT_READ || result == MBEDTLS_ERR_SSL_WANT_WRITE)
 			continue;
@@ -239,8 +262,10 @@ static int connection_fill(struct connection *connection)
 	}
 	for (;;)
 	{
-		result = mbedtls_ssl_read(&connection->ssl, connection->buffer + connection->end,
-			sizeof(connection->buffer) - connection->end);
+		result = connection->plain ? mbedtls_net_recv_timeout(&connection->net, connection->buffer + connection->end,
+			sizeof(connection->buffer) - connection->end, TIMEOUT_MILLISECONDS) :
+			mbedtls_ssl_read(&connection->ssl, connection->buffer + connection->end,
+				sizeof(connection->buffer) - connection->end);
 		if (result > 0)
 		{
 			connection->end += (size_t)result;
@@ -251,6 +276,8 @@ static int connection_fill(struct connection *connection)
 		{
 			continue;
 		}
+		if (connection->plain && result == MBEDTLS_ERR_SSL_TIMEOUT)
+			return -1;
 		if (result == 0 || result == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY || result == MBEDTLS_ERR_NET_CONN_RESET)
 		{
 			connection->closed = 1;
@@ -311,15 +338,13 @@ struct download
 	FILE *file;
 	update_progress_proc progress;
 	void *context;
-	unsigned long long received, total;
+	unsigned long long received, total, maximum;
 };
-
-/* (a release is tens of megabytes: a body past this fills no disk) */
-#define MAXIMUM_DOWNLOAD_SIZE (512ull * 1024 * 1024)
 
 static int body_write(struct download *download, const unsigned char *data, size_t size)
 {
-	if (download->received + size > MAXIMUM_DOWNLOAD_SIZE)
+	/* (no more than the caller expects: a body that goes on is refused) */
+	if (size > download->maximum - download->received)
 		return 0;
 	if (fwrite(data, 1, size, download->file) != size)
 		return 0;
@@ -448,12 +473,6 @@ static int https_get(const char *url, struct download *download, char *location,
 		{
 			length = strtoull(value, NULL, 10);
 			have_length = 1;
-			if (length > MAXIMUM_DOWNLOAD_SIZE)
-			{
-				snprintf(error, (size_t)error_size, "the download from %s is too large", host);
-				connection_free(&connection);
-				return 0;
-			}
 		}
 		else if (!strcasecmp(line, "Transfer-Encoding") && strcasestr(value, "chunked"))
 		{
@@ -466,6 +485,12 @@ static int https_get(const char *url, struct download *download, char *location,
 	}
 	if (status == 200)
 	{
+		if (have_length && !chunked && length > download->maximum)
+		{
+			snprintf(error, (size_t)error_size, "the download from %s is larger than expected", host);
+			connection_free(&connection);
+			return 0;
+		}
 		download->total = have_length && !chunked ? length : 0;
 		if (!read_body(&connection, download, chunked, length, have_length && !chunked))
 		{
@@ -477,14 +502,15 @@ static int https_get(const char *url, struct download *download, char *location,
 	return status;
 }
 
-int update_download(const char *url, const char *path, update_progress_proc progress, void *context, char *error,
-	int error_size)
+int update_download_status(const char *url, const char *path, unsigned long long maximum,
+	update_progress_proc progress, void *context, int *answered, char *error, int error_size)
 {
 	char current[2048];
 	char location[2048];
 	struct download download;
 	int redirect;
 
+	*answered = 0;
 	pthread_once(&certificates_once, load_certificates);
 	if (!crypto_ready)
 	{
@@ -500,6 +526,7 @@ int update_download(const char *url, const char *path, update_progress_proc prog
 	memset(&download, 0, sizeof(download));
 	download.progress = progress;
 	download.context = context;
+	download.maximum = maximum;
 	download.file = fopen(path, "wb");
 	if (!download.file)
 	{
@@ -511,6 +538,7 @@ int update_download(const char *url, const char *path, update_progress_proc prog
 	{
 		int status = https_get(current, &download, location, sizeof(location), error, error_size);
 
+		*answered = status;
 		if (status == 200)
 		{
 			if (fclose(download.file) != 0)
@@ -546,6 +574,242 @@ int update_download(const char *url, const char *path, update_progress_proc prog
 	fclose(download.file);
 	unlink(path);
 	return 0;
+}
+
+int update_download(const char *url, const char *path, unsigned long long maximum, update_progress_proc progress,
+	void *context, char *error, int error_size)
+{
+	int answered;
+
+	return update_download_status(url, path, maximum, progress, context, &answered, error, error_size);
+}
+
+/* ---------- any request */
+
+/* the body of an answer, into memory */
+static int read_memory_body(struct connection *connection, unsigned char **data, unsigned long long *size,
+	unsigned long long maximum, int chunked, unsigned long long length, int have_length)
+{
+	unsigned char buffer[16384];
+	unsigned long long capacity = 0;
+
+	*data = NULL;
+	*size = 0;
+	for (;;)
+	{
+		unsigned long long remaining = 0;
+		int count;
+
+		if (chunked)
+		{
+			char line[128];
+			char *after;
+
+			if (!connection_read_line(connection, line, sizeof(line)))
+				return 0;
+			remaining = strtoull(line, &after, 16);
+			if (after == line)
+				return 0;
+			if (!remaining)
+				return 1;
+		}
+		else if (have_length)
+		{
+			if (*size >= length)
+				return 1;
+			remaining = length - *size;
+		}
+		else
+		{
+			remaining = sizeof(buffer);
+		}
+		while (remaining)
+		{
+			count = connection_read(connection, buffer, remaining < sizeof(buffer) ? (size_t)remaining : sizeof(buffer));
+			if (count < 0)
+				return 0;
+			if (count == 0)
+				return !have_length && !chunked;
+			if (*size + (unsigned long long)count > maximum)
+				return 0;
+			if (*size + (unsigned long long)count + 1 > capacity)
+			{
+				unsigned long long grown_capacity = capacity ? capacity * 2 : 16384;
+				unsigned char *grown;
+
+				while (grown_capacity < *size + (unsigned long long)count + 1)
+					grown_capacity *= 2;
+				grown = realloc(*data, (size_t)grown_capacity);
+				if (!grown)
+					return 0;
+				*data = grown;
+				capacity = grown_capacity;
+			}
+			memcpy(*data + *size, buffer, (size_t)count);
+			*size += (unsigned long long)count;
+			(*data)[*size] = 0;
+			if (chunked || have_length)
+				remaining -= (unsigned long long)count;
+		}
+		if (chunked)
+		{
+			char line[128];
+
+			if (!connection_read_line(connection, line, sizeof(line)))
+				return 0;
+		}
+	}
+}
+
+int update_https_request(const char *method, const char *url, const char *headers, const void *body,
+	unsigned long body_size, unsigned long maximum, struct update_response *response, char *error, int error_size)
+{
+	struct connection *connection;
+	char host[256], port[16], path[2048];
+	char *request;
+	char line[MAXIMUM_HEADER_SIZE];
+	unsigned long long length = 0, received = 0;
+	unsigned char *data = NULL;
+	int have_length = 0, chunked = 0, plain = 0, result, status = 0;
+	size_t request_size, head_length, headers_length = 0;
+
+	memset(response, 0, sizeof(*response));
+	if (!strncasecmp(url, "http://", 7))
+	{
+		char https[2100];
+		const char *slash = strchr(url + 7, '/');
+		const char *colon = strchr(url + 7, ':');
+
+		/* (plain HTTP only to this machine: a test's master) */
+		snprintf(https, sizeof(https), "https://%s", url + 7);
+		if (!parse_url(https, host, sizeof(host), port, sizeof(port), path, sizeof(path)) ||
+			(strcmp(host, "127.0.0.1") && strcasecmp(host, "localhost")))
+		{
+			snprintf(error, (size_t)error_size, "plain http:// only to this machine: %s", url);
+			return 0;
+		}
+		if (!colon || (slash && colon > slash))
+			snprintf(port, sizeof(port), "80");
+		plain = 1;
+	}
+	else if (!parse_url(url, host, sizeof(host), port, sizeof(port), path, sizeof(path)))
+	{
+		snprintf(error, (size_t)error_size, "not an https:// address: %s", url);
+		return 0;
+	}
+	if (!plain)
+	{
+		pthread_once(&certificates_once, load_certificates);
+		if (!crypto_ready || !certificates_loaded)
+		{
+			snprintf(error, (size_t)error_size, "the system's certificate authorities were not found "
+				"(install ca-certificates, or set SSL_CERT_FILE)");
+			return 0;
+		}
+	}
+	connection = calloc(1, sizeof(*connection));
+	request_size = 4096 + (headers ? strlen(headers) : 0) + (body ? body_size : 0);
+	request = malloc(request_size);
+	if (!connection || !request)
+	{
+		free(connection);
+		free(request);
+		snprintf(error, (size_t)error_size, "out of memory");
+		return 0;
+	}
+	if (plain)
+	{
+		mbedtls_net_init(&connection->net);
+		mbedtls_ssl_init(&connection->ssl);
+		mbedtls_ssl_config_init(&connection->config);
+		connection->plain = 1;
+		if ((result = mbedtls_net_connect(&connection->net, host, port, MBEDTLS_NET_PROTO_TCP)) != 0)
+		{
+			set_error(error, error_size, "could not connect", result);
+			connection_free(connection);
+			free(connection);
+			free(request);
+			return 0;
+		}
+	}
+	else if (!connection_open(connection, host, port, error, error_size))
+	{
+		connection_free(connection);
+		free(connection);
+		free(request);
+		return 0;
+	}
+	snprintf(request, request_size,
+		"%s %s HTTP/1.1\r\nHost: %s%s%s\r\nUser-Agent: opence\r\nAccept: application/json\r\n"
+		"Connection: close\r\nContent-Length: %lu\r\n%s\r\n",
+		method, path, host, strcmp(port, plain ? "80" : "443") ? ":" : "", strcmp(port, plain ? "80" : "443") ? port : "",
+		body ? body_size : 0UL, headers ? headers : "");
+	head_length = strlen(request);
+	if (body && body_size)
+	{
+		memcpy(request + head_length, body, body_size);
+		head_length += body_size;
+	}
+	result = connection_write(connection, request, head_length);
+	free(request);
+	if (!result || !connection_read_line(connection, line, sizeof(line)) ||
+		sscanf(line, "HTTP/%*d.%*d %d", &status) != 1)
+	{
+		snprintf(error, (size_t)error_size, "no answer from %s", host);
+		connection_free(connection);
+		free(connection);
+		return 0;
+	}
+	response->status = status;
+	for (;;)
+	{
+		char *value;
+
+		if (!connection_read_line(connection, line, sizeof(line)))
+		{
+			snprintf(error, (size_t)error_size, "a broken answer from %s", host);
+			connection_free(connection);
+			free(connection);
+			return 0;
+		}
+		if (!line[0])
+			break;
+		if (headers_length + strlen(line) + 2 < sizeof(response->headers))
+		{
+			memcpy(response->headers + headers_length, line, strlen(line));
+			headers_length += strlen(line);
+			response->headers[headers_length++] = '\n';
+			response->headers[headers_length] = 0;
+		}
+		value = strchr(line, ':');
+		if (!value)
+			continue;
+		*value++ = 0;
+		value += strspn(value, " \t");
+		if (!strcasecmp(line, "Content-Length"))
+		{
+			length = strtoull(value, NULL, 10);
+			have_length = 1;
+		}
+		else if (!strcasecmp(line, "Transfer-Encoding") && strcasestr(value, "chunked"))
+		{
+			chunked = 1;
+		}
+	}
+	if ((have_length && !chunked && length > maximum) || (status != 204 && status != 304 && strcmp(method, "HEAD") &&
+		!read_memory_body(connection, &data, &received, maximum, chunked, length, have_length && !chunked)))
+	{
+		free(data);
+		snprintf(error, (size_t)error_size, "the answer from %s broke off, or is larger than %lu bytes", host, maximum);
+		connection_free(connection);
+		free(connection);
+		return 0;
+	}
+	response->body = data ? (char *)data : calloc(1, 1);
+	response->body_size = (unsigned long)received;
+	connection_free(connection);
+	free(connection);
+	return 1;
 }
 
 /* ---------- files and processes */

@@ -197,6 +197,101 @@ static struct
 	char image[64];
 } profile;
 
+/* ---------- the slow frames' own profiles
+
+A 20-second window counts a 150 ms frame among 1200 others; it shows nowhere.
+So the game threads' samples of the last SPIKE_RING go into a ring too, each
+with its time, and a frame of SPIKE_MINIMUM_NS or more (host_debug_profile_spike,
+from the frame's statistics) has the profiler thread write that frame's
+samples alone to profile/spike_NNN.txt, in the windows' format: at most
+SPIKE_FILES a run, the first ones (loading's frames among them). */
+
+#define SPIKE_RING 4096
+#define SPIKE_MINIMUM_NS 40000000ULL
+#define SPIKE_FILES 40
+
+struct spike_sample
+{
+	u64 tick;
+	uint8_t slot;
+	uint8_t depth;
+	uint64_t addresses[PROFILE_DEPTH];
+};
+
+static struct
+{
+	struct spike_sample *ring;
+	uint32_t next;
+	/* a frame's span asked for, by the game thread (tick 0: none) */
+	volatile u64 asked_start, asked_end;
+	volatile uint32_t asked_ms_tenths;
+	unsigned written;
+} spike;
+
+void host_debug_profile_spike(uint64_t frame_ns)
+{
+	u64 now;
+
+	if (!spike.ring || frame_ns < SPIKE_MINIMUM_NS || spike.written >= SPIKE_FILES || spike.asked_end)
+		return;
+	now = armGetSystemTick();
+	spike.asked_start = now - armNsToTicks(frame_ns);
+	spike.asked_ms_tenths = (uint32_t)(frame_ns / 100000ULL);
+	__atomic_store_n(&spike.asked_end, now, __ATOMIC_RELEASE);
+}
+
+static void spike_write(void)
+{
+	char path[PATH_MAX];
+	FILE *file;
+	u64 start = spike.asked_start, end = spike.asked_end;
+	uint32_t at, samples[MAXIMUM_THREADS] = { 0 };
+	int slot, depth;
+
+	snprintf(path, sizeof(path), "%s/profile", host_executable_root());
+	mkdir(path, 0777);
+	snprintf(path, sizeof(path), "%s/profile/spike_%03u.txt", host_executable_root(), spike.written);
+	file = fopen(path, "w");
+	if (!file)
+	{
+		host_logf(HOST_LOG_WARN, "profiler: cannot write %s", path);
+		spike.written = SPIKE_FILES;
+		return;
+	}
+	for (at = 0; at < SPIKE_RING; at++)
+	{
+		const struct spike_sample *sample = &spike.ring[at];
+
+		if (sample->depth && sample->tick >= start && sample->tick <= end)
+			samples[sample->slot]++;
+	}
+	fprintf(file, "halo profile 1\nwindow %u seconds %.3f hz %u\nimage %s\nanchor host_debug_start_profiler 0x%llx\n",
+		spike.written, (double)armTicksToNs(end - start) / 1e9, profile.hz, profile.image,
+		(unsigned long long)(uintptr_t)host_debug_start_profiler);
+	fprintf(file, "spike %.1f ms\ndropped 0\n", spike.asked_ms_tenths / 10.0);
+	for (slot = 0; slot < MAXIMUM_THREADS; slot++)
+	{
+		if (samples[slot])
+			fprintf(file, "thread %d game id %d samples %u failed 0\n", slot, (int)profile.ids[slot],
+				(unsigned)samples[slot]);
+	}
+	/* (each sample a stack of its own: the tool adds them up) */
+	for (at = 0; at < SPIKE_RING; at++)
+	{
+		const struct spike_sample *sample = &spike.ring[at];
+
+		if (!sample->depth || sample->tick < start || sample->tick > end)
+			continue;
+		fprintf(file, "stack 1 %d", sample->slot);
+		for (depth = 0; depth < sample->depth; depth++)
+			fprintf(file, " %llx", (unsigned long long)sample->addresses[depth]);
+		fputc('\n', file);
+	}
+	fclose(file);
+	host_logf(HOST_LOG_INFO, "profiler: %s written (a %.1f ms frame)", path, spike.asked_ms_tenths / 10.0);
+	spike.written++;
+}
+
 static int profile_walk(const ThreadContext *context, uint64_t *addresses)
 {
 	MemoryInfo info;
@@ -222,6 +317,37 @@ static int profile_walk(const ThreadContext *context, uint64_t *addresses)
 		frame = next;
 	}
 	return depth;
+}
+
+/* where a host thread is: paused, its program counter and frame chain
+read and logged, and let go (a stopped render thread, host_dk.c's watchdog).
+The host's addresses are given with the anchor's, as the profiles' are, for
+addr2line on build/switch/halo.elf */
+void host_debug_thread_backtrace(Handle handle, const char *who)
+{
+	ThreadContext context;
+	uint64_t addresses[PROFILE_DEPTH];
+	char line[PROFILE_DEPTH * 13 + 1];
+	int depth = 0, at, used = 0;
+	Result result = svcSetThreadActivity(handle, ThreadActivity_Paused);
+
+	if (R_SUCCEEDED(result))
+	{
+		result = svcGetThreadContext3(&context, handle);
+		if (R_SUCCEEDED(result))
+			depth = profile_walk(&context, addresses);
+		svcSetThreadActivity(handle, ThreadActivity_Runnable);
+	}
+	if (!depth)
+	{
+		host_logf(HOST_LOG_ERROR, "%s: its stack could not be read: 0x%x", who, (unsigned)result);
+		return;
+	}
+	line[0] = 0;
+	for (at = 0; at < depth && used < (int)sizeof(line) - 13; at++)
+		used += snprintf(line + used, sizeof(line) - used, " %llx", (unsigned long long)addresses[at]);
+	host_logf(HOST_LOG_ERROR, "%s: lr %llx, stack%s (anchor host_debug_start_profiler 0x%llx)", who,
+		(unsigned long long)context.lr, line, (unsigned long long)(uintptr_t)host_debug_start_profiler);
 }
 
 static void profile_count(int slot, const uint64_t *addresses, int depth)
@@ -350,8 +476,22 @@ static void *profile_thread(void *unused)
 			}
 			profile.samples[slot]++;
 			profile_count(slot, addresses, depth);
+			if (spike.ring && profile.is_game[slot])
+			{
+				struct spike_sample *sample = &spike.ring[spike.next++ % SPIKE_RING];
+
+				sample->tick = armGetSystemTick();
+				sample->slot = (uint8_t)slot;
+				sample->depth = (uint8_t)depth;
+				memcpy(sample->addresses, addresses, (size_t)depth * sizeof(*addresses));
+			}
 		}
 		pthread_mutex_unlock(&threads_lock);
+		if (__atomic_load_n(&spike.asked_end, __ATOMIC_ACQUIRE))
+		{
+			spike_write();
+			spike.asked_end = 0;
+		}
 		if (armTicksToNs(armGetSystemTick() - window_start) >= PROFILE_WINDOW_SECONDS * 1000000000ULL)
 		{
 			profile_write(window++, armTicksToNs(armGetSystemTick() - window_start) / 1e9);
@@ -380,6 +520,8 @@ void host_debug_start_profiler(unsigned hz, const char *image)
 		return;
 	}
 	profile.hz = hz;
+	/* (without it, the windows only) */
+	spike.ring = calloc(SPIKE_RING, sizeof(*spike.ring));
 	snprintf(profile.image, sizeof(profile.image), "%s", image);
 	if (pthread_create(&thread, NULL, profile_thread, NULL) != 0)
 	{

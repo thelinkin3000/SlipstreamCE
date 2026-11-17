@@ -13,7 +13,10 @@ host_dk_shader_find
 host_dk_shader_compile
 host_dk_shader_known
 host_dk_shader_pending
+host_dk_shader_pending_urgent
+host_dk_shader_priority_lower
 host_dk_shader_loading
+host_dk_shader_load_first
 host_dk_shader_preload_done
 host_dk_shader_loose_loads
 # the controller's gyroscope (port/switch/host/host_sdl2.c). yaw and pitch are
@@ -23,3 +26,14 @@ host_sdl_gamepad_gyro
 host_storage_commit
 host_clock_cpu
 host_dk_output_height
+host_dk_gpu_frame_us
+# mod textures' bytes kept in the host's memory, outside the Xbox window
+# (port/switch/host/host_texture_cache.c, port/linux/game/mod_bitmaps.c): a
+# 64-bit key in one X register, buffer a guest address
+host_texture_cache_get
+host_texture_cache_put
+host_texture_cache_clear
+host_texture_cache_prefetch
+# the high-res HUD's sheets, decoded by the host (port/switch/host/host_dk_hud.c):
+# png and tag are guest addresses
+host_dk_hud_ready

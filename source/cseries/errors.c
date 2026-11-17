@@ -68,6 +68,10 @@ symbols in this file:
 
 /* ---------- constants */
 
+/* port: how big debug.txt grows before it is rolled to debug.old.txt and
+begun again (write_to_debug_file) */
+#define DEBUG_FILE_PORT_MAXIMUM_SIZE (64L * 1024 * 1024)
+
 /* ---------- macros */
 
 /* ---------- structures */
@@ -87,9 +91,14 @@ long fucked_up_shit_count = 0;
 
 /* ---------- public code */
 
+static void debug_file_port_flush(
+	void);
+
 void errors_dispose(
 	void)
 {
+	/* port: debug.txt's queued lines written */
+	debug_file_port_flush();
 	stack_walk_dispose();
 
 	return;
@@ -120,6 +129,8 @@ char *error_get(
 /* port/linux/src/port_config.c's */
 int config_boolean(const char *name);
 unsigned long config_changes(void);
+/* port: debug.txt made 0666 (port/linux/src/msvc_crt.c) */
+void platform_share_file(FILE *file);
 
 /* port: config.toml's debug.log_files (read again as the settings change):
 false writes no debug.txt, not even opened */
@@ -139,42 +150,244 @@ static boolean debug_file_wanted(
 
 /* The native builds keep the log open and flush each line: opening and
 closing it per line takes milliseconds on Windows, and a host logs
-thousands of lines when a hundred machines join, load or leave. The file is
-opened once even if threads log their first lines at once, and each line is
-one write, so lines from several threads do not interleave. */
-static void write_to_debug_file(
-	char const *string,
-	boolean date)
-{
-	static FILE *volatile debug_file = NULL;
-	FILE *file = debug_file;
-	char prefix[32];
+thousands of lines when a hundred machines join, load or leave.
 
-	if (!debug_file_wanted())
+port: A line written again as it was (the same warning each tick) is
+counted, not written, until a different one comes ("last line repeated N
+times"). Past DEBUG_FILE_PORT_MAXIMUM_SIZE the file is rolled to
+debug.old.txt (the one before that let go) and begun again: a game left
+running for days wrote without end.
+
+port: The lines are written by a thread of their own. Written where they
+were logged, each was a write to the card on whatever thread logged it,
+usually the game's: on the Switch a script's "object_create - already
+exists" cost a co-op game a 430 ms frame, waiting for the card behind a
+checkpoint (a10). A line is now copied into a queue and the writer writes
+it a moment later, as halo.log's are (port/switch/host/host_main.c). A line
+that explains a death (an EXCEPTION, and everything once a crash is being
+reported: errors_debug_file_urgent) is still written by the thread that
+logs it, after what is queued, and so is a line the queue has no room
+for. */
+#define DEBUG_FILE_PORT_QUEUE_SIZE (64L * 1024)
+
+static FILE *debug_file_port = NULL;
+static long debug_file_port_size = 0;
+static char debug_file_port_last_line[1024];
+static unsigned long debug_file_port_repeat_count = 0;
+/* the queue's lock (and the repeated line's): held only to copy */
+static volatile long debug_file_port_lock = 0;
+/* the file's: held across a write */
+static volatile long debug_file_port_io_lock = 0;
+/* (write_to_error_file's header again, atop the file begun again) */
+static boolean debug_file_port_rolled = FALSE;
+/* (the file could not be opened: a dedicated server's lines go to the
+standard error alone) */
+static boolean debug_file_port_unwritable = FALSE;
+static char debug_file_port_queue[DEBUG_FILE_PORT_QUEUE_SIZE];
+static long debug_file_port_queued = 0;
+static HANDLE debug_file_port_wake = NULL;
+/* the writer: 0 not yet started, 1 running, 2 starting, -1 none */
+static volatile long debug_file_port_writer_state = 0;
+static volatile boolean debug_file_port_urgent = FALSE;
+
+/* (a moment's wait for another thread's line; a crash report written
+while this thread held the lock goes on without it) */
+static void debug_file_port_queue_lock(
+	void)
+{
+	long spin;
+
+	for (spin = 0; spin < 50000000 && __sync_lock_test_and_set(&debug_file_port_lock, 1); spin++)
+	{
+	}
+}
+
+/* the file's lock: for a crash report (bounded), a moment's wait for a
+write under way, then FALSE and the report goes on without it */
+static boolean debug_file_port_io_acquire(
+	boolean bounded)
+{
+	long waited;
+
+	for (waited = 0; __sync_lock_test_and_set(&debug_file_port_io_lock, 1); waited++)
+	{
+		if (bounded && waited >= 2000)
+		{
+			return FALSE;
+		}
+		Sleep(1);
+	}
+	return TRUE;
+}
+
+static void debug_file_port_io_release(
+	void)
+{
+	__sync_lock_release(&debug_file_port_io_lock);
+}
+
+/* text to debug.txt (under the file's lock), opening it if it is not, and
+rolling it to debug.old.txt first when it is full */
+static void debug_file_port_write(
+	char const *text,
+	long size)
+{
+	static char const rolled[] = "debug.txt was full: its earlier lines are in debug.old.txt\r\n";
+	FILE *file = debug_file_port;
+
+	if (!size)
 	{
 		return;
 	}
 	if (!file)
 	{
-		FILE *opened = fopen("d:\\debug.txt", "a+b");
-
-		if (!opened)
+		file = fopen("d:\\debug.txt", "a+b");
+		if (!file)
+		{
+			/* (after the first time, write_to_debug_file prints them) */
+			if (halo_server_headless() && !halo_server_debug_echo() && !debug_file_port_unwritable)
+				fwrite(text, 1, (size_t)size, stderr);
+			debug_file_port_unwritable = TRUE;
+			return;
+		}
+		platform_share_file(file);
+		fseek(file, 0, SEEK_END);
+		debug_file_port_size = ftell(file);
+		if (debug_file_port_size < 0)
+		{
+			/* (too big to say, as the 32-bit builds find one past 2 GB:
+			full) */
+			debug_file_port_size = DEBUG_FILE_PORT_MAXIMUM_SIZE;
+		}
+		debug_file_port = file;
+		debug_file_port_unwritable = FALSE;
+	}
+	if (debug_file_port_size >= DEBUG_FILE_PORT_MAXIMUM_SIZE)
+	{
+		fclose(file);
+		debug_file_port = NULL;
+		remove("d:\\debug.old.txt");
+		/* (or, where it cannot be renamed, begun again in place) */
+		file = rename("d:\\debug.txt", "d:\\debug.old.txt") ?
+			fopen("d:\\debug.txt", "w+b") :
+			fopen("d:\\debug.txt", "a+b");
+		if (!file)
 		{
 			return;
 		}
-		file = __sync_val_compare_and_swap(&debug_file, (FILE *)NULL, opened);
-		if (file)
+		platform_share_file(file);
+		debug_file_port = file;
+		debug_file_port_size = 0;
+		debug_file_port_rolled = TRUE;
+		fputs(rolled, file);
+		debug_file_port_size += (long)csstrlen(rolled);
+	}
+	fwrite(text, 1, (size_t)size, file);
+	fflush(file);
+	debug_file_port_size += size;
+#ifdef HALO_WEB
+	/* port: and to the page's log (port/web/README.md) */
+	fwrite(text, 1, (size_t)size, stderr);
+#endif
+}
+
+/* what is queued, to the file (under the file's lock) */
+static void debug_file_port_drain(
+	void)
+{
+	static char out[DEBUG_FILE_PORT_QUEUE_SIZE];
+	long size;
+
+	debug_file_port_queue_lock();
+	size = debug_file_port_queued;
+	csmemcpy(out, debug_file_port_queue, (size_t)size);
+	debug_file_port_queued = 0;
+	__sync_lock_release(&debug_file_port_lock);
+	debug_file_port_write(out, size);
+}
+
+static DWORD WINAPI debug_file_port_writer(
+	LPVOID unused)
+{
+	(void)unused;
+	for (;;)
+	{
+		WaitForSingleObject(debug_file_port_wake, INFINITE);
+		debug_file_port_io_acquire(FALSE);
+		debug_file_port_drain();
+		debug_file_port_io_release();
+	}
+	return 0;
+}
+
+/* the writer started; FALSE if it is not (yet), and the line is written
+where it was logged */
+static boolean debug_file_port_writer_ready(
+	void)
+{
+#ifdef HALO_WEB
+	/* (a page's build has no threads) */
+	return FALSE;
+#else
+	if (debug_file_port_writer_state == 0 &&
+		__sync_bool_compare_and_swap(&debug_file_port_writer_state, 0, 2))
+	{
+		HANDLE thread = NULL;
+
+		debug_file_port_wake = CreateEventA(NULL, FALSE, FALSE, NULL);
+		if (debug_file_port_wake)
+			thread = CreateThread(NULL, 0, debug_file_port_writer, NULL, 0, NULL);
+		if (thread)
+			CloseHandle(thread);
+		else if (debug_file_port_wake)
 		{
-			fclose(opened);
+			CloseHandle(debug_file_port_wake);
+			debug_file_port_wake = NULL;
 		}
-		else
-		{
-			file = opened;
-		}
+		__sync_lock_test_and_set(&debug_file_port_writer_state, thread ? 1 : -1);
+	}
+	return debug_file_port_writer_state == 1;
+#endif
+}
+
+static void write_to_debug_file(
+	char const *string,
+	boolean date)
+{
+	char prefix[32];
+	char repeated[64];
+	char const *pieces[4];
+	long sizes[4];
+	long count = 0;
+	long total = 0;
+	long index;
+	boolean urgent;
+
+	if (!debug_file_wanted())
+	{
+		return;
+	}
+	/* port: a dedicated server's debug.txt also on the standard error
+	(server.log_debug_echo), and there alone when the file cannot be written
+	(a read-only data root) */
+	if (halo_server_headless() && (halo_server_debug_echo() || debug_file_port_unwritable))
+		fprintf(stderr, "debug: %s%s", string, string[0] && string[csstrlen(string) - 1] == '\n' ? "" : "\n");
+	urgent = debug_file_port_urgent || !strncmp(string, "EXCEPTION", 9);
+	if (!urgent)
+	{
+		debug_file_port_writer_ready();
+	}
+
+	debug_file_port_queue_lock();
+	if (!csstrcmp(string, debug_file_port_last_line))
+	{
+		debug_file_port_repeat_count++;
+		__sync_lock_release(&debug_file_port_lock);
+		return;
 	}
 
 	prefix[0] = 0;
-	if (date)
+	if (date || debug_file_port_repeat_count)
 	{
 		long timeptr;
 		struct tm *_time;
@@ -198,12 +411,76 @@ static void write_to_debug_file(
 			csstrcpy(prefix, "<TIME UNAVAILABLE>  ");
 		}
 	}
-	fprintf(file, "%s%s", prefix, string);
-	fflush(file);
-#ifdef HALO_WEB
-	/* port: and to the page's log (port/web/README.md) */
-	fputs(string, stderr);
-#endif
+
+	if (debug_file_port_repeat_count)
+	{
+		sprintf(repeated, "last line repeated %lu times\r\n", debug_file_port_repeat_count);
+		pieces[count++] = prefix;
+		pieces[count++] = repeated;
+		debug_file_port_repeat_count = 0;
+	}
+	pieces[count++] = date ? prefix : "";
+	pieces[count++] = string;
+	for (index = 0; index < count; index++)
+	{
+		sizes[index] = (long)csstrlen(pieces[index]);
+		total += sizes[index];
+	}
+	for (index = 0; index < (long)sizeof(debug_file_port_last_line) - 1 && string[index]; index++)
+	{
+		debug_file_port_last_line[index] = string[index];
+	}
+	debug_file_port_last_line[index] = 0;
+
+	/* (queued for the writer, which writes it a moment later) */
+	if (!urgent && debug_file_port_writer_state == 1 &&
+		debug_file_port_queued + total <= DEBUG_FILE_PORT_QUEUE_SIZE)
+	{
+		for (index = 0; index < count; index++)
+		{
+			csmemcpy(debug_file_port_queue + debug_file_port_queued, pieces[index], (size_t)sizes[index]);
+			debug_file_port_queued += sizes[index];
+		}
+		__sync_lock_release(&debug_file_port_lock);
+		SetEvent(debug_file_port_wake);
+		return;
+	}
+	__sync_lock_release(&debug_file_port_lock);
+
+	/* (written here, after what is queued) */
+	if (debug_file_port_io_acquire(urgent))
+	{
+		debug_file_port_drain();
+		for (index = 0; index < count; index++)
+		{
+			debug_file_port_write(pieces[index], sizes[index]);
+		}
+		debug_file_port_io_release();
+	}
+	else
+	{
+		for (index = 0; index < count; index++)
+		{
+			debug_file_port_write(pieces[index], sizes[index]);
+		}
+	}
+}
+
+void errors_debug_file_urgent(
+	void)
+{
+	debug_file_port_urgent = TRUE;
+}
+
+/* what is queued, written before the game stops */
+static void debug_file_port_flush(
+	void)
+{
+	if (debug_file_port_io_acquire(TRUE))
+	{
+		debug_file_port_drain();
+		debug_file_port_io_release();
+	}
 }
 
 void write_to_error_file(
@@ -213,6 +490,13 @@ void write_to_error_file(
 	char line[1024];
 	long time_value;
 
+	/* port: the header again in a debug.txt begun again (its reference
+	address places a crash report's addresses) */
+	if (debug_file_port_rolled)
+	{
+		debug_file_port_rolled = FALSE;
+		data_002dcd2c = TRUE;
+	}
 	if (data_002dcd2c)
 	{
 		data_002dcd2c = FALSE;

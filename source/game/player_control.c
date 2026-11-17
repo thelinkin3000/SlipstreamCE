@@ -208,8 +208,10 @@ symbols in this file:
 #include "units/units.h"
 #include "units/vehicle_definitions.h"
 #include "units/vehicles.h"
+#include "mcc_seats.h" /* port: port/linux/game/mcc_seats.c */
 
 #include "real_math.h"
+#include "passenger_camera.h" /* port: port/linux/game/passenger_camera.c; after the limit2d alias above */
 #include "network_coop.h" /* port: port/linux/game/network_coop.c */
 
 /* ---------- constants */
@@ -397,6 +399,10 @@ limits were stepped once per input update, a tick on the Xbox, so they step
 by the ticks the frame lasted; an impulse applied from a tick steps by one. */
 static real player_control_angle_step_ticks = 1.f;
 static real player_control_autolevel_time[MAXIMUM_NUMBER_OF_LOCAL_PLAYERS];
+/* port: the blob's input before the director's inhibit zeroes it, which
+moves the debug camera (director.c) */
+real_vector2d player_control_port_debug_throttle[MAXIMUM_NUMBER_OF_LOCAL_PLAYERS];
+real_euler_angles2d player_control_port_debug_facing[MAXIMUM_NUMBER_OF_LOCAL_PLAYERS];
 
 /* ---------- public code */
 
@@ -556,6 +562,8 @@ void player_control_get_unit_camera_info(
 			}
 		}
 
+		/* port: MCC biped seats carry the same authored camera as vehicles. */
+		mcc_seat_camera(camera_info);
 		if (camera_info->seat_index == NONE)
 		{
 			camera_info->camera = &unit_definition_get(unit->definition_index)->unit.camera;
@@ -640,6 +648,9 @@ static void handle_one_player_input(
 		local_player_index,
 		time_delta_sec,
 		&input);
+	/* port: for the debug camera (player_control_port_debug_throttle) */
+	player_control_port_debug_throttle[local_player_index] = input.throttle;
+	player_control_port_debug_facing[local_player_index] = input.facing_delta;
 	if (local_player_get_player_index(local_player_index) != NONE)
 	{
 		match_assert_valid_real(
@@ -739,7 +750,15 @@ static void handle_one_player_input(
 				1);
 		}
 
-		if (TEST_FLAG(input.player_control_flags, _player_control_input_zoom_bit) &&
+		/* port: this local passenger view has no weapon zoom, including a
+		scope held before entering the seat or enabling the setting. */
+		if (passenger_camera_enabled(local_player_index))
+		{
+			player->zoom_level = NONE;
+			if (unit->unit.current_zoom_level != NONE || unit->unit.desired_zoom_level != NONE)
+				unit_unzoom(player->unit_index);
+		}
+		else if (TEST_FLAG(input.player_control_flags, _player_control_input_zoom_bit) &&
 			player_control_camera_control_is_active() &&
 			current_weapon_index != NONE &&
 			!cinematic_in_progress())
@@ -1208,7 +1227,7 @@ static void get_local_player_input_blob(
 						and vertical invert */
 						extern int halo_linux_touch_look(short gamepad_index, real *yaw, real *pitch, real *gyro_yaw,
 							real *gyro_pitch);
-						extern int halo_linux_gyro_zoom_only(void);
+						extern int halo_linux_gyro_zoom_only(short gamepad_index);
 						real touch_yaw;
 						real touch_pitch;
 						real gyro_yaw;
@@ -1224,7 +1243,7 @@ static void get_local_player_input_blob(
 							/* (input.gyro_aim = "zoom": the gyroscope's turn only
 							while zoomed in, for fine aiming; read and dropped
 							otherwise, so that zooming in does not jump) */
-							if (control->zoom_level == NONE && halo_linux_gyro_zoom_only())
+							if (control->zoom_level == NONE && halo_linux_gyro_zoom_only(gamepad_index))
 							{
 								gyro_yaw = 0.f;
 								gyro_pitch = 0.f;
@@ -2112,6 +2131,8 @@ static void player_control_modify_desired_angles(
 		player->desired_angles.pitch,
 		player->pitch_minimum,
 		player->pitch_maximum);
+	/* port: the local camera and the passenger's weapon share the aiming bounds */
+	passenger_camera_clamp_facing(local_player_index, &player->desired_angles);
 
 	return;
 }

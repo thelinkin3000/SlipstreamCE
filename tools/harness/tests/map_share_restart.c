@@ -14,6 +14,8 @@ before). test_map_share_restart.py takes the constants and structures
 #include "harness.h"
 
 typedef unsigned short word;
+/* (a connection's socket: xnet.c's Winsock) */
+typedef int SOCKET;
 
 /* the allocator: each block followed by SLACK bytes of 0xFF, so that a bit
 read beyond a bitmap is had, and one cleared beyond it shows */
@@ -162,6 +164,12 @@ static void map_share_map_hash_remember(char const *path, byte const *hash)
 	(void)hash;
 }
 
+/* (map_share.c's: a downloaded map named in custom_maps' list of them) */
+static void downloaded_maps_mark(char const *path)
+{
+	(void)path;
+}
+
 static void custom_edition_maps_look_again(void)
 {
 	fake_looked_again++;
@@ -173,6 +181,18 @@ static boolean custom_edition_cache_present(char const *level_name, unsigned lon
 	(void)version;
 	snprintf(message, (size_t)size, "%s", fake_playable ? "" : "Your map can't be played.");
 	return fake_playable;
+}
+
+/* (the part files' writer: nothing waits with it here) */
+static void piece_writes_close(FILE *stream)
+{
+	if (stream)
+		fclose(stream);
+}
+
+static boolean piece_writes_busy(void)
+{
+	return FALSE;
 }
 
 static void download_fail(char const *reason)
@@ -213,6 +233,22 @@ static void connection_close(struct connection *connection, char const *reason)
 {
 	(void)reason;
 	connection->used = FALSE;
+}
+
+/* (the host's file connection, map_share.c's: none here) */
+static void fs_source_end(short state)
+{
+	map_share_globals.fs.state = state;
+}
+
+static void host_file_connection_publish(long machine_index)
+{
+	(void)machine_index;
+}
+
+static void host_file_connection_end(struct host_machine *machine)
+{
+	(void)machine;
 }
 
 #include "under_test.inc"

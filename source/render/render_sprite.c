@@ -90,6 +90,7 @@ symbols in this file:
 #include "tag_files/tag_files.h"
 #include "tag_files/tag_groups.h"
 #include "custom_edition_cache.h" /* port: port/linux/game/custom_edition_cache.c */
+#include "mcc_sprites.h" /* port: port/linux/game/mcc_sprites.c */
 #include "view_fov.h" /* port: port/linux/game/view_fov.c */
 
 /* ---------- constants */
@@ -165,6 +166,30 @@ static void build_sprite_compute_basis(
 	real_matrix4x3 *basis);
 
 /* ---------- globals */
+
+/* port: port/linux/src/port_config.c's */
+long config_integer(char const *name);
+unsigned long config_changes(void);
+
+/* port: display.big_sprite_limit, the sprites covering more than half the
+view drawn in a frame, the rest left out as the Xbox's 11 left them: each
+is a layer over most of the screen (the Halo level's falls, 11 mist sheets
+at 5.5 ms of a Switch Lite's GPU). Read again when a setting changes */
+static long build_sprite_big_limit(
+	void)
+{
+	static unsigned long read_at = (unsigned long)-1;
+	static long limit = 11;
+
+	if (read_at != config_changes())
+	{
+		read_at = config_changes();
+		limit = config_integer("display.big_sprite_limit");
+		if (limit < 0)
+			limit = 11;
+	}
+	return limit;
+}
 
 boolean debug_sprites;
 struct
@@ -503,18 +528,17 @@ void build_sprite(
 								transformed_origin.y;
 							point.z = (basis.forward.k*x + basis.left.k*y)*scale +
 								transformed_origin.z;
-							if (point.x<bounding_rectangle.x0)
-								bounding_rectangle.x0 = point.x;
-							if (point.x>bounding_rectangle.x1)
-								bounding_rectangle.x1 = point.x;
-							if (point.y<bounding_rectangle.y0)
-								bounding_rectangle.y0 = point.y;
-							if (point.y>bounding_rectangle.y1)
-								bounding_rectangle.y1 = point.y;
-							if (point.z<bounding_rectangle.z0)
-								bounding_rectangle.z0 = point.z;
-							if (point.z>bounding_rectangle.z1)
-								bounding_rectangle.z1 = point.z;
+							/* port: the same bounds without a branch each way, which the
+							compiler made stores and reloads of the rectangle on the
+							stack, each waiting on the compare before it (a fifth of
+							this function's time on the Switch): fminf and fmaxf pick
+							the same values, short of a NaN */
+							bounding_rectangle.x0 = fminf(point.x, bounding_rectangle.x0);
+							bounding_rectangle.x1 = fmaxf(point.x, bounding_rectangle.x1);
+							bounding_rectangle.y0 = fminf(point.y, bounding_rectangle.y0);
+							bounding_rectangle.y1 = fmaxf(point.y, bounding_rectangle.y1);
+							bounding_rectangle.z0 = fminf(point.z, bounding_rectangle.z0);
+							bounding_rectangle.z1 = fmaxf(point.z, bounding_rectangle.z1);
 							sprite_vertex->point = point;
 							sprite_vertex->texture_coordinates.x = u;
 							sprite_vertex->texture_coordinates.y = v;
@@ -534,7 +558,9 @@ void build_sprite(
 						real coverage = render_frustum_cube_view_fraction(&render.frustum, &bounding_rectangle);
 
 						build_sprite_globals.screen_coverage += coverage;
-						if (coverage>0.5f && build_sprite_globals.big_sprite_count++>10)
+						/* port: past display.big_sprite_limit sprites covering
+						half the view (the Xbox's 11), the rest left out */
+						if (coverage>0.5f && build_sprite_globals.big_sprite_count++>=build_sprite_big_limit())
 						{
 							group->sprite_count--;
 							data->sprite_count--;
@@ -784,6 +810,11 @@ static short build_sprite_get_group(
 		if (data->groups[group_index].bitmap == bitmap)
 			break;
 	}
+
+	/* port: MCC submits another bounded batch without losing bitmap pages. */
+	if (group_index == data->group_count && data->group_count == MAXIMUM_BUILD_SPRITE_GROUPS &&
+		mcc_sprites_continue(data))
+		group_index = 0;
 
 	/* port: a Halo PC map's particle may be drawn from more bitmaps than a
 	call takes (beavercreek_rev_beta's fluid bursts have a bitmap a frame, up

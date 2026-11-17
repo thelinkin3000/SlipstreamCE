@@ -14,11 +14,11 @@ Sources for the layouts, cited per structure below:
 - BlamLib, in the same archive: the font and unicode string list layouts.
 - Reclaimer (GPL-3.0, Gravemind2401; the Reclaimer-master archive): how
   bitmap tags and pixel data are found in bitmaps.map.
-No code from either project is used: they are documentation here, and this
-repository is CC0. Facts that neither source states were established by
-reading the sample Custom Edition maps; the comments below say so where they
-are used ("observed", "every map examined"), and
-docs/custom_edition_caches.md lists each with its evidence.
+No code from either project is used: they are documentation here. Facts
+that neither source states were established by reading the sample Custom
+Edition maps; the comments below say so where they are used ("observed",
+"every map examined"), and docs/custom_edition_caches.md lists each with its
+evidence.
 */
 
 /* ---------- headers */
@@ -89,6 +89,9 @@ cache_files_structures.hpp, s_cache_tag_header and s_cache_tag_instance) */
 #define TAG_INSTANCE_NAME_OFFSET 0x10
 #define TAG_INSTANCE_ADDRESS_OFFSET 0x14
 #define TAG_INSTANCE_IN_RESOURCE_MAP_OFFSET 0x18
+/* the second of the instance's unused words, left zero: its first byte is
+an empty name for tags whose own is unusable */
+#define TAG_INSTANCE_EMPTY_NAME_OFFSET 0x1C
 /* the longest tag path a name may hold, terminator excluded */
 #define TAG_NAME_MAXIMUM_LENGTH 255
 
@@ -330,6 +333,11 @@ Xbox's 102 (ui_widget_event_handler_functions.c), which this build has not */
 #define UI_WIDGET_CHILD_BYTES 0x50
 #define UI_WIDGET_CHILD_VERTICAL_OFFSET 0x36
 #define XBOX_WIDGET_FUNCTION_COUNT 102
+/* its game data inputs (struct ui_widget_game_data_input_reference: the
+function first), of which the Xbox has 41 */
+#define UI_WIDGET_GAME_DATA_INPUTS_OFFSET 0x48
+#define UI_WIDGET_GAME_DATA_INPUT_BYTES 0x24
+#define XBOX_GAME_DATA_INPUT_COUNT 41
 /* the multiplayer pause menu's list, and the Xbox's two items of it */
 #define MULTIPLAYER_PAUSE_LIST_NAME "ui\\shell\\multiplayer_game\\pause_game\\mp_pause_list"
 #define MULTIPLAYER_PAUSE_RESUME_NAME "resume_game_button"
@@ -752,7 +760,15 @@ static struct element_layout const transparent_chicago_extended_layout =
 {
 	TRANSPARENT_CHICAGO_EXTENDED_BYTES, transparent_chicago_extended_blocks, 3, NULL, 0, NULL
 };
+static custom_edition_structure_bsp_proc structure_bsp_proc = NULL;
 
+void custom_edition_structure_bsp_proc_set(
+	custom_edition_structure_bsp_proc proc)
+{
+	structure_bsp_proc = proc;
+
+	return;
+}
 /* The value of the type field each shader group has in Custom Edition, which
 inserted transparent chicago extended at 7 (OpenSauce
 shader_definitions.hpp, e_shader_type), and in this build (shaders.c); a
@@ -1146,12 +1162,37 @@ static enum cache_file_status load_fail(
 
 /* the offset in the tag cache of the runtime address `address`, when
 `size` bytes there lie within the bytes in use */
+#if defined(HALO_ANDROID) || defined(HALO_MOVABLE_WINDOW)
+/* how far the tag cache is from CUSTOM_EDITION_TAG_CACHE_ADDRESS
+(port/linux/include/halo_port_window.h: port/linux/src/xbox_memory.c) */
+extern unsigned long platform_custom_edition_shift;
+#endif
+
+/* an address in the tag cache as its map was written for: the game moves
+the tag directory's (cache_files.c) and the structure BSPs' to where the tag
+cache is, once the map has loaded, and the walks below take either */
+static uint32_t tag_cache_written_address(
+	uint32_t address)
+{
+#if defined(HALO_ANDROID) || defined(HALO_MOVABLE_WINDOW)
+	uint32_t shift = (uint32_t)platform_custom_edition_shift;
+
+	if (shift && address - (CUSTOM_EDITION_TAG_CACHE_ADDRESS + shift) < CUSTOM_EDITION_TAG_CACHE_BYTES)
+	{
+		return address - shift;
+	}
+#endif
+
+	return address;
+}
+
 static int tag_cache_offset(
 	struct load_state const *state,
 	uint32_t address,
 	uint32_t size,
 	uint32_t *offset)
 {
+	address = tag_cache_written_address(address);
 	if (address < CUSTOM_EDITION_TAG_CACHE_ADDRESS ||
 		!range_fits(address - CUSTOM_EDITION_TAG_CACHE_ADDRESS, size, state->used_bytes))
 	{
@@ -1720,8 +1761,10 @@ static int loaded_block_get(
 	int32_t *count,
 	uint32_t *offset)
 {
-	uint32_t block_address = read_u32(block + TAG_BLOCK_ADDRESS_OFFSET);
+	/* (either as the map was written for or moved: tag_cache_written_address) */
+	uint32_t block_address = tag_cache_written_address(read_u32(block + TAG_BLOCK_ADDRESS_OFFSET));
 
+	address = tag_cache_written_address(address);
 	*count = read_s32(block + TAG_BLOCK_COUNT_OFFSET);
 	*offset = block_address - address;
 
@@ -1858,7 +1901,7 @@ static enum cache_file_status structure_bsp_geometry_verify(
 
 static enum cache_file_status structure_bsps_verify(
 	struct load_state *state,
-	uint8_t const *tag_instances,
+	uint8_t *tag_instances,
 	int32_t tag_count,
 	uint32_t scenario_offset,
 	uint32_t *checksum)
@@ -1891,6 +1934,23 @@ static enum cache_file_status structure_bsps_verify(
 		uint32_t bsp_pointer;
 		enum cache_file_status status;
 
+		/* port: map protection can rename a structure BSP's group, as it does the
+		scenario's; a tag the scenario names as one, with no address yet (a BSP has
+		none until it loads) and not held by a resource map, is one */
+		if (tag_index < (uint32_t)tag_count)
+		{
+			uint8_t *bsp_instance = tag_instances + tag_index * TAG_INSTANCE_BYTES;
+
+			if (read_u32(bsp_instance + TAG_INSTANCE_HANDLE_OFFSET) == tag_handle &&
+				read_u32(bsp_instance + TAG_INSTANCE_GROUP_OFFSET) != STRUCTURE_BSP_GROUP_TAG &&
+				!read_u32(bsp_instance + TAG_INSTANCE_ADDRESS_OFFSET) &&
+				!read_u32(bsp_instance + TAG_INSTANCE_IN_RESOURCE_MAP_OFFSET))
+			{
+				write_u32(bsp_instance + TAG_INSTANCE_GROUP_OFFSET, STRUCTURE_BSP_GROUP_TAG);
+				write_u32(bsp_instance + TAG_INSTANCE_PARENT_GROUP_OFFSET, NO_GROUP_TAG);
+				write_u32(bsp_instance + TAG_INSTANCE_PARENT_GROUP_OFFSET + 4, NO_GROUP_TAG);
+			}
+		}
 		/* the tag the reference names: a structure BSP, not yet loaded */
 		if (tag_index >= (uint32_t)tag_count ||
 			read_u32(tag_instances + tag_index * TAG_INSTANCE_BYTES + TAG_INSTANCE_HANDLE_OFFSET) != tag_handle ||
@@ -1929,6 +1989,19 @@ static enum cache_file_status structure_bsps_verify(
 		{
 			free(bsp);
 			return load_fail(state, _cache_file_status_bad_structure_bsp_header, (uint32_t)file_offset);
+		}
+		/* port: the references a protected map's bsp holds name the groups of
+		tags whose own are scrambled (tag_validate.c) */
+		if (structure_bsp_proc)
+		{
+			structure_bsp_proc(
+				state->tag_cache,
+				state->used_bytes,
+				bsp_index,
+				bsp,
+				(uint32_t)size,
+				bsp_address,
+				state->report->identity.name);
 		}
 		status = structure_bsp_geometry_verify(state, bsp, (uint32_t)size, bsp_address);
 		free(bsp);
@@ -2324,7 +2397,11 @@ enum cache_file_status custom_edition_cache_load(
 		{
 			return load_fail(&state, _cache_file_status_bad_tag_handle, handle);
 		}
-		if (!tag_name_get(&state, instance))
+		/* port: a protected map's tag names may lie anywhere; only a tag held by a
+		resource map needs its name (to find its entry), and is checked again
+		below. The others are given an empty name after the checksum. */
+		if (read_u32(instance + TAG_INSTANCE_IN_RESOURCE_MAP_OFFSET) &&
+			!tag_name_get(&state, instance))
 		{
 			return load_fail(&state, _cache_file_status_bad_tag_name, read_u32(instance + TAG_INSTANCE_NAME_OFFSET));
 		}
@@ -2347,7 +2424,10 @@ enum cache_file_status custom_edition_cache_load(
 			is past the tags */
 			write_u32(instance + TAG_INSTANCE_ADDRESS_OFFSET, 0);
 		}
-		else if (!address || !tag_cache_offset(&state, address, 1, &offset))
+		/* port: a protected map may leave a tag without data (address 0), which
+		Halo PC tolerates while nothing reads it; the validator refuses any
+		reference to such a tag (tag_validate.c) */
+		else if (address && !tag_cache_offset(&state, address, 1, &offset))
 		{
 			return load_fail(&state, _cache_file_status_bad_tag_address, address);
 		}
@@ -2403,6 +2483,26 @@ enum cache_file_status custom_edition_cache_load(
 	{
 		report->warnings |= 1UL << _custom_edition_warning_checksum_mismatch_bit;
 	}
+
+	/* port: a name that lies outside the tag data or is not terminated (map
+	protection scrambles them; Halo PC never needed them) becomes an empty
+	one: a zero byte in the tag's own instance. tag_validate.c then makes
+	it its own empty name. */
+	for (tag_index_value = 0; tag_index_value < tag_count; tag_index_value++)
+	{
+		uint8_t *instance = tag_instances + (uint32_t)tag_index_value * TAG_INSTANCE_BYTES;
+
+		state.tag_index = tag_index_value;
+		if (!read_u32(instance + TAG_INSTANCE_IN_RESOURCE_MAP_OFFSET) && !tag_name_get(&state, instance))
+		{
+			write_u32(instance + TAG_INSTANCE_EMPTY_NAME_OFFSET, 0);
+			write_u32(
+				instance + TAG_INSTANCE_NAME_OFFSET,
+				CUSTOM_EDITION_TAG_CACHE_ADDRESS + instances_offset +
+					(uint32_t)tag_index_value * TAG_INSTANCE_BYTES + TAG_INSTANCE_EMPTY_NAME_OFFSET);
+		}
+	}
+	state.tag_index = NO_TAG_INDEX;
 
 	/* the tags held by resource maps, placed after the tag data */
 	for (tag_index_value = 0; tag_index_value < tag_count; tag_index_value++)
@@ -2460,6 +2560,10 @@ enum cache_file_status custom_edition_cache_load(
 			continue;
 		}
 		state.tag_index = tag_index_value;
+		if (!read_u32(instance + TAG_INSTANCE_ADDRESS_OFFSET))
+		{
+			continue;
+		}
 		if (!tag_cache_offset(&state, read_u32(instance + TAG_INSTANCE_ADDRESS_OFFSET), layout->bytes, &offset))
 		{
 			return load_fail(&state, _cache_file_status_bad_tag_address, read_u32(instance + TAG_INSTANCE_ADDRESS_OFFSET));
@@ -3452,19 +3556,36 @@ static void multiplayer_score_hint_convert(
 }
 
 /* Halo PC's widgets run its own functions besides the Xbox's, numbered past
-them: this build has none of those (its menus' own are other numbers, from
-PC_MENU_FUNCTION_BASE), and a handler running one would only log an invalid
-function. Those handlers run none. */
+them: this build answers none by those numbers (its menus' own are other
+numbers, from PC_MENU_FUNCTION_BASE), and a handler running one would only
+log an invalid function. Those handlers run none, unless the port gives the
+function a number of its own (custom_edition_widget_renumber_set: a custom
+campaign's ui.map), as it does the game data inputs past the Xbox's 41. */
+static custom_edition_widget_renumber_proc widget_event_function_renumber;
+static custom_edition_widget_renumber_proc widget_game_data_input_renumber;
+
+void custom_edition_widget_renumber_set(
+	custom_edition_widget_renumber_proc event_function,
+	custom_edition_widget_renumber_proc game_data_input)
+{
+	widget_event_function_renumber = event_function;
+	widget_game_data_input_renumber = game_data_input;
+}
+
 static void widget_pc_functions_clear(
 	struct load_state const *state,
 	uint32_t widget_offset,
+	char const *map_name,
 	struct custom_edition_conversion_report *report)
 {
 	int32_t handler_count;
 	uint32_t handlers_offset;
 	int32_t handler_index;
+	int32_t input_count;
+	uint32_t inputs_offset;
+	int32_t input_index;
 
-	if (!loaded_block_get(
+	if (loaded_block_get(
 			state->tag_cache + widget_offset + UI_WIDGET_EVENT_HANDLERS_OFFSET,
 			CUSTOM_EDITION_TAG_CACHE_ADDRESS,
 			state->used_bytes,
@@ -3472,18 +3593,49 @@ static void widget_pc_functions_clear(
 			&handler_count,
 			&handlers_offset))
 	{
-		return;
-	}
-	for (handler_index = 0; handler_index < handler_count; handler_index++)
-	{
-		uint8_t *handler = state->tag_cache + handlers_offset + (uint32_t)handler_index * UI_WIDGET_EVENT_HANDLER_BYTES;
-		uint32_t flags = read_u32(handler + UI_WIDGET_EVENT_HANDLER_FLAGS_OFFSET);
-
-		if ((flags & UI_WIDGET_EVENT_HANDLER_RUN_FUNCTION_FLAG) &&
-			read_s16(handler + UI_WIDGET_EVENT_HANDLER_FUNCTION_OFFSET) >= XBOX_WIDGET_FUNCTION_COUNT)
+		for (handler_index = 0; handler_index < handler_count; handler_index++)
 		{
+			uint8_t *handler = state->tag_cache + handlers_offset + (uint32_t)handler_index * UI_WIDGET_EVENT_HANDLER_BYTES;
+			uint32_t flags = read_u32(handler + UI_WIDGET_EVENT_HANDLER_FLAGS_OFFSET);
+			int16_t function = read_s16(handler + UI_WIDGET_EVENT_HANDLER_FUNCTION_OFFSET);
+			long renumbered;
+
+			if (!(flags & UI_WIDGET_EVENT_HANDLER_RUN_FUNCTION_FLAG) || function < XBOX_WIDGET_FUNCTION_COUNT)
+				continue;
+			renumbered = widget_event_function_renumber ? widget_event_function_renumber(map_name, function) : -1;
+			if (renumbered >= 0 && renumbered <= INT16_MAX)
+			{
+				write_u16(handler + UI_WIDGET_EVENT_HANDLER_FUNCTION_OFFSET, (uint16_t)renumbered);
+				report->widget_functions_renumbered++;
+				continue;
+			}
 			write_u32(handler + UI_WIDGET_EVENT_HANDLER_FLAGS_OFFSET, flags & ~UI_WIDGET_EVENT_HANDLER_RUN_FUNCTION_FLAG);
 			report->widget_functions_cleared++;
+		}
+	}
+	if (widget_game_data_input_renumber &&
+		loaded_block_get(
+			state->tag_cache + widget_offset + UI_WIDGET_GAME_DATA_INPUTS_OFFSET,
+			CUSTOM_EDITION_TAG_CACHE_ADDRESS,
+			state->used_bytes,
+			UI_WIDGET_GAME_DATA_INPUT_BYTES,
+			&input_count,
+			&inputs_offset))
+	{
+		for (input_index = 0; input_index < input_count; input_index++)
+		{
+			uint8_t *input = state->tag_cache + inputs_offset + (uint32_t)input_index * UI_WIDGET_GAME_DATA_INPUT_BYTES;
+			int16_t function = read_s16(input);
+			long renumbered;
+
+			if (function < XBOX_GAME_DATA_INPUT_COUNT)
+				continue;
+			renumbered = widget_game_data_input_renumber(map_name, function);
+			if (renumbered >= 0 && renumbered <= INT16_MAX)
+			{
+				write_u16(input, (uint16_t)renumbered);
+				report->widget_inputs_renumbered++;
+			}
 		}
 	}
 
@@ -3572,6 +3724,8 @@ static struct custom_edition_behaviour_map
 } const custom_edition_behaviour_maps[] =
 {
 #include "custom_edition_behaviours.inc"
+	/* Locally verified HUD data; not part of Chimera's generated list. */
+	{ "bigass_open_v1.1", 0xD2BC19F7, BEHAVIOUR(hud_number_scale) | BEHAVIOUR(xbox_ammo_meter_channels) },
 };
 
 #undef BEHAVIOUR
@@ -3590,6 +3744,7 @@ static char const *const custom_edition_behaviour_names[NUMBER_OF_CUSTOM_EDITION
 	"old_widescreen_fix",
 	"gearbox_shader_environment_types",
 	"block_multitexture_overlays",
+	"xbox_ammo_meter_channels",
 };
 
 /* the behaviours the map named `map_name` relies on, found as Chimera finds
@@ -3774,11 +3929,15 @@ enum cache_file_status custom_edition_cache_convert(
 		if (group_tag == UI_WIDGET_DEFINITION_GROUP_TAG &&
 			tag_cache_offset(&state, read_u32(instance + TAG_INSTANCE_ADDRESS_OFFSET), UI_WIDGET_DEFINITION_BYTES, &offset))
 		{
-			widget_pc_functions_clear(&state, offset, report);
+			widget_pc_functions_clear(&state, offset, map_name, report);
 			if (!strcmp(custom_edition_cache_tag_name(tag_cache, loaded_bytes, tag_index), MULTIPLAYER_PAUSE_LIST_NAME))
 				multiplayer_pause_list_convert(&state, offset, report);
 		}
 		if (!shader_type)
+		{
+			continue;
+		}
+		if (!read_u32(instance + TAG_INSTANCE_ADDRESS_OFFSET))
 		{
 			continue;
 		}

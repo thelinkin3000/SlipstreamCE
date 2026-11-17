@@ -2,17 +2,17 @@
 
 A mod is a folder of Halo PC tag files that the game plays over a map's own
 tags on your machine, as a resource pack does: sounds (a high-res audio
-pack), bitmaps (a texture pack, a HUD redraw) and text (a translation). Only
-the machine that has a mod plays it. Nothing of a mod is sent to another
-machine, and a mod changes nothing that the machines of a network game must
-agree on, so you can play with mods in any game, with players who have
-other mods or none. (A host's mod sounds of other lengths change how long
+pack), bitmaps (a texture pack, a HUD redraw), text (a translation) and
+models (higher-detail weapons, vehicles and scenery). Only the machine that
+has a mod plays it. Nothing of a mod is sent to another machine, and a mod
+changes nothing that the machines of a network game must agree on, so you
+can play with mods in any game, with players who have other mods or none. (A host's mod sounds of other lengths change how long
 the host's scripts and AI wait for dialogue to end; the host decides those
 for every machine, so they still agree.)
 
 The game's code is `port/linux/game/mods.c` (with `mod_sounds.c`,
-`mod_bitmaps.c` and `mod_strings.c`, one for each kind of tag) and
-`port/linux/src/port_mods.c` (the mods folder and its files).
+`mod_bitmaps.c`, `mod_strings.c` and `mod_models.c`, one for each kind of
+tag) and `port/linux/src/port_mods.c` (the mods folder and its files).
 
 ## A mod's folder
 
@@ -55,6 +55,7 @@ load_after = ["hd_textures"]  # mods it plays over: they load before it
 load_before = ["fixes"]       # mods that play over it: they load after it
 incompatible = ["other_audio"]  # mods it cannot be played with
 format = 1                    # the mods' format it is made for
+channel_order = "pc"          # "xbox": its multipurpose maps and HUD meters are in the Xbox's channel order
 ```
 
 `load_after`, `load_before` and `incompatible` name other mods by their `id`
@@ -95,6 +96,10 @@ later plays.
   or off (ON, OFF); left and right, or **Move up** and **Move down**, move
   the chosen mod (up: over one more mod). **OK** keeps the order and plays
   it at once (on a map that is loaded, too); **Cancel** leaves it as it was.
+- On Android the menu has a row fewer and two more buttons: **Import**
+  (below), and **Delete**, which deletes the chosen mod's folder at a
+  second press. Both keep the order and the mods turned on or off as **OK**
+  does, then find the mods again and play them.
 - A warning sign beside a mod means it is on the wrong side of a mod it
   asks to load before or after (both on): a mod that loads after another is
   above it in the menu. A red cross means a mod that is on says it cannot be
@@ -135,7 +140,7 @@ At the console:
 
 | Command | What it does |
 | --- | --- |
-| `mods_list` | Lists the mods in the mods folder in their load order, and which are on, then how many of the map's string lists, bitmaps and sounds the mods play. |
+| `mods_list` | Lists the mods in the mods folder in their load order, and which are on, then how many of the map's string lists, bitmaps, sounds and models the mods play. |
 | `mods_reload` | Finds the mods again and reads their files again: a changed file is read again (one that now fails a check leaves what was played before), a new one is played, and the map's tag comes back for a file that is gone. If a sound changed, all sounds stop. It does nothing while `mods_enable false`. |
 | `mods_enable false` | Plays the map's own tags until `mods_enable true` or the next map. |
 
@@ -145,9 +150,16 @@ game.
 ### Getting a mod onto each platform
 
 - **Linux, Windows**: put the mod's folder in `mods/` next to `maps/`.
-- **Android**: put it in `mods/` in the app's data folder,
-  `/sdcard/Android/data/com.halo.decomp/files/mods`, for example with
-  `adb push hd_audio /sdcard/Android/data/com.halo.decomp/files/mods/`.
+- **Android**: in the Mods menu, **Import** takes mods from `.zip` files
+  (the system's file picker, several at once). A mod's `.zip` holds its
+  folder's files as they are laid out in it, `mod.toml` and `tags/` at the
+  top, and becomes a folder of the `.zip`'s name (`hd_audio.zip` is
+  `mods/hd_audio`). It is unpacked into `mods/.import` first and kept only
+  once it is whole and has a `mod.toml`; a `.zip` whose name the mods
+  folder has already is passed over (delete that mod first). Or put the
+  folder in `mods/` in the app's data folder,
+  `/sdcard/Android/data/ar.com.slipstreamce/files/mods`, for example with
+  `adb push hd_audio /sdcard/Android/data/ar.com.slipstreamce/files/mods/`.
 - **Web**: on the page, **Mods**, **Add a mod folder…** copies a mod's
   `mod.toml` and `tags` folder into the browser's storage for the site.
   **Remove** deletes it again.
@@ -155,8 +167,9 @@ game.
 ## What a mod can replace
 
 The game plays these groups from a mod. It does not read the files of any
-other group (a `.weapon` or `.scenario`, for example): they would change what
-the machines of a network game must agree on.
+other group (a `.weapon`, `.vehicle`, `.model_collision_geometry` or
+`.scenario`, for example): they would change what the machines of a network
+game must agree on.
 
 | Group | Extension | What it is |
 | --- | --- | --- |
@@ -164,9 +177,11 @@ the machines of a network game must agree on.
 | Bitmap | `.bitmap` | Textures, sprites, the HUD's pictures |
 | Unicode string list | `.unicode_string_list` | The text the game shows |
 | String list | `.string_list` | Other text |
+| Model | `.gbxmodel` (Halo PC's), `.model` (the Xbox's) | What objects look like: weapons, first-person weapons and arms, vehicles, scenery, characters |
 
 A file must be a Halo PC tag file of its group, as the Halo Editing Kit's
-tools and Invader write them. The game checks every count, size and offset
+tools and Invader write them (a model also as `invader-extract` writes an
+Xbox map's: `.model`). The game checks every count, size and offset
 in it against the file, and every value against what the game reads, before
 it uses the file. A file that fails a check is left out (the map's tag
 plays), and `debug.txt` and the console say why.
@@ -208,7 +223,10 @@ plays), and `debug.txt` and the console say why.
 - Halo PC keeps the channels of a model shader's multipurpose maps and of
   the HUD's meters in another order than the Xbox. The game finds those
   bitmaps among the mod's and draws them in the Xbox's order, as it does for
-  Custom Edition maps (`custom_edition_bitmaps.c`).
+  Custom Edition maps (`custom_edition_bitmaps.c`). A mod whose bitmaps are
+  already in the Xbox's order (taken from an Xbox map, say) says
+  `channel_order = "xbox"` in `mod.toml`, and they are drawn as they are.
+  It is the whole mod's: keep bitmaps of the two orders in two mods.
 - The pixels are read from the file when the texture cache loads them, not
   kept in memory.
 
@@ -226,13 +244,74 @@ plays), and `debug.txt` and the console say why.
   Xbox's menus (`display.menus = "xbox"`) and the text shown while playing
   (HUD messages, the multiplayer messages, the pause menu).
 
+### Models
+
+A model is more than what is drawn: its nodes (its skeleton) are what its
+animations move, its markers are where projectiles leave a weapon, where a
+unit sits and where things attach, and its regions and permutations are what
+damage and an object's variant choose among. The machines of a network game
+agree on those, so a mod's model must have the map's:
+
+- the same nodes: their names, hierarchy and default positions;
+- the same markers: their names, regions, permutations, nodes, positions
+  and rotations (on the model's permutations, as the Halo Editing Kit keeps
+  them, or on the model, as a map does);
+- the same regions and permutations: their names and flags.
+
+Positions and rotations may differ from the map's by 0.001 at most (a model
+exported again is not always bit for bit the map's). Only what is drawn is
+the mod's: the geometries, their parts and vertices, which geometry each
+permutation draws at each detail level, the detail levels' cutoffs, the
+base map's scale, and which shaders each part is drawn with. A detail level
+the map draws must draw one of the mod's geometries, and one the map draws
+nothing at stays so. Every shader must be one the map has (a mod cannot add
+tags); a mod's bitmaps can redraw them.
+
+The model is checked against each map's own model of its name as that map
+loads. On a map whose model of that name has other nodes, markers or
+regions (a custom map's own assault rifle, say), or lacks a shader the mod
+names, the mod's model is left out and the map's drawn; the mod's other
+files still play there. `maps` in `mod.toml` keeps a mod to the maps it is
+made for.
+
+- Where a mod has both, its `.gbxmodel` plays; otherwise the file of the mod
+  loaded later, whichever its format.
+- What the tool works out as it builds a map is worked out as it does: a
+  part's strip is its triangles block, its centroid's nodes are its most
+  weighted, its links of 0 to the parts drawn before and after it are none,
+  a base map scale of 0 is 1, and a model whose tag asks for it has the
+  normals of its vertices that share a position blended. The vertices are
+  compressed as the game draws them.
+- A part's links to the parts drawn before and after it (for transparency)
+  must not go round.
+- A model of 44 nodes or more (the renderer skins 43 at once; only Custom
+  Edition maps' have so many) is drawn a part's own nodes at a time, as a
+  Custom Edition map's is: a part's vertices may name 22 nodes at most.
+- The collision geometry, the animations and the object's tag are the map's:
+  a larger weapon still hits and is hit where the map's does, and an object
+  is still left undrawn by the map's bounds of it (a much larger model may
+  vanish at the screen's edges).
+- Every model made from a file is kept until the map changes, a file edited
+  and read again by `mods_reload` too, and counts against the mods' memory.
+
+### Shaders
+
+A model's parts can be drawn with a shader of every group Halo PC has but
+one: `shader_transparent_chicago_extended`, which Gearbox added for Halo PC.
+The Xbox game does not have it, so do not use it: use a
+`shader_transparent_chicago` shader instead. (A Custom Edition map's
+chicago extended shaders become chicago shaders as the map loads, keeping
+only their four-stage maps: see
+[custom_edition_caches.md](custom_edition_caches.md).) As for every
+shader, it must be one the map has.
+
 ## Making a mod
 
 1. Get the tags you want to change as tag files. `invader-extract` extracts
    them from a map, and the Halo Editing Kit's tags are Halo PC's own.
-2. Change them with the Halo Editing Kit or Invader (`invader-bitmap` and
-   `invader-sound` build bitmaps and sounds from images and audio files).
-   Keep each tag's name.
+2. Change them with the Halo Editing Kit or Invader (`invader-bitmap`,
+   `invader-sound` and `invader-model` build bitmaps, sounds and models from
+   images, audio files and JMS files). Keep each tag's name.
 3. Put them in `tags/` of a folder in `mods/`, with a `mod.toml`.
 4. Load a map (a new mod is on). `mods_reload` at the console reads the
    files again as you change them, without loading the map again.
@@ -245,18 +324,21 @@ mods: 9 string lists from their files (9 new), 0 given back, 0 left out
 mods: 66 HUD placements scaled to draw larger bitmaps at the map's size
 mods: 354 bitmaps from their files (354 new), 0 given back, 6 left out
 mods: 313 sounds from their files (313 new), 0 given back, 2 left out
+mods: 4 models from their files (4 new), 0 given back, 1 left out
 ```
 
 ## How it operates
 
 - When a map's tags load, at `mods_reload` and at the Mods menu's **OK**,
-  the game lists the files of the mods that are on, once, in a table of their tag paths. Each of the
-  map's sound, bitmap and string list tags is looked up in it.
+  the game lists the files of the mods that are on, once, in a table of
+  their tag paths. Each of the map's sound, bitmap, string list and model
+  tags is looked up in it.
 - A tag replaced by a mod takes the file's values in place, so everything
   that holds the tag keeps it, and the map's own values come back when the
   file goes. A sound playing or a texture in the cache is never changed
   under the game: before a reload changes anything, the sounds stop and the
   caches let go of what they hold.
 - The mods' tags keep at most 512 MB in memory (192 MB on Android and the
-  web): their files, their sounds' samples and their bitmaps' tags.
+  web): their files, their sounds' samples, their bitmaps' tags and their
+  models' geometry.
 - A Custom Edition map takes mods as an Xbox map does.

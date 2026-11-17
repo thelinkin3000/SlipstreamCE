@@ -32,8 +32,14 @@ marked as touch */
 void touch_input_menu_read(struct platform_ui_pointer *pointer);
 
 /* outside the menus, presses A for a few polls after a tap when a
-cinematic can be skipped (the on-screen controls: touch_input_controls) */
+cinematic can be skipped, or voted to skip in network co-op: on its skip
+button where one shows (port/linux/game/touch_cinematic.c) (the on-screen
+controls: touch_input_controls) */
 void touch_input_gamepad(XINPUT_GAMEPAD *pad);
+/* the taps outside the menus since the last call while the text chat's
+on-screen keyboard is up (port/linux/game/network_chat.c), and where the
+latest was, 0 to 1 across and down the window */
+int touch_input_chat_taps(float *x, float *y);
 
 #if defined(HALO_ANDROID) || defined(HALO_WEB)
 /* the on-screen touch controls (port/android/app/.../TouchControls.java; in
@@ -59,6 +65,22 @@ int touch_input_aim_assist(void);
 
 /* port 0's motors, for the phone's vibration while the touch controls show */
 void touch_input_rumble(unsigned int left, unsigned int right);
+#endif
+
+#ifdef HALO_ANDROID
+/* whether the game's own touchscreen buttons show (the carnage report's:
+port/linux/game/touch_postgame.c), as the touch controls would: on a
+touchscreen, with input.touch_controls "on", or "auto" while no controller
+is connected */
+int touch_input_screen_buttons(void);
+
+/* a replay's buttons on the screen (port/linux/game/network_replay_playback.c),
+for the touch controls to press: count of them, each
+TOUCH_REPLAY_TARGET_FIELDS ints (x0, y0, x1, y1 in ten-thousandths of the
+screen, and the game's controller button, input.h's, it holds down) */
+#define TOUCH_REPLAY_MAXIMUM_TARGETS 16
+#define TOUCH_REPLAY_TARGET_FIELDS 5
+void touch_input_replay_targets(const int *targets, int count);
 #endif
 
 #endif

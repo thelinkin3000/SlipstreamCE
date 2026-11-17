@@ -4,14 +4,23 @@ HOST_VK_VISIBILITY.C
 The Vulkan renderer's host half, phase 6, step 6 (port/android/VULKAN.md): the game's visibility tests (lens flares), as
 occlusion queries. The guest sends VK_COMMAND_VISIBILITY_BEGIN where the game begins a test and VK_COMMAND_VISIBILITY_END (the
 game's slot and the pixels each of the game's pixels covers in the target) where it ends it; the draws between are the test's. A query may
-not span a rendering's end, so a test takes a group of four query slots (reset together at its beginning, outside rendering) and
-each rendering it spans uses one of them (more than four are not counted: said once); the parts are added up.
+not span a rendering's end, so a test takes a group of four query slots and each rendering it spans uses one of them (more than
+four are not counted: said once); the parts are added up.
+
+Each frame slot has half the pool's groups, all reset as its command buffer begins (host_vk_visibility_frame_begin), outside any
+rendering, and a test takes the next of them: a test begins inside the rendering it is in. It used to reset its group as it began,
+which must be outside a rendering: each test ended the screen's rendering and began it again, and on a phone's GPU that is the
+screen stored out of tile memory and loaded back - in a10's cryo bay, a hundred lens flares a frame, 90 of a 95 ms frame on an
+Adreno 840 at 2464x1848 with 4x MSAA. A frame with more tests than its half has leaves the rest untested (their latest counts
+stay), said once.
 
 At the frame's end the results are copied (vkCmdCopyQueryPoolResults, outside rendering, waiting on the queries) into a
 host-visible buffer of the frame's slot; when that frame's fence has next passed, each test's samples are divided by the
 target's scale area (visibility_unscaled in d3d8_gl.c: the game divides by its own test's area, so a count at the screen's scale
 would make flares too bright) and kept as the slot's latest count. host_vk_visibility gives the latest count and never waits, as
-d3d8_gl.c's query buffer path: the latest from this test, or from an earlier one while the GPU is behind.
+d3d8_gl.c's query buffer path: the latest from this test, or from an earlier one while the GPU is behind. With it, in the same word,
+goes the number the guest gave the test (VISIBILITY_END's), so the guest knows whose count it is: a dropped test (the frame's
+groups all taken, no draw in it, left open at the frame's end) never gives its number.
 */
 
 #include "host.h"
@@ -26,12 +35,16 @@ d3d8_gl.c's query buffer path: the latest from this test, or from an earlier one
 #define SLOTS 4096
 #define PARTS 4
 #define GROUPS (SLOTS / PARTS)
+/* each frame slot's groups */
+#define FRAME_GROUPS (GROUPS / HOST_VK_FRAMES)
 
 struct test
 {
 	uint32_t index;
 	float area;
 	uint32_t group, parts;
+	/* the guest's number of the test (VISIBILITY_END's) */
+	uint32_t number;
 };
 
 static struct
@@ -41,15 +54,17 @@ static struct
 	/* the test being made */
 	int active, open;
 	struct test current;
-	uint32_t next_group;
+	/* the groups each frame slot has taken since its command buffer began */
+	uint32_t frame_groups[HOST_VK_FRAMES];
+	unsigned reported_frame_full;
 	/* each frame slot's tests and the buffer their results are copied into */
 	struct test *tests[HOST_VK_FRAMES];
 	unsigned count[HOST_VK_FRAMES], capacity[HOST_VK_FRAMES];
 	VkBuffer buffer[HOST_VK_FRAMES];
 	VkDeviceMemory memory[HOST_VK_FRAMES];
 	uint32_t *mapped[HOST_VK_FRAMES];
-	/* the latest count of each of the game's slots */
-	uint32_t latest[SLOTS];
+	/* the latest count of each of the game's slots (the low 32 bits) and the number of its test (the high) */
+	uint64_t latest[SLOTS];
 	unsigned reported_over;
 } V;
 
@@ -103,20 +118,36 @@ void host_vk_visibility_draw(VkCommandBuffer command)
 	V.open = 1;
 }
 
+/* the frame slot's command buffer just begun: its groups reset, outside any rendering */
+void host_vk_visibility_frame_begin(unsigned slot, VkCommandBuffer command)
+{
+	if (!V.ready)
+		return;
+	vkCmdResetQueryPool(command, V.pool, slot * FRAME_GROUPS * PARTS, FRAME_GROUPS * PARTS);
+	V.frame_groups[slot] = 0;
+}
+
 void host_vk_visibility_begin(void)
 {
-	VkCommandBuffer command;
+	unsigned slot;
 
 	if (!V.ready)
 		return;
 	if (V.active)
 		host_vk_visibility_close(host_vk_frame_command());
-	/* the group's queries are reset outside a rendering */
-	host_vk_rendering_end();
-	command = host_vk_frame_command();
+	/* (the frame's command buffer begun, and so its groups reset) */
+	host_vk_frame_command();
+	slot = (unsigned)B.frame;
+	V.active = 0;
+	if (V.frame_groups[slot] >= FRAME_GROUPS)
+	{
+		if (!V.reported_frame_full++)
+			host_logf(HOST_LOG_WARN, "vk: more than %d visibility tests in a frame; the rest keep their latest counts",
+				FRAME_GROUPS);
+		return;
+	}
 	memset(&V.current, 0, sizeof(V.current));
-	V.current.group = V.next_group++ % GROUPS;
-	vkCmdResetQueryPool(command, V.pool, V.current.group * PARTS, PARTS);
+	V.current.group = slot * FRAME_GROUPS + V.frame_groups[slot]++;
 	V.active = 1;
 }
 
@@ -130,6 +161,7 @@ void host_vk_visibility_end(const struct vk_command_visibility_end *end)
 	V.active = 0;
 	V.current.index = end->index % SLOTS;
 	V.current.area = end->area;
+	V.current.number = end->test;
 	if (!V.current.parts)
 		return;
 	if (V.count[slot] == V.capacity[slot])
@@ -191,18 +223,15 @@ void host_vk_visibility_retired(unsigned slot)
 		/* a count in the target's pixels, to the game's (a screen drawn larger than the game's 480 lines) */
 		if (test->area > 1.0f)
 			samples = (uint64_t)((float)samples / test->area + 0.5f);
-		V.latest[test->index] = samples > 0xffffffffu ? 0xffffffffu : (uint32_t)samples;
+		__atomic_store_n(&V.latest[test->index],
+			(uint64_t)test->number << 32 | (samples > 0xffffffffu ? 0xffffffffu : (uint32_t)samples), __ATOMIC_RELAXED);
 	}
 	V.count[slot] = 0;
 }
 
 /* the guest asks (D3DDevice_GetVisibilityTestResult): never waits */
-uint32_t host_vk_visibility(uint32_t index)
+uint64_t host_vk_visibility(uint32_t index)
 {
-	uint32_t result;
-
-	pthread_mutex_lock(&B.lock);
-	result = V.latest[index % SLOTS];
-	pthread_mutex_unlock(&B.lock);
-	return result;
+	/* (without the lock, which the render thread holds while it runs a stream: the latest count and its number, a word) */
+	return __atomic_load_n(&V.latest[index % SLOTS], __ATOMIC_RELAXED);
 }

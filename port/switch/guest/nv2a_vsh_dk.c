@@ -38,6 +38,7 @@ clip-space position again.
 
 #include "xgpu.h"
 #include "dk_shaders.h"
+#include "plasma_model_shader.h"
 
 #include <stdlib.h>
 
@@ -196,7 +197,14 @@ char *nv2a_dk_vertex_shader_to_glsl(const uint32_t *instructions, unsigned long 
 {
 	struct xgpu_text text = { 0 };
 	unsigned long index;
+	/* (the key's mask holds the dynamic lighting's variant above the attributes') */
+	unsigned int plasma = (unsigned int)(packed_attribute_mask >> DK_VERTEX_KEY_PLASMA_SHIFT);
+	struct nv2a_vertex_lighting plasma_lighting;
 
+	packed_attribute_mask &= (1UL << DK_VERTEX_KEY_PLASMA_SHIFT) - 1;
+	if (plasma && (!nv2a_vertex_shader_lighting((const DWORD *)instructions, instruction_count, &plasma_lighting) ||
+		plasma_lighting.lights != 2))
+		plasma = 0;
 	xgpu_text_append(&text,
 		"#version 460\n"
 		"layout(std140, binding = %d) uniform vertex_constants { vec4 c[%d]; };\n"
@@ -204,9 +212,18 @@ char *nv2a_dk_vertex_shader_to_glsl(const uint32_t *instructions, unsigned long 
 		"{\n"
 		"\tvec4 viewport_scale;\n"
 		"\tvec4 viewport_offset;\n"
-		"\tvec4 point_and_screen;\n"
-		"};\n",
+		"\tvec4 point_and_screen;\n",
 		DK_BINDING_VERTEX_CONSTANTS, XGPU_VERTEX_CONSTANT_COUNT, DK_BINDING_VERTEX_PARAMETERS);
+	if (plasma)
+		xgpu_text_append(&text, "\tvec4 plasma_model_parameters;\n\tvec4 plasma_occ_transform[2];\n");
+	xgpu_text_append(&text, "};\n");
+	if (plasma & XGPU_PLASMA_MODEL_OCCLUSION)
+		xgpu_text_append(&text,
+			"layout(binding = %d) uniform sampler3D plasma_occ_texture0;\n"
+			"layout(binding = %d) uniform sampler3D plasma_occ_texture1;\n",
+			DK_BINDING_PLASMA_TEXTURE0, DK_BINDING_PLASMA_TEXTURE1);
+	if (plasma)
+		plasma_model_emit_visibility(&text, plasma);
 	xgpu_text_append(&text,
 		"layout(location = %d) out vec4 xD0;\n"
 		"layout(location = %d) out vec4 xD1;\n"
@@ -270,6 +287,8 @@ char *nv2a_dk_vertex_shader_to_glsl(const uint32_t *instructions, unsigned long 
 		xgpu_text_append(&text, "\tA = "); operand(&text, instruction, 'A', relative); xgpu_text_append(&text, ";\n");
 		xgpu_text_append(&text, "\tB = "); operand(&text, instruction, 'B', relative); xgpu_text_append(&text, ";\n");
 		xgpu_text_append(&text, "\tC = "); operand(&text, instruction, 'C', relative); xgpu_text_append(&text, ";\n");
+		if (plasma)
+			plasma_model_emit_vertex(&text, instruction, index, &plasma_lighting);
 
 		switch (mac)
 		{
@@ -392,5 +411,46 @@ char *nv2a_dk_vertex_shader_to_glsl(const uint32_t *instructions, unsigned long 
 		"}\n"
 		, XGPU_VERTEX_CONSTANT_BIAS - 38, XGPU_VERTEX_CONSTANT_BIAS - 37
 		);
+	return text.buffer;
+}
+
+/* the fixed-function pipeline's (the loading screen's draws, nv2a_vsh.c's
+nv2a_fixed_function_glsl): positions already in Direct3D's clip space,
+which the device's conventions take as they are */
+char *nv2a_dk_fixed_function_glsl(void)
+{
+	struct xgpu_text text = { 0 };
+	unsigned long index;
+
+	xgpu_text_append(&text, "#version 460\n");
+	xgpu_text_append(&text,
+		"layout(location = %d) out vec4 xD0;\n"
+		"layout(location = %d) out vec4 xD1;\n"
+		"layout(location = %d) out vec4 xB0;\n"
+		"layout(location = %d) out vec4 xB1;\n"
+		"layout(location = %d) out vec4 xT0;\n"
+		"layout(location = %d) out vec4 xT1;\n"
+		"layout(location = %d) out vec4 xT2;\n"
+		"layout(location = %d) out vec4 xT3;\n"
+		"layout(location = %d) out float xFog;\n",
+		DK_LOCATION_D0, DK_LOCATION_D1, DK_LOCATION_B0, DK_LOCATION_B1,
+		DK_LOCATION_T0, DK_LOCATION_T1, DK_LOCATION_T2, DK_LOCATION_T3, DK_LOCATION_FOG);
+	xgpu_text_append(&text, "invariant gl_Position;\n");
+	for (index = 0; index < XGPU_VERTEX_ATTRIBUTE_COUNT; index++)
+		xgpu_text_append(&text, "layout(location = %lu) in vec4 v%lu_in;\n", index, index);
+	xgpu_text_append(&text,
+		"void main()\n{\n"
+		"\tgl_Position = v0_in;\n"
+		"\tgl_PointSize = 1.0;\n"
+		"\txD0 = clamp(v3_in, 0.0, 1.0);\n"
+		"\txD1 = clamp(v4_in, 0.0, 1.0);\n"
+		"\txB0 = vec4(0.0, 0.0, 0.0, 1.0);\n"
+		"\txB1 = vec4(0.0, 0.0, 0.0, 1.0);\n"
+		"\txT0 = v9_in;\n"
+		"\txT1 = v10_in;\n"
+		"\txT2 = v11_in;\n"
+		"\txT3 = v12_in;\n"
+		"\txFog = 1.0;\n"
+		"}\n");
 	return text.buffer;
 }

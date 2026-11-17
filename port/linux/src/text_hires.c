@@ -305,7 +305,7 @@ void text_hires_register_atlas(const unsigned long *texture, unsigned long width
 
 unsigned int text_hires_atlas_texture(unsigned long data)
 {
-	if (!data || data != placeholder_data || !atlas)
+	if (!data || data != placeholder_data || !atlas || !xgpu_gl_ready())
 		return 0;
 	if (!atlas_texture)
 	{
@@ -346,7 +346,7 @@ unsigned int text_hires_atlas_texture(unsigned long data)
 	return atlas_texture;
 }
 
-#if defined(HALO_SWITCH) || defined(HALO_ANDROID)
+#if defined(HALO_SWITCH) || defined(HALO_ANDROID) || defined(HALO_PS5)
 const unsigned char *text_hires_atlas_rows(unsigned long data, long *size, int all, long *top, long *bottom)
 {
 	if (!data || data != placeholder_data || !atlas)

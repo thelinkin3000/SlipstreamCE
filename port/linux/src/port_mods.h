@@ -12,10 +12,22 @@ declares these for itself: keep the two the same).
 /* finds the mods again, and lists the files of those that are on: how
 many are on. Every file index from before is gone */
 long port_mods_scan(void);
+/* the mods that are on, in the load order, a line each: its folder, and
+its version if its mod.toml says one ("trollface 1.0"); how many fitted
+into text (a line that does not fit is left out whole) */
+int port_mods_list(char *text, unsigned long size);
 /* how many times the mods have been found (port_mods_scan) */
 unsigned long port_mods_scans(void);
 /* how many mods the last port_mods_scan found that are on */
 long port_mods_played(void);
+/* the folders in the mods folder now (but those whose names begin with a
+dot), mods or not: the Mods menu sees one come (Android's IMPORT) */
+long port_mods_folders(void);
+/* the mods folder: game.mods.path's, else the data root's mods */
+const char *port_mods_root(void);
+/* deletes a mod's folder and everything in it (its files closed first: the
+next port_mods_scan finds it gone); 0 if some of it is left */
+int port_mods_delete(long index);
 
 /* the file a tag's path names (its name and extension: "sound\x.sound",
 any case, either slash) of the mods played on the map `map_name` (its
@@ -26,9 +38,15 @@ int port_mods_file_stamp(long file, unsigned long *size, unsigned long stamp[2])
 /* reads size bytes of a file at offset into buffer (the Xbox's memory too);
 0 unless all of them were read */
 int port_mods_file_read(long file, unsigned long offset, void *buffer, unsigned long size);
+/* the place in the order the mods' files were listed in of a file's mod
+(later plays over earlier), or -1 */
+long port_mods_file_order(long file);
 /* the folder name of a file's mod, and the file's path (for messages) */
 const char *port_mods_file_mod(long file);
 const char *port_mods_file_path(long file);
+/* whether the mod of a file says its bitmaps' multipurpose maps and HUD
+meters keep their channels where the Xbox does (mod.toml's channel_order) */
+int port_mods_file_xbox_channels(long file);
 
 /* the mods found, played or not, the folder of each (in the folders' order),
 and a line about each for the console */

@@ -31,9 +31,24 @@ where its offset falls in their combined offset space.
 #include "custom_edition_cache.h"
 #include "tag_schema.h"
 #include "map_share.h"
+#include "custom_campaigns.h"
+#include "mcc_loading.h"
 
+#include <stdint.h>
 #include <stdlib.h>
 #include <xtl.h>
+
+#ifdef HALO_SWITCH
+/* the host's cache of textures' bytes, outside the Xbox window (port/switch/host/host_texture_cache.c), which a
+Custom Edition map's bitmaps are kept in as read, before custom_edition_bitmap_pixels_arrived converts them: the
+texture cache, half the window, takes them back from it rather than from the card. Keyed by where they are in the
+map's combined space, the top bit set (a mod bitmap's keys have it clear: mod_bitmaps.c); emptied as each map's tags
+go (mod_bitmaps_tags_unloaded) */
+int host_texture_cache_get(uint64_t key, uint32_t buffer, uint32_t size);
+void host_texture_cache_put(uint64_t key, uint32_t buffer, uint32_t size);
+void memory_watch_prepare_write(void *address, unsigned long size);
+#define CUSTOM_EDITION_TEXTURE_KEY(offset) ((1ull << 63) | (uint64_t)(unsigned long)(offset))
+#endif
 
 /* ---------- constants */
 
@@ -124,6 +139,9 @@ static int custom_edition_file_read(
 {
 	FILE *stream = context;
 
+	/* (the loading screen drawn again, at most every 50 ms, while the map is
+	read: mcc_loading.c) */
+	mcc_loading_pulse();
 	return fseek(stream, (long)offset, SEEK_SET) == 0 && fread(buffer, 1, size, stream) == size;
 }
 
@@ -311,6 +329,10 @@ static boolean custom_edition_map_named(
 	char hashed[MAP_PATH_SIZE];
 	short folder;
 
+	/* (a mounted custom campaign's map of the name its header gives:
+	custom_campaigns.c) */
+	if (custom_campaign_map_path(map_name, TRUE, path))
+		return TRUE;
 	for (folder = 0; folder < NUMBER_OF_MAPS_FOLDERS; folder++)
 	{
 		if (maps_folder_has(maps_folder(folder), name, MAP_FILE_EXTENSION, path) ||
@@ -405,8 +427,16 @@ static boolean custom_edition_resource_map_path(
 	char *path)
 {
 	char const *name = resource_map_type_describe(type);
+	char file_name[MAP_PATH_SIZE];
 	short folder;
 
+	/* (a mounted custom campaign's own, if it has them) */
+	if (strlen(name) + strlen(MAP_FILE_EXTENSION) < sizeof(file_name))
+	{
+		sprintf(file_name, "%s%s", name, MAP_FILE_EXTENSION);
+		if (custom_campaign_file_path(file_name, path))
+			return TRUE;
+	}
 	for (folder = 0; folder < NUMBER_OF_MAPS_FOLDERS; folder++)
 	{
 		if (maps_folder_has(maps_folder(folder), name, MAP_FILE_EXTENSION, path))
@@ -493,6 +523,14 @@ static void custom_edition_behaviours_log(
 	{
 		if (!((behaviours >> behaviour) & 1))
 			continue;
+		if (behaviour == _custom_edition_behaviour_gearbox_meters ||
+			behaviour == _custom_edition_behaviour_old_widescreen_fix)
+		{
+			error(_error_silent,
+				"custom edition: relies on Halo PC's %s (Chimera's map list), partially supported (HUD tint/warning placement)",
+				custom_edition_behaviour_name(behaviour));
+			continue;
+		}
 		error(
 			_error_silent,
 			(FOLLOWED_BEHAVIOURS >> behaviour) & 1 ?
@@ -561,7 +599,23 @@ static boolean custom_edition_cache_tags_convert(
 	uint32_t loaded_bytes = report->tag_data_bytes + report->resource_tag_bytes;
 	struct custom_edition_conversion_report conversion;
 	enum cache_file_status status;
+	long regrouped;
 
+	/* (first: what follows selects tags by group, and a protected map's tag
+	table has them scrambled; the references to them keep the real ones) */
+	regrouped = tag_validate_custom_edition_infer_groups(
+		tag_cache,
+		(long)loaded_bytes,
+		report->tag_cache_bytes,
+		report->identity.name);
+	if (regrouped)
+	{
+		error(
+			_error_silent,
+			"custom edition: %ld tags had their group (scrambled by map protection) taken from the references to them",
+			regrouped);
+	}
+	
 	custom_edition_cache_combine_resource_offsets(
 		tag_cache,
 		loaded_bytes,
@@ -628,6 +682,11 @@ static boolean custom_edition_cache_tags_convert(
 	{
 		error(_error_silent, "custom edition: the multiplayer score hint names the BACK button where Halo PC names a key");
 	}
+	if (conversion.widget_functions_renumbered || conversion.widget_inputs_renumbered)
+	{
+		error(_error_silent, "custom edition: %ld menu event handlers and %ld game data inputs of Halo PC's own functions run the port's",
+			(long)conversion.widget_functions_renumbered, (long)conversion.widget_inputs_renumbered);
+	}
 	if (conversion.widget_functions_cleared || conversion.pause_menu_trimmed)
 	{
 		error(
@@ -639,7 +698,7 @@ static boolean custom_edition_cache_tags_convert(
 
 	return custom_edition_cache_tags_validate(tag_cache, report) &&
 		custom_edition_bitmaps_verify(tag_cache, loaded_bytes) &&
-		custom_edition_reordered_bitmaps_find(tag_cache, loaded_bytes) &&
+		custom_edition_reordered_bitmaps_find(tag_cache, loaded_bytes, custom_edition_cache_globals.behaviours) &&
 		custom_edition_scripts_convert(tag_cache, loaded_bytes) &&
 		custom_edition_cache_models_convert(tag_cache, report);
 }
@@ -669,6 +728,58 @@ static boolean custom_edition_cache_identify(
 	custom_edition_file_close(&file);
 
 	return identified;
+}
+
+/* whether the file at `path` is an Xbox cache (version 5) of a multiplayer
+scenario: one of custom_maps' Xbox multiplayer maps
+(custom_xbox_map_level) */
+static boolean xbox_multiplayer_cache_file(
+	char const *path)
+{
+	struct custom_edition_file file;
+	struct cache_file_identity identity;
+	boolean found = FALSE;
+
+	if (!custom_edition_file_open(&file, path))
+		return FALSE;
+	if (cache_file_identify(&file.source, &identity) == _cache_file_status_ok &&
+		identity.format == _cache_file_format_xbox_cache &&
+		identity.scenario_type == _scenario_type_multiplayer)
+	{
+		found = TRUE;
+	}
+	custom_edition_file_close(&file);
+
+	return found;
+}
+
+boolean custom_xbox_map_level(
+	char const *level_name)
+{
+	/* (the last answer, for a second: the game asks many times a frame, and
+	the file is looked for in the folders each time) */
+	static struct
+	{
+		char name[MAP_PATH_SIZE];
+		boolean found;
+		unsigned long looked_at;
+	} last;
+	char path[MAP_PATH_SIZE];
+	unsigned long now = GetTickCount() | 1;
+
+	if (!level_name ||
+		_strnicmp(level_name, CUSTOM_EDITION_LEVEL_NAME_PREFIX, csstrlen(CUSTOM_EDITION_LEVEL_NAME_PREFIX)) ||
+		strlen(level_name) >= sizeof(last.name))
+	{
+		return FALSE;
+	}
+	if (last.looked_at && now - last.looked_at < 1000 && !csstrcasecmp(last.name, level_name))
+		return last.found;
+	strcpy(last.name, level_name);
+	last.found = custom_edition_map_path(level_name, path) && xbox_multiplayer_cache_file(path);
+	last.looked_at = now;
+
+	return last.found;
 }
 
 static void custom_edition_cache_report_log(
@@ -739,8 +850,11 @@ boolean custom_edition_cache_refuse(
 boolean custom_edition_level_name(
 	char const *level_name)
 {
+	/* (and a mounted Custom Edition campaign's maps, which keep their own
+	names: custom_campaigns.c) */
 	return level_name &&
-		!_strnicmp(level_name, CUSTOM_EDITION_LEVEL_NAME_PREFIX, csstrlen(CUSTOM_EDITION_LEVEL_NAME_PREFIX));
+		(!_strnicmp(level_name, CUSTOM_EDITION_LEVEL_NAME_PREFIX, csstrlen(CUSTOM_EDITION_LEVEL_NAME_PREFIX)) ||
+			custom_campaign_custom_edition_map(level_name));
 }
 
 boolean custom_edition_map_file_path(
@@ -913,6 +1027,10 @@ boolean custom_edition_cache_present(
 			(int)MIN(64, map_share_name_base_length(name)), name);
 		return FALSE;
 	}
+	/* (an Xbox multiplayer map of custom_maps: played as the game's own
+	are, unpacked into the map cache, with no resource maps) */
+	if (xbox_multiplayer_cache_file(path))
+		return TRUE;
 	if (!halo_custom_edition_tag_cache())
 	{
 		error(_error_silent, "custom edition: the map '%s' cannot be played: %s", level_name,
@@ -971,25 +1089,38 @@ boolean custom_edition_cache_playable(
 {
 	struct cache_file_identity identity;
 
-	return custom_edition_level_name(level_name) && custom_edition_cache_identify(level_name, &identity);
+	return custom_edition_level_name(level_name) &&
+		(custom_edition_cache_identify(level_name, &identity) || custom_xbox_map_level(level_name));
 }
 
-boolean custom_edition_cache_campaign(
-	char const *map_name)
+short custom_edition_cache_file_scenario_type(
+	char const *path,
+	boolean *xbox_map)
 {
+	struct custom_edition_file file;
 	struct cache_file_identity identity;
+	short type = NONE;
 
-	return custom_edition_cache_identify(map_name, &identity) &&
-		identity.scenario_type == _scenario_type_solo;
-}
+	if (xbox_map)
+		*xbox_map = FALSE;
 
-boolean custom_edition_cache_multiplayer(
-	char const *map_name)
-{
-	struct cache_file_identity identity;
+	if (!custom_edition_file_open(&file, path))
+	{
+		return NONE;
+	}
+	if (cache_file_identify(&file.source, &identity) == _cache_file_status_ok &&
+		((identity.format == _cache_file_format_custom_edition_cache && halo_custom_edition_tag_cache()) ||
+			/* (an Xbox multiplayer map: custom_xbox_map_level) */
+			(identity.format == _cache_file_format_xbox_cache &&
+				identity.scenario_type == _scenario_type_multiplayer)))
+	{
+		type = (short)identity.scenario_type;
+		if (xbox_map)
+			*xbox_map = identity.format == _cache_file_format_xbox_cache;
+	}
+	custom_edition_file_close(&file);
 
-	return custom_edition_cache_identify(map_name, &identity) &&
-		identity.scenario_type == _scenario_type_multiplayer;
+	return type;
 }
 
 struct cache_file_tag_header *custom_edition_cache_tags_load(
@@ -1122,7 +1253,10 @@ boolean custom_edition_structure_bsp_reference_valid(
 {
 	struct custom_edition_cache_globals *globals = &custom_edition_cache_globals;
 	unsigned long address = (unsigned long)reference->base_address;
-	unsigned long top = CUSTOM_EDITION_TAG_CACHE_ADDRESS + globals->tag_cache_bytes;
+	/* (where the tag cache is: the reference was moved there with the rest
+	of the tags' addresses, halo_port_window.h) */
+	unsigned long base = (unsigned long)(uintptr_t)globals->tag_cache;
+	unsigned long top = base + globals->tag_cache_bytes;
 
 	/* (in the map's cache data, read to the top of its tag cache, above its
 	tags, as its loader found them) */
@@ -1131,7 +1265,7 @@ boolean custom_edition_structure_bsp_reference_valid(
 		reference->file_size < 0x18 ||
 		(unsigned long)reference->file_offset > globals->file_length ||
 		(unsigned long)reference->file_size > globals->file_length - (unsigned long)reference->file_offset ||
-		address < CUSTOM_EDITION_TAG_CACHE_ADDRESS + globals->loaded_bytes ||
+		address < base + globals->loaded_bytes ||
 		address > top ||
 		(unsigned long)reference->file_size > top - address)
 	{
@@ -1175,6 +1309,12 @@ void custom_edition_cache_tags_unload(
 	return;
 }
 
+struct resource_map const *custom_edition_cache_bitmap_resources(void)
+{
+	return custom_edition_cache_tags_loaded() ?
+		custom_edition_cache_globals.resource_maps[_resource_map_bitmaps] : NULL;
+}
+
 void custom_edition_cache_read(
 	long tag_index,
 	long offset,
@@ -1209,6 +1349,19 @@ void custom_edition_cache_read(
 		file_offset = (unsigned long)offset;
 	}
 
+#ifdef HALO_SWITCH
+	/* (a bitmap's pixels kept by the host: as read, and converted below as
+	they would be) */
+	if (tag_index != NONE && size > 0)
+	{
+		memory_watch_prepare_write(buffer, (unsigned long)size);
+		if (host_texture_cache_get(CUSTOM_EDITION_TEXTURE_KEY(offset), (uint32_t)(uintptr_t)buffer, (uint32_t)size))
+		{
+			custom_edition_bitmap_pixels_arrived(globals->tag_cache, globals->loaded_bytes, tag_index, offset, buffer);
+			return;
+		}
+	}
+#endif
 	/* the game reads its map from its main thread only (scenario and
 	structure BSP loading, the texture and sound caches), so the streams and
 	the staging buffer need no lock */
@@ -1235,6 +1388,10 @@ void custom_edition_cache_read(
 	}
 	else if (tag_index != NONE)
 	{
+#ifdef HALO_SWITCH
+		if (size > 0)
+			host_texture_cache_put(CUSTOM_EDITION_TEXTURE_KEY(offset), (uint32_t)(uintptr_t)buffer, (uint32_t)size);
+#endif
 		custom_edition_bitmap_pixels_arrived(globals->tag_cache, globals->loaded_bytes, tag_index, offset, buffer);
 	}
 

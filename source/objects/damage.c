@@ -103,6 +103,7 @@ symbols in this file:
 
 #include "cseries.h"
 #include "damage.h"
+#include "game_modes.h" /* port: port/linux/game/game_modes.c */
 #include "ai/ai.h"
 #include "cseries/errors.h"
 #include "effects/effects.h"
@@ -139,6 +140,9 @@ symbols in this file:
 #include "units/units.h"
 #include "units/vehicles.h"
 #include "biped_ragdoll.h" /* port: port/linux/game/biped_ragdoll.c */
+#include "mcc_damage.h" /* port: port/linux/game/mcc_damage.c */
+#include "mcc_ui_teams.h" /* port: port/linux/game/mcc_ui_teams.c */
+#include "server_team_switch.h" /* port: port/linux/game/server_team_switch.c */
 
 /* network_game_globals.c's */
 boolean network_game_distributed_client(void);
@@ -150,15 +154,20 @@ void network_damage_player_effect(long player_index, struct damage_data const *d
 void network_damage_aftermath(long object_index, struct damage_data const *damage, unsigned long being_damaged_flags,
 	real shield_damage, real body_damage, real body_damage_multiplier, short body_part, short node_index,
 	short region_index, short material_index, long victim_player_index);
+boolean network_damage_static_target(long object_index);
 
 /* set while a distributed client carries out a kill it does not decide (an
 act of god: the host's word, network_distributed.c, or the world's) */
 static boolean distributed_damage_authorized;
 
-/* whether this machine runs objects' shields (their stun, recharge and
+/* whether this machine runs the object's shields (their stun, recharge and
 overcharge): not a client of the distributed netcode, which has the host's
-(damage_set_network_state) */
-#define objects_update_shields() (!network_game_distributed_client())
+(damage_set_network_state), but for the map's scenery and devices that
+damage can break, whose damage every machine deals as the host did and of
+which the host sends no state (network_damage.c's static targets: a
+scenery's shield, broken, came back on no client) */
+#define objects_update_shields(object_index) \
+	(!network_game_distributed_client() || network_damage_static_target(object_index))
 
 /* ---------- constants */
 
@@ -1047,6 +1056,7 @@ static void object_damage_aftermath(
 		real_vector3d direction = damage->direction;
 		real_vector3d acceleration;
 		real acceleration_scale;
+		boolean mcc_accelerate_unit; /* port: MCC signed/vector damage impulses */
 
 		direction.k += 0.45f;
 		normalize3d(&direction);
@@ -1055,6 +1065,9 @@ static void object_damage_aftermath(
 			object_definition->object.acceleration_scale *
 			0.033333335f;
 		scale_vector3d(&direction, acceleration_scale, &acceleration);
+		/* port: MCC extension data cannot be represented by a scalar impulse. */
+		mcc_accelerate_unit = mcc_damage_acceleration(&damage_effect->damage,
+			object_definition->object.acceleration_scale, &direction, &acceleration);
 
 		switch (object->object.type)
 		{
@@ -1079,7 +1092,7 @@ static void object_damage_aftermath(
 			{
 				struct unit_datum const *unit = (struct unit_datum const *)object;
 
-				if (damage_effect->damage.instantaneous_acceleration > _real_epsilon &&
+				if (mcc_accelerate_unit && /* port: MCC admission, legacy scalar gate otherwise */
 					!TEST_FLAG(unit->unit.flags, _unit_impervious_bit))
 				{
 					if (object->object.type == _object_type_biped)
@@ -1122,11 +1135,14 @@ static void object_damage_aftermath(
 				being_damaged_flags,
 				_object_being_damaged_body_depleted_bit))
 		{
+			/* port: whether it is a melee's (Gun Game's demotion: game_modes.c) */
+			game_modes_kill_by_melee(damage_effect->damage.category == _damage_category_melee);
 			game_statistics_record_kill(
 				object_index,
 				damage->owner_player_index,
 				damage->owner_object_index,
 				damage->owner_team_index);
+			game_modes_kill_by_melee(FALSE);
 		}
 	}
 	else if (game_engine_can_score())
@@ -1137,11 +1153,20 @@ static void object_damage_aftermath(
 		no statistics on a machine that joined after, is no player's) */
 		if (player_index != NONE)
 		{
+			/* port: an MCC team change's death is this no-statistics one, not a
+			suicide at the same time (mcc_ui_teams.c) */
+			mcc_ui_team_respawn_damage(player_index, object_index,
+				TEST_FLAG(damage->flags, _damage_no_statistics_bit) != 0);
+			/* port: and a dedicated server's !switch's (server_team_switch.c) */
+			server_team_switch_damage(player_index, object_index,
+				TEST_FLAG(damage->flags, _damage_no_statistics_bit) != 0);
 			game_engine_player_killed(
 				player_index,
 				object_index,
 				player_index,
 				TRUE);
+			mcc_ui_team_respawn_damage(player_index, object_index, FALSE);
+			server_team_switch_damage(player_index, object_index, FALSE);
 		}
 	}
 
@@ -1235,7 +1260,14 @@ static void object_damage_body(
 	{
 		if (damage_amount > 0.f && TEST_FLAG(damage_material->flags, _damage_material_head_bit))
 		{
-			if (TEST_FLAG(damage_definition->flags, _damage_can_cause_headshots_bit))
+			/* port: SWAT's headshots, a shot of any weapon's (game_modes.c) */
+			if (TEST_FLAG(damage_definition->flags, _damage_can_cause_headshots_bit) ||
+				game_modes_headshot_kills(object_index,
+					damage_definition->category == _damage_category_bullet ||
+					damage_definition->category == _damage_category_sniper ||
+					damage_definition->category == _damage_category_plasma ||
+					damage_definition->category == _damage_category_needle ||
+					damage_definition->category == _damage_category_shotgun))
 			{
 				if (game_engine_running() ||
 					object->object.type != _object_type_biped ||
@@ -2038,10 +2070,10 @@ void object_damage_update(
 				FLAG(_object_die_act_of_god_no_statistics_bit));
 	}
 
-	if (objects_update_shields())
+	if (objects_update_shields(object_index))
 		SET_FLAG(object->object.damage_flags, _object_shield_charging_bit, FALSE);
 	damage_flags = object->object.damage_flags;
-	if (objects_update_shields() &&
+	if (objects_update_shields(object_index) &&
 		object->object.maximum_shield_vitality > 0.f &&
 		!TEST_FLAG(damage_flags, _object_dead_bit))
 	{
@@ -2202,13 +2234,21 @@ static long get_player_index_from_object_or_parents(
 
 	while (object_index != NONE)
 	{
+		struct object_datum *object;
+
 		if (unit_try_and_get(object_index))
 		{
 			player_index = player_index_from_unit_index(object_index);
 			break;
 		}
 
-		object_index = object_get(object_index)->object.parent_object_index;
+		/* port: a projectile's owner can be gone by the time it hits (a dead
+		body purged by game_engine_update_purge, a respawned vehicle), and the
+		owner's index is then stale: no player, rather than object_get's halt */
+		object = object_try_and_get(object_index);
+		if (!object)
+			break;
+		object_index = object->object.parent_object_index;
 	}
 
 	return player_index;

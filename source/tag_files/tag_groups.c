@@ -44,9 +44,6 @@ static void tag_index_error(
 	return;
 }
 #include "halo_port_window.h"
-#ifdef HALO_ANDROID
-#include "platform.h"
-#endif
 
 /* ---------- public code */
 
@@ -79,7 +76,7 @@ long verify_tag_reference(
 	(port/linux/game/custom_edition_cache.c) */
 	if (custom_edition_cache_tags_loaded())
 		return tag_index_is_group(reference->index, reference->group_tag) ? reference->index : NONE;
-#ifdef HALO_ANDROID
+#if defined(HALO_ANDROID) || defined(HALO_MOVABLE_WINDOW)
 	/* the map data names this string as the window was linked */
 	index = tag_loaded(reference->group_tag, TAG_REFERENCE_NAME(*reference));
 #else
@@ -97,7 +94,7 @@ long verify_tag_reference(
 	return index;
 }
 
-#ifdef HALO_ANDROID
+#if defined(HALO_ANDROID) || defined(HALO_MOVABLE_WINDOW)
 char const *tag_reference_name(
 	struct tag_reference const *reference)
 {

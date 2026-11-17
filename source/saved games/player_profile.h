@@ -20,7 +20,9 @@ enum
 	MAXIMUM_PLAYER_PROFILE_NAME_LENGTH = 12,
 	NUMBER_OF_SINGLE_PLAYER_LEVELS = 10,
 	NUMBER_OF_DEFAULT_PROFILES = 2,
-	NUMBER_OF_LOOK_SENSITIVITY_SETTINGS = 10
+	NUMBER_OF_LOOK_SENSITIVITY_SETTINGS = 10,
+	/* port: the port's Look Sensitivity, 1 to 15 (player_ui.c's tables) */
+	PORT_NUMBER_OF_LOOK_SENSITIVITY_SETTINGS = 15
 };
 
 enum
@@ -42,6 +44,13 @@ enum
 	_button_preset_green_thumb,
 	_button_preset_bumper_jumper,
 	_button_preset_reclaimer,
+	/* port: Fishsticks: zoom on the left trigger and melee on the right
+	thumbstick's button, grenade throw on the right bumper, crouch on B, grenade switch on the pad's left
+	(after this fork's own, whose numbers saved profiles keep) */
+	_button_preset_fishsticks,
+	/* port: Recon: the standard buttons, with action and reload on the right
+	bumper, grenade switch on the left and the flashlight on X */
+	_button_preset_recon,
 	NUMBER_OF_BUTTON_PRESETS
 };
 

@@ -162,6 +162,7 @@ symbols in this file:
 #include "main/main.h"
 #include "tag_files/tag_groups.h"
 #include "player_ui.h"
+#include "mcc_ui.h" /* port: port/linux/game/mcc_ui.c */
 
 /* ---------- constants */
 
@@ -218,6 +219,8 @@ static void generate_default_player_profile(
 	struct player_profile *profile);
 static void reset_local_player_profile(
 	short local_player_index);
+static void local_player_profile_settings(
+	short local_player_index);
 static void clear_profile_edit_data(
 	void);
 
@@ -255,6 +258,7 @@ static void reset_local_player_profile(
 	generate_default_player_profile(&player_ui_globals.local_players[local_player_index].profile);
 	player_ui_globals.local_players[local_player_index].active_profile_index = NONE;
 	player_ui_globals.single_player_controller[local_player_index] = NONE;
+	local_player_profile_settings(local_player_index);
 
 	return;
 }
@@ -372,6 +376,49 @@ long player_ui_get_edit_profile_index(
 	void)
 {
 	return player_ui_globals.edit_profile_index;
+}
+
+boolean player_ui_get_profile_settings_folder(
+	long profile_index,
+	char *folder,
+	unsigned long size)
+{
+	extern void platform_translate_path(char const *xbox_path, char *host_path, unsigned long host_path_size);
+	/* (as long as saved_game_files.c's MAXIMUM_FILENAME_LENGTH) */
+	char path[0x100];
+
+	if (profile_index == NONE ||
+		saved_game_file_get_type(profile_index) != _saved_game_file_type_player_profile ||
+		!saved_game_file_get_path_to_enclosing_directory(profile_index, path) ||
+		!path[0])
+	{
+		return FALSE;
+	}
+	platform_translate_path(path, folder, size);
+	return TRUE;
+}
+
+/* port: the settings the local player's profile keeps itself (its keys, its
+mouse's and its gyroscope's: port/linux/src/port_config.h), read again
+whenever the player's profile changes */
+static void local_player_profile_settings(
+	short local_player_index)
+{
+	extern void config_profile_use(int player, char const *folder);
+	char folder[1024];
+
+	if (player_ui_get_profile_settings_folder(
+		player_ui_globals.local_players[local_player_index].active_profile_index,
+		folder,
+		sizeof(folder)))
+	{
+		config_profile_use(local_player_index, folder);
+	}
+	else
+	{
+		config_profile_use(local_player_index, NULL);
+	}
+	return;
 }
 
 struct game_variant *player_ui_get_edit_playlist_profile(
@@ -585,6 +632,52 @@ void player_ui_activate_all_solo_levels(
 	return;
 }
 
+/* port: the first player's profile (the one in use, else the one last
+used, else the first, as the PC menus' campaign has it) and its name; with
+reset, its campaign progress cleared (the levels and difficulties it
+finished, the level it played last) and saved, for a profile this debug
+build had made with every level finished (player_profile_new); FALSE for
+none */
+boolean player_ui_reset_campaign_progress(
+	boolean reset,
+	wchar_t *name,
+	long name_length)
+{
+	struct player_profile profile;
+	long profile_index = player_ui_globals.local_players[0].active_profile_index;
+	boolean active = profile_index != NONE;
+
+	if (active)
+		profile = player_ui_globals.local_players[0].profile;
+	else
+	{
+		profile_index = player_ui_get_player1_last_used_profile_index();
+		if (profile_index == NONE || !player_profile_get(profile_index, &profile))
+		{
+			word count = 1;
+
+			profile_index = NONE;
+			player_profiles_enumerate_available_to_local_player_index(NONE, &count, &profile_index, FALSE);
+			if ((short)count <= 0 || profile_index == NONE || !player_profile_get(profile_index, &profile))
+				return FALSE;
+		}
+	}
+	if (name && name_length > 0)
+	{
+		ustrncpy(name, profile.player_name, name_length - 1);
+		name[name_length - 1] = 0;
+	}
+	if (reset)
+	{
+		csmemset(profile.single_player_map_flags, 0, sizeof(profile.single_player_map_flags));
+		profile.last_single_player_map_played = 0;
+		player_profile_save(profile_index, &profile);
+		if (active)
+			player_ui_globals.local_players[0].profile = profile;
+	}
+	return TRUE;
+}
+
 void player_ui_set_game_variant(
 	struct game_variant *variant)
 {
@@ -638,7 +731,15 @@ void player_ui_set_single_player_local_player_controller(
 long player_ui_get_player1_last_used_profile_index(
 	void)
 {
-	if (!player1_profile_path[0] &&
+	/* port: z:\lastprof.txt read once a run. Absent (no profile chosen yet
+	on this install), it was read again at every ask, and asked each frame
+	while no profile is active (hosting from the menus has no player): two
+	lines in debug.txt each time, ten a second. A profile chosen since sets
+	the path itself (player_ui_remember_player1_profile) */
+	static boolean player1_profile_path_read = FALSE;
+
+	if (!player1_profile_path[0] && !player1_profile_path_read &&
+		(player1_profile_path_read = TRUE) &&
 		saved_game_file_retrieve_player1_last_used_profile_directory(
 			player1_profile_path))
 	{
@@ -740,6 +841,8 @@ void player_ui_begin_editing_profile(
 	long type;
 
 	player_ui_globals.edit_profile_index = NONE;
+	/* port: a profile editor opened here is no longer MCC's pause menu's */
+	mcc_ui_settings_profile_released();
 	type = saved_game_file_get_type(profile_index);
 
 	switch (type)
@@ -1038,63 +1141,21 @@ static void hud_message_to_all(
 	return;
 }
 
-static void set_local_player_controls_from_player_profile(
-	short local_player_index)
+/* port: the buttons of the game's controls in a button preset, set in
+preferences (the menus' picture of each layout reads them too:
+menu_functions.c) */
+void player_ui_button_preset_preferences(
+	short button_preset,
+	struct game_input_preferences *result)
 {
-	struct game_input_preferences preferences = { 0 };
-	real pitch_rate_table[NUMBER_OF_LOOK_SENSITIVITY_SETTINGS] =
-	{
-		40.0f, 50.0f, 60.0f, 70.0f, 80.0f,
-		90.0f, 100.0f, 110.0f, 120.0f, 130.0f
-	};
-	real yaw_rate_table[NUMBER_OF_LOOK_SENSITIVITY_SETTINGS] =
-	{
-		80.0f, 100.0f, 120.0f, 140.0f, 160.0f,
-		180.0f, 200.0f, 220.0f, 240.0f, 260.0f
-	};
-	struct player_profile_controller_settings *controls;
-	long look_sensitivity;
-	long yaw_index;
-	short pitch_index;
-	short controller_index;
+	struct game_input_preferences preferences = *result;
 
-	match_assert(
-		"c:\\halo\\SOURCE\\interface\\player_ui.c",
-		0x396,
-		(local_player_index>=0) && (local_player_index<MAXIMUM_NUMBER_OF_LOCAL_PLAYERS));
-
-	controls = &player_ui_globals.local_players[local_player_index].profile.controller_settings;
-	look_sensitivity = controls->look_sensitivity;
-	yaw_index = look_sensitivity - 1;
-	if (look_sensitivity - 1 < 0)
+	switch (button_preset)
 	{
-		pitch_index = 0;
-	}
-	else
-	{
-		if (yaw_index > NUMBER_OF_LOOK_SENSITIVITY_SETTINGS - 1)
-			pitch_index = NUMBER_OF_LOOK_SENSITIVITY_SETTINGS - 1;
-		else
-			pitch_index = (short)yaw_index;
-	}
-
-	if (yaw_index < 0)
-	{
-		yaw_index = 0;
-	}
-	else
-	{
-		if (yaw_index > NUMBER_OF_LOOK_SENSITIVITY_SETTINGS - 1)
-			yaw_index = NUMBER_OF_LOOK_SENSITIVITY_SETTINGS - 1;
-	}
-
-	preferences.pitch_rate = pitch_rate_table[pitch_index];
-	preferences.yaw_rate = yaw_rate_table[(short)yaw_index];
-	preferences.joystick_controls = controls->joystick_preset > _joystick_preset_legacy_south_paw ?
-		_joystick_preset_legacy_south_paw : controls->joystick_preset;
-
-	switch (controls->button_preset)
-	{
+		/* port: a preset this build does not know (a later build's) gets
+		the standard buttons, not none, which moved start and back and
+		stopped the game (input_abstraction_update_local_player_preferences) */
+		default:
 		case _button_preset_standard:
 			preferences.game_control_to_xbox_buttons[0] = _gamepad_analog_button_a;
 			preferences.game_control_to_xbox_buttons[1] = _gamepad_analog_button_black;
@@ -1238,7 +1299,110 @@ static void set_local_player_controls_from_player_profile(
 			preferences.game_control_to_xbox_buttons[10] = _gamepad_analog_button_b;
 			preferences.game_control_to_xbox_buttons[11] = _gamepad_binary_button_right_thumb;
 			break;
+
+		/* port: Fishsticks: zoom on the left trigger, melee on the right
+		thumbstick's button, the grenade thrown with the right bumper (the
+		Duke's black), crouch on B, and the grenades switched with the pad's left
+		direction (which then does not move: input_abstraction_update); the rest
+		as the standard layout */
+		case _button_preset_fishsticks:
+			preferences.game_control_to_xbox_buttons[0] = _gamepad_analog_button_a;
+			preferences.game_control_to_xbox_buttons[1] = _gamepad_binary_button_dpad_left;
+			preferences.game_control_to_xbox_buttons[2] = _gamepad_analog_button_x;
+			preferences.game_control_to_xbox_buttons[3] = _gamepad_analog_button_y;
+			preferences.game_control_to_xbox_buttons[4] = _gamepad_binary_button_right_thumb;
+			preferences.game_control_to_xbox_buttons[5] = _gamepad_analog_button_white;
+			preferences.game_control_to_xbox_buttons[6] = _gamepad_analog_button_black;
+			preferences.game_control_to_xbox_buttons[7] = _gamepad_analog_button_right_trigger;
+			preferences.game_control_to_xbox_buttons[8] = _gamepad_binary_button_start;
+			preferences.game_control_to_xbox_buttons[9] = _gamepad_binary_button_back;
+			preferences.game_control_to_xbox_buttons[10] = _gamepad_analog_button_b;
+			preferences.game_control_to_xbox_buttons[11] = _gamepad_analog_button_left_trigger;
+			break;
+
+		/* port: Recon: the standard layout with action and reload on the right
+		bumper (the Duke's black) and the grenades switched with the left (its
+		white), which put the flashlight on X, where action was */
+		case _button_preset_recon:
+			preferences.game_control_to_xbox_buttons[0] = _gamepad_analog_button_a;
+			preferences.game_control_to_xbox_buttons[1] = _gamepad_analog_button_white;
+			preferences.game_control_to_xbox_buttons[2] = _gamepad_analog_button_black;
+			preferences.game_control_to_xbox_buttons[3] = _gamepad_analog_button_y;
+			preferences.game_control_to_xbox_buttons[4] = _gamepad_analog_button_b;
+			preferences.game_control_to_xbox_buttons[5] = _gamepad_analog_button_x;
+			preferences.game_control_to_xbox_buttons[6] = _gamepad_analog_button_left_trigger;
+			preferences.game_control_to_xbox_buttons[7] = _gamepad_analog_button_right_trigger;
+			preferences.game_control_to_xbox_buttons[8] = _gamepad_binary_button_start;
+			preferences.game_control_to_xbox_buttons[9] = _gamepad_binary_button_back;
+			preferences.game_control_to_xbox_buttons[10] = _gamepad_binary_button_left_thumb;
+			preferences.game_control_to_xbox_buttons[11] = _gamepad_binary_button_right_thumb;
+			break;
 	}
+	*result = preferences;
+
+	return;
+}
+
+static void set_local_player_controls_from_player_profile(
+	short local_player_index)
+{
+	struct game_input_preferences preferences = { 0 };
+	/* port: Look Sensitivity goes on to 15 (port/linux/game/menu_functions.c's
+	Gamepads screen), in the same steps: 1 to 10 the Xbox's, 11 to 15 past them */
+	real pitch_rate_table[PORT_NUMBER_OF_LOOK_SENSITIVITY_SETTINGS] =
+	{
+		40.0f, 50.0f, 60.0f, 70.0f, 80.0f,
+		90.0f, 100.0f, 110.0f, 120.0f, 130.0f,
+		140.0f, 150.0f, 160.0f, 170.0f, 180.0f
+	};
+	real yaw_rate_table[PORT_NUMBER_OF_LOOK_SENSITIVITY_SETTINGS] =
+	{
+		80.0f, 100.0f, 120.0f, 140.0f, 160.0f,
+		180.0f, 200.0f, 220.0f, 240.0f, 260.0f,
+		280.0f, 300.0f, 320.0f, 340.0f, 360.0f
+	};
+	struct player_profile_controller_settings *controls;
+	long look_sensitivity;
+	long yaw_index;
+	short pitch_index;
+	short controller_index;
+
+	match_assert(
+		"c:\\halo\\SOURCE\\interface\\player_ui.c",
+		0x396,
+		(local_player_index>=0) && (local_player_index<MAXIMUM_NUMBER_OF_LOCAL_PLAYERS));
+
+	controls = &player_ui_globals.local_players[local_player_index].profile.controller_settings;
+	look_sensitivity = controls->look_sensitivity;
+	yaw_index = look_sensitivity - 1;
+	if (look_sensitivity - 1 < 0)
+	{
+		pitch_index = 0;
+	}
+	else
+	{
+		if (yaw_index > PORT_NUMBER_OF_LOOK_SENSITIVITY_SETTINGS - 1)
+			pitch_index = PORT_NUMBER_OF_LOOK_SENSITIVITY_SETTINGS - 1;
+		else
+			pitch_index = (short)yaw_index;
+	}
+
+	if (yaw_index < 0)
+	{
+		yaw_index = 0;
+	}
+	else
+	{
+		if (yaw_index > PORT_NUMBER_OF_LOOK_SENSITIVITY_SETTINGS - 1)
+			yaw_index = PORT_NUMBER_OF_LOOK_SENSITIVITY_SETTINGS - 1;
+	}
+
+	preferences.pitch_rate = pitch_rate_table[pitch_index];
+	preferences.yaw_rate = yaw_rate_table[(short)yaw_index];
+	preferences.joystick_controls = controls->joystick_preset > _joystick_preset_legacy_south_paw ?
+		_joystick_preset_legacy_south_paw : controls->joystick_preset;
+
+	player_ui_button_preset_preferences(controls->button_preset, &preferences);
 
 	preferences.invert_look = controls->invert_look;
 	preferences.invert_look_aircraft_control = controls->flight_stick_aircraft_controls;
@@ -1277,6 +1441,7 @@ void player_ui_set_active_player_profile(
 		profile,
 		sizeof(*profile));
 	set_local_player_controls_from_player_profile(local_player_index);
+	local_player_profile_settings(local_player_index);
 	return;
 }
 
@@ -1324,6 +1489,7 @@ void player_ui_saved_game_file_removed(
 			saved_game_file_index_after_removal(
 				player_ui_globals.local_players[local_player_index].active_profile_index,
 				removed_index);
+		local_player_profile_settings(local_player_index);
 	}
 	player_ui_globals.edit_profile_index = saved_game_file_index_after_removal(
 		player_ui_globals.edit_profile_index,
@@ -1339,5 +1505,7 @@ static void clear_profile_edit_data(
 	void)
 {
 	player_ui_globals.edit_profile_index = NONE;
+	/* port: saving or cancelling also ends the editor MCC's pause menu opened */
+	mcc_ui_settings_profile_released();
 	return;
 }

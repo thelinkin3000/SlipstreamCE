@@ -252,6 +252,8 @@ enum custom_edition_channel_order
 	where this build's meters take the fill order from color and discard
 	what has no alpha */
 	_custom_edition_channels_hud_meter,
+	/* Authored Xbox-order meters, including sheets also used as artwork. */
+	_custom_edition_channels_hud_meter_xbox,
 
 	NUMBER_OF_CUSTOM_EDITION_CHANNEL_ORDERS
 };
@@ -281,6 +283,8 @@ enum custom_edition_behaviour
 	_custom_edition_behaviour_gearbox_shader_environment_types,
 	/* HUD multitexture overlays are not drawn (hud_draw.c) */
 	_custom_edition_behaviour_block_multitexture_overlays,
+	/* Bigass Open's ammo sheet has fill in color and shape in alpha. */
+	_custom_edition_behaviour_xbox_ammo_meter_channels,
 
 	NUMBER_OF_CUSTOM_EDITION_BEHAVIOURS
 };
@@ -323,6 +327,10 @@ struct custom_edition_conversion_report
 	none, and 1 when the multiplayer pause menu was made the Xbox's resume
 	and quit */
 	int32_t widget_functions_cleared;
+	/* (and those given the port's number for them instead, and the game
+	data inputs: custom_edition_widget_renumber_set) */
+	int32_t widget_functions_renumbered;
+	int32_t widget_inputs_renumbered;
 	int32_t pause_menu_trimmed;
 	/* the Halo PC behaviours the map relies on (enum
 	custom_edition_behaviour, flags) */
@@ -400,6 +408,18 @@ enum cache_file_status custom_edition_cache_convert(
 	uint32_t loaded_bytes,
 	char const *map_name,
 	struct custom_edition_conversion_report *report);
+
+/* What a widget's Halo PC function (an event handler's, from 102, or a game
+data input's, from 41) is in this build, for the map named `map_name`:
+a number of the port's own (port/linux/game/menu_tags.c, for a custom
+campaign's own ui.map), or -1 for none, the handler then running none as
+before. Set by the port; without it every such handler runs none. */
+typedef long (*custom_edition_widget_renumber_proc)(
+	char const *map_name,
+	long pc_function);
+void custom_edition_widget_renumber_set(
+	custom_edition_widget_renumber_proc event_function,
+	custom_edition_widget_renumber_proc game_data_input);
 
 /* A walk of the placements of a HUD definition (custom_edition_hud_placements_walk):
 `block_elements` gives the first of the `element_bytes`-byte elements of the
@@ -508,5 +528,22 @@ void custom_edition_cache_combine_resource_offsets(
 	uint32_t loaded_bytes,
 	uint32_t bitmaps_offset,
 	uint32_t sounds_offset);
+
+/* A procedure the loader calls with each structure BSP of a Custom Edition
+map as it reads it (tag_validate_custom_edition_note_structure_bsp, set by
+cache_files.c: a protected map's BSP names the groups whose own tags are
+scrambled); NULL for none. Declared here so that its caller and its
+definition agree (the web build's linker refuses a mismatch). */
+typedef void (*custom_edition_structure_bsp_proc)(
+	void *tag_cache,
+	unsigned long tag_data_bytes,
+	long bsp_index,
+	void *bsp,
+	unsigned long bsp_bytes,
+	unsigned long bsp_address,
+	char const *map_name);
+
+void custom_edition_structure_bsp_proc_set(
+	custom_edition_structure_bsp_proc proc);
 
 #endif

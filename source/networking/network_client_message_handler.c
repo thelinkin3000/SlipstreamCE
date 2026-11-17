@@ -200,9 +200,12 @@ symbols in this file:
 #include "networking/network_client_message_handler.h"
 #include "networking/network_game_manager.h"
 #include "networking/network_messages.h"
+#include "network_extensions.h" /* port: port/linux/game/network_extensions.c */
 
 /* port/linux/game/network_distributed.c's */
 void network_distributed_handle_message(long machine_index, word const *message, word size);
+boolean network_replay_playing(void);
+boolean network_replay_game_size_taken(unsigned long size);
 
 /* ---------- constants */
 
@@ -315,7 +318,8 @@ struct message_server_pregame_countdown
 
 struct message_server_pregame_keep_alive
 {
-	short unused;
+	/* port: a short on the Xbox, a long on the wire (network_messages.c) */
+	long unused;
 };
 
 struct message_server_postgame_keep_alive
@@ -486,6 +490,8 @@ boolean network_game_client_handle_message(
 	the host's below): a datagram, which anyone can send as the host, is
 	taken for nothing else */
 	else if (message_type == _message_type_packet && network_connection_last_read_was_unreliable() &&
+		/* (port: a replay's playback's are the host's, port/linux/game/network_replay_playback.c) */
+		!network_replay_playing() &&
 		((byte *)message)[message_size - 1] != _message_server_game_advertise &&
 		((byte *)message)[message_size - 1] != _message_server_pong)
 	{
@@ -699,6 +705,13 @@ boolean network_game_client_handle_message(
 						{
 							network_event("network_game_client_handle_message_server_graceful_game_exit_postgame() failed");
 						}
+						break;
+
+					/* port: the host's capabilities (port/linux/game/network_extensions.c),
+					over its connection (a datagram of a game packet is dropped above) */
+					case NETWORK_EXTENSIONS_PACKET_TYPE:
+						if (network_game_client_address_matches_server(client, source_address))
+							network_extensions_client_handle(message + 1, message_size - (short)sizeof(word));
 						break;
 
 					default:
@@ -948,6 +961,15 @@ static boolean network_game_client_handle_message_server_machine_rejected(
 piece is in */
 static struct network_game network_game_client_settings_staging;
 static long network_game_client_settings_staging_size = 0;
+static long network_game_client_settings_staging_total = 0; /* port: pin a fragmented layout */
+
+/* port: the record may be incomplete when its connection is disposed. */
+void network_game_client_reset_settings_staging(void)
+{
+	csmemset(&network_game_client_settings_staging, 0, sizeof(network_game_client_settings_staging));
+	network_game_client_settings_staging_size = 0;
+	network_game_client_settings_staging_total = 0;
+}
 
 static boolean network_game_client_receive_game_settings_piece(
 	struct network_game_client *client,
@@ -955,9 +977,13 @@ static boolean network_game_client_receive_game_settings_piece(
 {
 	boolean result = TRUE;
 
-	if (piece->total_size != sizeof(network_game_client_settings_staging) ||
+	/* port: one complete versioned record (or, in a replay, one recorded
+	before the game had its MCC identities: network_replay_game_size_taken,
+	the rest left zero) */
+	if (!network_replay_game_size_taken(piece->total_size) ||
+		!piece->length ||
 		piece->length > sizeof(piece->data) ||
-		piece->offset + piece->length > sizeof(network_game_client_settings_staging))
+		piece->offset + piece->length > piece->total_size)
 	{
 		network_event("got a message_server_game_settings_update piece for a different game layout");
 		network_game_client_settings_staging_size = 0;
@@ -968,9 +994,13 @@ static boolean network_game_client_receive_game_settings_piece(
 		/* each record is sent in order from its start, over a stream */
 		if (piece->offset == 0)
 		{
+			/* port: never retain bytes from the preceding settings record. */
+			csmemset(&network_game_client_settings_staging, 0, sizeof(network_game_client_settings_staging));
+			network_game_client_settings_staging_total = piece->total_size;
 			network_game_client_settings_staging_size = 0;
 		}
-		if (piece->offset != network_game_client_settings_staging_size)
+		if (piece->offset != network_game_client_settings_staging_size ||
+			piece->total_size != network_game_client_settings_staging_total)
 		{
 			network_event("got a message_server_game_settings_update piece out of order; waiting for the next record");
 			network_game_client_settings_staging_size = 0;
@@ -985,7 +1015,10 @@ static boolean network_game_client_receive_game_settings_piece(
 			if (network_game_client_settings_staging_size == piece->total_size)
 			{
 				network_game_client_settings_staging_size = 0;
-				result = network_game_client_game_settings_updated(client, &network_game_client_settings_staging);
+				/* port: validate the bounded name before any string consumers. */
+				result = memchr(network_game_client_settings_staging.map.name, 0,
+					sizeof(network_game_client_settings_staging.map.name)) != NULL &&
+					network_game_client_game_settings_updated(client, &network_game_client_settings_staging);
 				if (!result)
 				{
 					network_event("network_game_client_game_settings_updated() failed");
@@ -1208,7 +1241,9 @@ static boolean network_game_client_handle_message_server_begin_game(
 				the message carries 16 bits of it: the rest from the first
 				game update, network_game_client_handle_game_update) */
 				network_game_client_late_join_time = (long)((unsigned long)begin_game.unused & 0xFFFF);
-				result = network_game_client_game_has_started(client);
+				/* port: or once the map is there, if it is being downloaded
+				(network_game_client_begin_game) */
+				result = network_game_client_begin_game(client);
 				if (!result)
 				{
 					network_event("network_game_client_game_has_started() failed");

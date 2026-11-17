@@ -47,6 +47,28 @@ void network_game_server_pause_countdown(
 /* the lobby's START NOW: unpause and start this machine's countdown at once */
 void network_game_server_countdown_hurry(
 	struct network_game_server *server);
+/* port: drop the joins a finished game left waiting, so the next one
+starts with none (network_test.c's host) */
+void network_game_server_port_clear_queued_players(
+	struct network_game_server *server);
+/* port: a dedicated server's lobby (port/linux/game/server_director.c) */
+long network_game_server_port_countdown_milliseconds(
+	struct network_game_server *server);
+boolean network_game_server_port_countdown_paused(
+	struct network_game_server *server);
+void network_game_server_port_countdown_begin(
+	struct network_game_server *server,
+	long milliseconds);
+boolean network_game_server_port_start_sent(
+	struct network_game_server *server);
+boolean network_game_server_port_ok_to_countdown(
+	struct network_game_server *server);
+void network_game_server_port_forget_kicked_address(
+	unsigned long address,
+	char const *hardware_id);
+long network_game_server_port_remote_machine_count(
+	struct network_game_server *server,
+	boolean joined);
 void network_game_generate_join_game_token(
 	byte *join_token);
 void network_game_server_kick_machine(
@@ -54,6 +76,7 @@ void network_game_server_kick_machine(
 	boolean kept_out);
 /* port: the rejection code of the last machine
 network_game_server_accept_client_machine_into_game refused */
+void network_game_server_refuse_with(short code);
 short network_game_server_last_refusal_code(
 	void);
 /* the host's ban command (console.c, hs.c) */
@@ -82,8 +105,15 @@ void network_game_server_port_set_cooperative_friendly_fire(
 	short friendly_fire);
 /* port: whether co-op's players collide with each other (Server Setup's
 PLAYER COLLISIONS), kept for the levels after */
+/* port: the co-op flag that says the host is a dedicated server */
+void network_game_server_port_set_cooperative_dedicated(
+	boolean dedicated);
 void network_game_server_port_set_cooperative_player_collisions(
 	boolean player_collisions);
+/* port: whether co-op's players hurt their AI allies (Server Setup's ALLY
+FRIENDLY FIRE), kept for the levels after */
+void network_game_server_port_set_cooperative_ally_friendly_fire(
+	boolean ally_friendly_fire);
 boolean network_game_server_ban_player(
 	char const *text);
 /* port: the host's kick command: as the ban command, but nothing kept (no
@@ -116,5 +146,17 @@ void network_game_server_change_game_variant(
 /* ---------- globals */
 
 /* ---------- public code */
+
+/* port: one bot joins or leaves a local (split screen) or system link Slayer, CTF or King of the Hill game in progress (the console's add_bot and drop_bot:
+hs.c); team_index 0 red, 1 blue, NONE for a game without teams; what came of it in said */
+boolean network_game_server_port_bot_add(long team_index, char *said, long said_size);
+boolean network_game_server_port_bot_drop(long team_index, char *said, long said_size);
+/* port: a server's bots (sv_bot_add, sv_bot_drop: port/linux/game/server_commands.c; the Host Server screen's BOTS),
+in its lobby or its game: one joins as the kind (bots_common.h's) and skill level (NONE: bots.skill's) asked, on the
+team asked (NONE: the smaller; a game without teams takes none), or bot number bot_index (0 up) leaves; and the bots
+there now, their numbers, teams and names (16 at most each), how many. What came of it in said */
+boolean network_game_server_port_host_bot_add(short kind, short skill, long team_index, char *said, long said_size);
+boolean network_game_server_port_host_bot_drop(long bot_index, char *said, long said_size);
+long network_game_server_port_bot_roster(long *bot_indices, long *team_indices, char (*names)[16], long maximum);
 
 #endif // __NETWORK_SERVER_MANAGER_H

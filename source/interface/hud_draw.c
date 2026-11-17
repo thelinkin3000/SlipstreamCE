@@ -83,6 +83,7 @@ symbols in this file:
 /* ---------- headers */
 
 #include "cseries/cseries.h"
+#include "passenger_camera.h" /* port: port/linux/game/passenger_camera.c */
 #include "cseries/errors.h"
 #include "math/real_math.h"
 #include "bitmaps/bitmaps.h"
@@ -90,6 +91,8 @@ symbols in this file:
 #include "bitmaps/bitmaps_inlines.h"
 #include "bitmaps/bitmap_utilities.h"
 #include "cache/texture_cache.h"
+#include "mcc_cache.h" /* port: port/linux/game/mcc_cache.h */
+#include "mcc_hud_draw.h" /* port: port/linux/game/mcc_hud_draw.h */
 #include "effects/particles.h"
 #include "game/game.h"
 #include "game/players.h"
@@ -729,6 +732,13 @@ static void hud_draw_multitexture_overlay(
 			}
 
 			parameters.map_offset[map_index] = &texture_offset[map_index];
+			/* port: an MCC map's linear bitmaps are addressed in texels */
+			if (mcc_cache_tags_loaded())
+			{
+				boolean mcc_linear = TEST_FLAG(parameters.map[map_index]->flags, _bitmap_linear_bit);
+				parameters.map_texture_scale[map_index].i = mcc_linear ? (real)parameters.map[map_index]->width : 1.0f;
+				parameters.map_texture_scale[map_index].j = mcc_linear ? (real)parameters.map[map_index]->height : 1.0f;
+			}
 			parameters.map_scale[map_index].i = scale_x;
 			parameters.map_scale[map_index].j = scale_y;
 			parameters.map_wrapped[map_index] = (boolean)overlay->map_clamp[map_index];
@@ -782,6 +792,9 @@ static void hud_draw_multitexture_overlay(
 	reticle added its whole square) */
 	parameters.alpha_weighted = custom_edition_cache_tags_loaded() &&
 		parameters.framebuffer_blend_function == _shader_framebuffer_blend_function_add;
+	/* port: and an MCC map's, as Custom Edition's */
+	if (mcc_cache_tags_loaded())
+		parameters.alpha_weighted = parameters.framebuffer_blend_function == _shader_framebuffer_blend_function_add;
 
 	for (function_index = 0;
 		function_index < overlay->functions.count;
@@ -803,14 +816,11 @@ static void hud_draw_multitexture_overlay(
 		{
 		case _hud_multitexture_overlay_effector_source_player_pitch:
 			{
-				long unit_index = local_player_get_player_index(local_player_index) == NONE ?
-					NONE :
-					player_get(local_player_get_player_index(local_player_index))->unit_index;
-				real_vector3d direction;
+				/* port: the scope's ticks follow the view. The unit's aim
+				changes once a tick, so the ticks stepped across the picture. */
 				real_euler_angles2d angles;
 
-				unit_get_aiming_vector(unit_index, &direction);
-				euler_angles2d_from_vector3d(&angles, &direction);
+				euler_angles2d_from_vector3d(&angles, &render.camera.forward);
 				source_value = angles.pitch;
 			}
 			break;
@@ -1039,6 +1049,11 @@ void hud_calculate_point(
 		"c:\\halo\\SOURCE\\interface\\hud_draw.c",
 		127,
 		placement);
+
+	/* port: MCC edge-center anchors use the current player's viewport. */
+	if (mcc_hud_anchor_point(absolute_placement->corner, placement, bitmap_data,
+		scale, &render.camera.window_bounds, &render.camera.viewport_bounds, result))
+		return;
 
 	corner = absolute_placement->corner;
 	if (corner < _hud_anchor_center)
@@ -1545,6 +1560,9 @@ void hud_draw_static_element(
 	return;
 }
 
+/* port: the left of the last picture drawn (hud_draw.h) */
+short hud_draw_last_left;
+
 static void hud_draw_bitmap_internal(
 	void *meter_parameters,
 	struct bitmap_data const *bitmap,
@@ -1585,6 +1603,11 @@ static void hud_draw_bitmap_internal(
 		vertices[vertex_index].color = color;
 	}
 
+	/* port: where it is drawn (hud_draw_last_left) */
+	hud_draw_last_left = SHORT_MAX;
+	for (vertex_index = 0; vertex_index < 4; vertex_index++)
+		hud_draw_last_left = (short)MIN(hud_draw_last_left, vertices[vertex_index].position.x);
+
 	if (reticle_scale != 1.0f)
 	{
 		real center_x = (render.camera.window_bounds.x1 + render.camera.window_bounds.x0) / 2 -
@@ -1615,7 +1638,11 @@ static void hud_draw_bitmap_internal(
 		_shader_framebuffer_blend_function_alpha_multiply_add;
 	parameters.map[0] = (struct bitmap_data *)bitmap;
 
+	/* port: shared CE HUD sheets need meter channels only for this draw
+	(port/linux/src/xbox_textures.c), leaving their static artwork intact. */
+	halo_custom_edition_hud_meter(meter_parameters && custom_edition_cache_tags_loaded());
 	rasterizer_psuedo_dynamic_screen_quad_draw(&parameters, vertices);
+	halo_custom_edition_hud_meter(FALSE); /* port: end the CE meter draw scope */
 
 	match_assert_stack_frame("c:\\halo\\SOURCE\\interface\\hud_draw.c", 985);
 
@@ -1673,6 +1700,9 @@ static void hud_draw_bitmap_with_meter(
 			_hud_dont_scale_offset_bit),
 		0.0f,
 		&point);
+	/* port: the crosshairs_draw scope moves only the weapon's reticle */
+	if (is_crosshair_bitmap)
+		passenger_camera_reticle_offset(&point);
 	hud_calculate_bitmap_bounds(
 		bitmap,
 		absolute_placement->corner,
@@ -1753,6 +1783,10 @@ static void hud_calculate_bitmap_bounds(
 
 	width = (clip->x1-clip->x0)*(is_interface_bitmap ? 1 : bitmap->width);
 	height = (clip->y1-clip->y0)*(is_interface_bitmap ? 1 : bitmap->height);
+
+	/* port: MCC-only bounds for its additional HUD anchors. */
+	if (mcc_hud_anchor_bounds(placement_type, width, height, bounds))
+		return;
 
 	switch (placement_type)
 	{
@@ -1959,6 +1993,11 @@ void hud_draw_meter(
 		meter_parameters.tint_color = real_alpha_intensity_to_pixel32(
 			PIN(meter->fade, 0.0f, 1.0f),
 			PIN(1.0f-meter->opacity, 0.0f, 1.0f));
+		/* port: PC meter shading does not multiply the emitted color by
+		the Xbox opacity tint. Keep this compatibility limited to the CE
+		maps identified as depending on Gearbox meters. */
+		if (custom_edition_cache_relies_on(_custom_edition_behaviour_gearbox_meters))
+			meter_parameters.tint_color |= 0x00FFFFFF;
 		meter_parameters.gradient = 1.0f;
 		meter_parameters.flash_color_is_negative = FALSE;
 		meter_parameters.tint_mode_2 = TRUE;
@@ -2078,6 +2117,9 @@ void hud_draw_numbers(
 			digit_scale = TEST_FLAG(numbers->placement.multiplayer_scaling_flags, _hud_use_high_resolution_scale_bit) ||
 				TEST_FLAG(bitmap_group->flags, _bitmap_group_half_hud_scale_bit) ?
 				scale*0.5f : scale;
+			/* port: an MCC map's HUD canvas (mcc_hud.c) */
+			if (mcc_cache_tags_loaded())
+				digit_scale *= mcc_hud_canvas_scale();
 
 			if (TEST_FLAG(numbers->number_flags, _hud_number_show_trailing_m_bit))
 			{
@@ -2099,6 +2141,10 @@ void hud_draw_numbers(
 				0.0f,
 				&origin);
 
+			/* port: MCC edge-center number alignment; native anchors keep their cases. */
+			if (!mcc_hud_anchor_number(absolute_placement->corner,
+				((digit_count-1.0f)*hud_number->screen_width+decimal_point_width)*scale,
+				origin.x, &cursor.x))
 			switch (absolute_placement->corner)
 			{
 			case _hud_anchor_top_left:

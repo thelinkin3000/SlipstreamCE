@@ -11,6 +11,7 @@ page size), runs the image's constructors and calls the game's main().
 #include "libc.h"
 #include "guest_host.h"
 #include "halo_android_abi.h"
+#include "android_render_policy.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -30,14 +31,25 @@ void __guest_thread_initialize_main(void);
 
 extern char **__environ;
 
-/* where the host put the Xbox memory window (port/linux/src/platform.h) */
+#if defined(HALO_ANDROID) || defined(HALO_MOVABLE_WINDOW)
+/* where the host put the Xbox memory window (port/linux/src/platform.h; the
+desktop guests' is where it was linked) */
 extern unsigned long platform_contiguous_base;
+#endif
+#ifdef HALO_ANDROID
 extern unsigned long platform_contiguous_size;
+#endif
 /* how far the host moved this image from where it was linked
 (halo_port_window.h) */
 unsigned long platform_image_shift;
 
+/* (first in the image, guest.ld; a Mach-O section name for a guest whose
+assembly is converted to ELF's, which names it .guest_header) */
+#ifdef HALO_GUEST_MACHO
 __attribute__((section("__TEXT,__guest_header"), used))
+#else
+__attribute__((section(".guest_header"), used))
+#endif
 const struct halo_guest_header __guest_header =
 {
 	HALO_GUEST_MAGIC,
@@ -65,10 +77,15 @@ void __guest_start(const struct halo_guest_boot *boot)
 	libc.page_size = boot->page_size;
 	libc.auxv = (size_t *)"\0\0\0\0\0\0\0";
 	__environ = (char **)boot->environment;
+#if defined(HALO_ANDROID) || defined(HALO_MOVABLE_WINDOW)
 	platform_contiguous_base = boot->contiguous_base;
+#endif
+#ifdef HALO_ANDROID
 	platform_contiguous_size = boot->contiguous_size;
+#endif
 	platform_image_shift = boot->image_shift;
 	__guest_thread_initialize_main();
+	android_render_policy_initialize();
 
 	for (constructor = __guest_init_start; constructor < __guest_init_end; constructor++)
 		(*constructor)();

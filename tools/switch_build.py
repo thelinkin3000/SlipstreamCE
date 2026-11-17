@@ -26,10 +26,11 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .android_build import (ANDROID_API, GUEST_ABI_FLAGS, GUEST_CODE_FLAGS, MUSL_DIRECTORIES, MUSL_EXCLUDE,
+from .android_build import (ANDROID_API, ANDROID_DEFINES, GUEST_CODE_FLAGS, MUSL_DIRECTORIES, MUSL_EXCLUDE, compiler_include,
                             MUSL_FILES, MUSL_THREAD_PREFIXES, MUSL_URL, MUSL_VERSION, VARIADIC_PROTOTYPE_FILES,
                             ZLIB_DEFINES, ZLIB_DIR, ZLIB_SOURCES,
-                            _musl_sources, _find_ndk, fetch_third_party)
+                            _musl_sources, _find_ndk, fetch_third_party, guest_abi_flags)
+from .guest_arch import ARM64_32
 from .linux_build import (LINUX_PROFILE, MINIUPNPC_DEFINES, MINIUPNPC_DIR, MUSL_MATH_DIR, STB_VORBIS_SOURCE, XDK_INCLUDE,
                           compile_launcher, game_defines_and_includes, game_sources, miniupnpc_sources,
                           musl_math_sources, opus_cflags, opus_sources, pgo_mode, pgo_profile,
@@ -48,6 +49,9 @@ TOML_DIR = Path("port/third_party/tomlc17")
 KCP_DIR = Path("port/third_party/kcp")
 EXPAT_DIR = Path("port/third_party/expat")
 MONOCYPHER_DIR = Path("port/third_party/monocypher")
+# the Steam Workshop screen's Steam client, in the host (port/android/host/steam_downloads.h)
+STEAM_HOST_FILES = ("steam_cm", "steam_crypto", "steam_depot", "steam_downloads", "steam_net", "steam_seal",
+                    "steam_unpack")
 MUSL_DIR = THIRD_PARTY / f"musl-{MUSL_VERSION}"
 SDL_DIR = THIRD_PARTY / "SDL3"
 
@@ -224,12 +228,12 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
     # taken from the environment: $USER on a build machine is whoever's account
     # ran it, which would put a different publisher on every release and on CI
     # whatever the runner happens to be called.
-    nacp_title = "Halo: Combat Evolved"
+    nacp_title = "SlipstreamCE"
     nacp_author = "thelinkin3000"
     nacp_version = "1.0.0"
     # The icon does not go in the NACP: it is an asset, embedded by elf2nro
-    # below. A 256x256 JPEG, converted from the same master the Android icon
-    # comes from (port/android/art/android-icon.png, via tools/android_icon.py),
+    # below. A 256x256 JPEG, made from the same logo as the Android icon
+    # (tools/slipstream_icon.py),
     # so the launcher on the console and the one on the phone show the same
     # picture rather than two pictures that happen to be a port of each other.
     # absolute, for the same reason the paths below are: elf2nro reports
@@ -290,6 +294,9 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
     libc_internal = guest_dir / "libc_internal"
     gl_include = guest_dir / "gl_include"
     arch = ANDROID_PORT_DIR / "guest" / "libc" / "arch" / "arm64_32"
+    # (the guest's system call interface, every guest architecture's:
+    # port/android/include/halo_guest_syscall.h)
+    arch_generic = ANDROID_PORT_DIR / "guest" / "libc" / "arch" / "generic"
     semantics_header = Path("build/linux/halo_msvc_semantics.h")
     platform_semantics_header = Path("build/linux/platform_msvc_semantics.h")
     prefix_header = LINUX_DIR / "include" / "halo_linux_prefix.h"
@@ -330,7 +337,7 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
         command=f"cp $in $out && sed -n -e s/__NR_/SYS_/p < $in >> $out",
         description="SWITCH MUSL $out",
     )
-    n.build(outputs=syscall_h, rule="switch_syscall_h", inputs=[arch / "bits" / "syscall.h.in"])
+    n.build(outputs=syscall_h, rule="switch_syscall_h", inputs=[arch_generic / "bits" / "syscall.h.in"])
     n.rule(
         name="switch_version_h",
         command=f"echo '#define VERSION \"{MUSL_VERSION}\"' > $out",
@@ -352,7 +359,7 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
     gl_imports = gen_dir / "gl_imports.list"
     n.rule(
         name="switch_gl_stubs",
-        command=(f"{python} tools/android_gl_stubs.py {LINUX_DIR}/src/gl.h {sysroot_include}/GLES3/gl32.h "
+        command=(f"{python} tools/android_gl_stubs.py --arch arm64_32 {LINUX_DIR}/src/gl.h {sysroot_include}/GLES3/gl32.h "
                  f"{sysroot_include}/GLES2/gl2ext.h {guest_gl_c} {gl_imports}"),
         description="SWITCH GL STUBS",
     )
@@ -372,15 +379,18 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
     imports_s = gen_dir / "imports.s"
     host_table_c = BUILD / "host" / "host_import_table.c"
     host_imports_list = ANDROID_PORT_DIR / "host_imports.list"
+    # (the touch and app imports the guest's shared code calls, which the
+    # Switch's host answers too)
+    android_imports_list = ANDROID_PORT_DIR / "android_imports.list"
     # the Switch host's own: the deko3d renderer's (port/switch/guest/d3d8_dk.c)
     switch_imports_list = PORT_DIR / "host_imports.list"
     n.rule(
         name="switch_imports",
-        command=f"{python} tools/android_imports.py --translate-descriptors --host-table {host_table_c} {imports_s} $in",
+        command=f"{python} tools/android_imports.py --arch arm64_32 --translate-descriptors --host-table {host_table_c} {imports_s} $in",
         description="SWITCH IMPORTS",
     )
     n.build(outputs=[imports_s, host_table_c], rule="switch_imports",
-            inputs=[host_imports_list, switch_imports_list, posix_imports, gl_imports],
+            inputs=[host_imports_list, android_imports_list, switch_imports_list, posix_imports, gl_imports],
             implicit=[Path("tools/android_imports.py")])
 
     generated_headers = [*xdk_headers(), alltypes, syscall_h, version_h, gl_stamp,
@@ -415,7 +425,8 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
     # The name is Android's and stays that way - it is the port's own flag,
     # shared through port/linux/src with every other port that relocates the
     # window, and changing it would be a larger edit than the Switch needs.
-    guest_abi = " ".join(GUEST_ABI_FLAGS + ["-DHALO_ANDROID", "-DHALO_SWITCH"] +
+    # (the arm64_32 guest's flags, as Android's: tools/guest_arch.py)
+    guest_abi = " ".join(guest_abi_flags(ARM64_32, ANDROID_DEFINES) + ["-DHALO_SWITCH"] +
                          (["-DHALO_RELEASE"] if getattr(sln, "port_release", False) else []))
 
     # musl is configured for an Apple target and passes
@@ -427,7 +438,7 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
     #
     # So the compiler is asked instead. Dropping the flag is safe here because
     # the two macros it suppresses, __APPLE__ and __MACH__, are already
-    # undefined on the next line of GUEST_ABI_FLAGS; what it does beyond that
+    # undefined by the next of ARM64_32's target flags (tools/guest_arch.py); what it does beyond that
     # is decide whether a target macro is predefined, and this guest is not
     # Apple's and does not care.
     #
@@ -477,13 +488,14 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
         return obj
 
     libc_includes = [
-        f"-isystem {libc_include}", f"-isystem {arch}", f"-isystem {MUSL_DIR}/arch/generic",
+        f"-isystem {libc_include}", f"-isystem {arch}", f"-isystem {arch_generic}", f"-isystem {MUSL_DIR}/arch/generic",
         f"-isystem {MUSL_DIR}/include",
+        f"-idirafter {compiler_include(guest_cc)}",
     ]
 
     musl_cflags = " ".join([
         guest_abi, "-std=c99", "-ffreestanding", "-fno-common", "-D_XOPEN_SOURCE=700", "-w",
-        f"-I{arch}", f"-I{MUSL_DIR}/arch/generic", f"-I{libc_internal}",
+        f"-I{arch}", f"-I{arch_generic}", f"-I{MUSL_DIR}/arch/generic", f"-I{libc_internal}",
         f"-I{ANDROID_PORT_DIR}/guest/libc/src_include", f"-I{MUSL_DIR}/src/include",
         f"-I{MUSL_DIR}/src/internal", f"-I{libc_include}", f"-I{MUSL_DIR}/include",
     ])
@@ -519,6 +531,10 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
     objects: List[Path] = []
     for source in game_sources(config):
         cflags = game_cflags
+        # (the build's number and repository, as Android's: main_build_identity,
+        # which the main menu's news asks GitHub for this release's notes by)
+        if source.as_posix() == "source/main/main.c":
+            cflags += " " + updater_defines(getattr(sln, "port_release", False))
         if source.as_posix() in VARIADIC_PROTOTYPE_FILES:
             cflags += f" -include {ANDROID_PORT_DIR}/include/halo_android_variadic_prototypes.h"
         objects.append(guest_object(source, cflags))
@@ -538,7 +554,9 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
     # the deko3d renderer's take their place, below
     opengl_only = {"d3d8_gl.c", "xbox_textures.c", "xgpu_post.c"}
     for source in sorted((LINUX_DIR / "src").glob("*.c")):
-        if source.name.startswith("posix_") or source.name in guest_host_only or source.name in opengl_only:
+        # (posix_server.c is the guest's: the clock and files of hosting from the
+        # menus, over the guest's own C library; the other posix_ files are the host's)
+        if (source.name.startswith("posix_") and source.name != "posix_server.c") or source.name in guest_host_only or source.name in opengl_only:
             continue
         objects.append(guest_object(source, platform_cflags))
     for source in hud_assets_build(n, "switch", gen_dir / "hud_hires_assets.c"):
@@ -548,6 +566,8 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
     for name in ("xmlparse.c", "xmlrole.c", "xmltok.c"):
         objects.append(guest_object(EXPAT_DIR / name, platform_cflags))
     objects.append(guest_object(KCP_DIR / "ikcp.c", platform_cflags))
+    # the link page's QR code (port/third_party/qrcodegen; port/linux/src/link_page.c)
+    objects.append(guest_object(Path("port/third_party/qrcodegen/qrcodegen.c"), platform_cflags))
     # voice chat's codec (port/third_party/opus), with the guest's ABI and C
     # library, as Android's
     for source in opus_sources():
@@ -572,7 +592,7 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
     runtime_internal_cflags = " ".join([
         guest_abi, "-std=c99", "-ffreestanding", "-fno-common", "-D_XOPEN_SOURCE=700", "-D_GNU_SOURCE",
         f"-I{runtime_dir}", f"-I{ANDROID_PORT_DIR}/include",
-        f"-I{arch}", f"-I{MUSL_DIR}/arch/generic", f"-I{libc_internal}",
+        f"-I{arch}", f"-I{arch_generic}", f"-I{MUSL_DIR}/arch/generic", f"-I{libc_internal}",
         f"-I{ANDROID_PORT_DIR}/guest/libc/src_include", f"-I{MUSL_DIR}/src/include",
         f"-I{MUSL_DIR}/src/internal", f"-I{libc_include}", f"-I{MUSL_DIR}/include",
     ])
@@ -598,6 +618,8 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
     n.rule(
         name="switch_guest_link",
         command=(f"$switch_ndk_bin/ld.lld -m aarch64linux -static -nostdlib -T {linker_script} "
+                 f"-L {ANDROID_PORT_DIR / 'guest' / 'ld' / 'macho'} "
+                 f"--defsym=__guest_image_base={ARM64_32.image_base:#x} "
                  f"-Map $out.map -o $out @$out.rsp {libguestc} "
                  "$$($switch_host_cc -print-libgcc-file-name)"),
         description="SWITCH LINK $out",
@@ -658,8 +680,8 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
     ])
     # The Android host's own files, with this port's replacements (the
     # three in port/switch/host take the place of port/android/host's) and
-    # posix_net.c and posix_upnp.c left out: host_net.c has the socket calls
-    # over libnx, and answers the desktop-only and UPnP ones itself.
+    # posix_net.c left out: host_net.c has the socket calls over libnx, and
+    # answers the desktop-only ones itself.
     host_sources = list(sorted((PORT_DIR / "host").glob("*.c")))
     # the stack switch into the guest, which has to be assembly: it moves the
     # stack pointer, which C cannot express
@@ -675,8 +697,41 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
         host_sources = [source for source in host_sources if source.name != "host_dk_compiler_stub.c"]
     host_sources += [
         LINUX_DIR / "src" / "posix_files.c",
+        # MCC's package previews and download staging (posix.h)
+        LINUX_DIR / "src" / "posix_mcc_preview.c", LINUX_DIR / "src" / "posix_mcc_share.c",
         TOML_DIR / "tomlc17.c",
+        # a replay's records in the host's memory, as Android's and the PS5's
+        ANDROID_PORT_DIR / "host" / "host_replay.c",
+        # the map lists' IMPORT, as Android's and the PS5's, and its JSON reader
+        ANDROID_PORT_DIR / "host" / "host_mcc_import.c", LINUX_DIR / "src" / "server_json.c",
+        # an MCC map's conversion on the host's threads, as Android's and the PS5's
+        ANDROID_PORT_DIR / "host" / "host_mcc_convert.c",
+        # an MCC package's fingerprint on the host's threads, as Android's and the PS5's
+        ANDROID_PORT_DIR / "host" / "host_mcc_hash.c",
+        # the game's map cache files kept in memory, as Android's and the PS5's
+        ANDROID_PORT_DIR / "host" / "host_memory_files.c",
+        # the Steam Workshop screen's Steam client, as Android's and the PS5's
+        *(ANDROID_PORT_DIR / "host" / f"{name}.c" for name in STEAM_HOST_FILES),
+        # files over a connection of their own, as Android's and the PS5's, with
+        # Monocypher's X25519 and ChaCha20-Poly1305
+        ANDROID_PORT_DIR / "host" / "host_file_share.c", ANDROID_PORT_DIR / "host" / "host_file_share_crypto.c",
+        MONOCYPHER_DIR / "monocypher.c",
     ]
+    # the port's zlib (inflate only, its names z_), for the high-res HUD's
+    # PNGs, which the host decodes as a map loads (host_dk_hud.c)
+    zlib_sources = [ZLIB_DIR / name for name in ZLIB_SOURCES]
+    host_sources += zlib_sources
+    # internet play's UPnP: posix_upnp.c with the port's miniupnpc, as the
+    # desktop's and the PS5's (the library's own warnings are not ours)
+    upnp_sources = [LINUX_DIR / "src" / "posix_upnp.c", *miniupnpc_sources()]
+    host_sources += upnp_sources
+    upnp_cflags = " ".join([host_cflags, f"-I{MINIUPNPC_DIR / 'include'}", f"-I{MINIUPNPC_DIR / 'src'}",
+                            *MINIUPNPC_DEFINES,
+                            # (libnx has not these two: host_net.c's, which
+                            # answer as the IPv4 network has no scopes)
+                            "-Dif_nametoindex=switch_upnp_if_nametoindex",
+                            "-Dif_indextoname=switch_upnp_if_indextoname",
+                            f"-include {PORT_DIR / 'host' / 'host_upnp_names.h'}"])
     # the disc image reader, so a retail .iso on the card can be unpacked into
     # the maps folder by the port itself rather than copied there by hand. It is
     # the same source the desktop port and the guest use, built here without
@@ -696,6 +751,24 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
         # known even in a stub build, whose folder is then the same one)
         if source.name == "host_dk_shaders.c":
             cflags = f'{host_cflags} -DHOST_DK_UAM_COMMIT=\\"{UAM_COMMIT[:12]}\\"'
+        if source in zlib_sources:
+            cflags = " ".join([host_cflags, f"-I{ZLIB_DIR}", *ZLIB_DEFINES])
+        if source in upnp_sources:
+            cflags = upnp_cflags + (" -w" if source.name != "posix_upnp.c" else "")
+        # (the port's zlib: the high-res HUD's PNGs, and the map lists' IMPORT's .zip files)
+        if source.name in ("host_dk_hud.c", "host_mcc_import.c", "steam_cm.c"):
+            cflags = f"{host_cflags} -I{ZLIB_DIR}"
+        # (the Steam client's chunk unpacker: the LZMA SDK's and Zstandard's
+        # decoders, whose warnings are not ours)
+        if source.name == "steam_unpack.c":
+            cflags = f"{host_cflags} -I{ZLIB_DIR} -w"
+        # (an MCC map's conversion: the guest's codecs, whose bcdec shifts
+        # signed values as the guest's -fwrapv defines)
+        if source.name == "host_mcc_convert.c":
+            cflags = f"{host_cflags} -fwrapv"
+        # (the file connection's: Monocypher's X25519 and ChaCha20-Poly1305)
+        if source.name in ("host_file_share_crypto.c", "monocypher.c"):
+            cflags = f"{host_cflags} -I{MONOCYPHER_DIR}"
         n.build(outputs=obj, rule="switch_host_cc", inputs=source, variables={"cflags": cflags},
                 implicit=[syscall_h])
         host_objects.append(obj)
@@ -736,6 +809,18 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
         nm_bin = host_cc.parent / "aarch64-none-elf-nm"
         objcopy_bin = host_cc.parent / "aarch64-none-elf-objcopy"
         ld_bin = host_cc.parent / "aarch64-none-elf-ld"
+        # UAM's allocations go to the host's allocator for it
+        # (port/switch/host/host_uam_alloc.c), each thread's own: newlib's
+        # malloc has one lock for the process, and two compile threads on it
+        # were slower than one (DEKO3D.md, phase 5, step 4). Every call of
+        # the C library's and C++'s, renamed with the rest.
+        uam_allocations = [("malloc", "host_uam_malloc"), ("calloc", "host_uam_calloc"),
+                           ("realloc", "host_uam_realloc"), ("free", "host_uam_free"),
+                           ("strdup", "host_uam_strdup"), ("strndup", "host_uam_strndup"),
+                           ("_Znwm", "host_uam_new"), ("_Znam", "host_uam_new_array"),
+                           ("_ZdlPv", "host_uam_delete"), ("_ZdaPv", "host_uam_delete_array")]
+        allocation_lines = " ".join(f"'{old} {new}'" for old, new in uam_allocations)
+        allocation_globals = " ".join(f"--keep-global-symbol={new}" for _, new in uam_allocations)
         n.rule(
             name="switch_uam_combine",
             command=(
@@ -743,8 +828,9 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
                 f"{nm_bin} --defined-only {combined} | awk '{{print $$3}}' | "
                 f"grep -v -e '^host_dk_compile_glsl$$' -e '^\\$$' | sort -u | "
                 f"awk '{{print $$1\" uam_\"$$1}}' > {symbols} && "
+                f"printf '%s\\n' {allocation_lines} >> {symbols} && "
                 f"{objcopy_bin} --redefine-syms={symbols} --keep-global-symbol=host_dk_compile_glsl "
-                f"{combined} $out"
+                f"{allocation_globals} {combined} $out"
             ),
             description="SWITCH UAM COMBINE $out",
         )

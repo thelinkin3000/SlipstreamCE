@@ -188,6 +188,8 @@ boolean game_map_loaded(void);
 boolean game_time_get_paused(void);
 /* whether a client's clock waits for the host's first game update */
 boolean game_time_held(void);
+/* port: whether the main menu's scene is what ticks (game_time.c) */
+boolean game_time_menu_scene(void);
 void game_time_set_paused(boolean paused);
 real game_time_get_speed(void);
 void game_time_set_speed(real speed);
@@ -195,6 +197,8 @@ void game_time_start(void);
 /* the game time set, before the first tick (a distributed game joined in
 progress: the host's) */
 void game_time_set_distributed(long time);
+/* port: catch up through normal ticks to a reliable host update's time. */
+void game_time_synchronize_distributed(long time);
 void game_time_update(real time_delta_sec);
 
 /* ---------- prototypes/MAIN.C */

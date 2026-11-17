@@ -29,6 +29,23 @@ FILE *halo_windows_fopen(const char *path, const char *mode)
 	return fopen(translated(path, host_path, sizeof(host_path)), mode);
 }
 
+/* a file by the host's own path, untranslated (msvc_crt.c's, for the port's game code: benchmark.c's results) */
+FILE *platform_fopen_host(const char *path, const char *mode)
+{
+	return fopen(path, mode);
+}
+
+/* (msvc_crt.c's: a file made 0666; Windows has no such modes) */
+void platform_share_file(FILE *file)
+{
+	(void)file;
+}
+
+void platform_share_path(const char *path)
+{
+	(void)path;
+}
+
 FILE *halo_windows_freopen(const char *path, const char *mode, FILE *stream)
 {
 	char host_path[1024];

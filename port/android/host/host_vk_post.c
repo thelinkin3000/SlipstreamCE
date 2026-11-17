@@ -149,9 +149,9 @@ static const char fragment_source[] =
 static void barrier(VkCommandBuffer command, VkImage image, VkImageLayout from, VkImageLayout to)
 {
 	VkImageMemoryBarrier info = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+	VkPipelineStageFlags source_stage, destination_stage;
 
-	info.srcAccessMask = from == VK_IMAGE_LAYOUT_UNDEFINED ? 0 : VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
-	info.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+	host_vk_barrier_scope(from, to, &source_stage, &info.srcAccessMask, &destination_stage, &info.dstAccessMask);
 	info.oldLayout = from;
 	info.newLayout = to;
 	info.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -160,8 +160,7 @@ static void barrier(VkCommandBuffer command, VkImage image, VkImageLayout from, 
 	info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 	info.subresourceRange.levelCount = 1;
 	info.subresourceRange.layerCount = 1;
-	vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0, NULL,
-		1, &info);
+	vkCmdPipelineBarrier(command, source_stage, destination_stage, 0, 0, NULL, 0, NULL, 1, &info);
 }
 
 /* the pass's pipeline, its layout, sampler and descriptor set; 0 if they cannot be made (said once) */
@@ -275,6 +274,10 @@ static int pass_make(void)
 	info.pDynamicState = &dynamic;
 	info.layout = post.layout;
 	info.basePipelineIndex = -1;
+	/* (a driver without dynamic rendering: a render pass of the renderings' formats and samples, host_vk_passes.c) */
+	info.renderPass = host_vk_pass_for_pipeline(&rendering, multisample.rasterizationSamples, 1);
+	if (info.renderPass)
+		info.pNext = rendering.pNext;
 	if (!HOST_VK_CHECK(vkCreateGraphicsPipelines(B.device, B.pipeline_cache, 1, &info, NULL, &post.pipeline)))
 		goto failed;
 	post.made = 1;
@@ -421,6 +424,7 @@ void host_vk_anti_alias_command(const struct vk_command_anti_alias *command)
 	info.layerCount = 1;
 	info.colorAttachmentCount = 1;
 	info.pColorAttachments = &color;
+	host_vk_profile_rendering_begin(cmd, "anti-aliasing");
 	host_vk_cmd_begin_rendering(cmd, &info);
 	viewport.x = (float)x0;
 	viewport.y = (float)y0;
@@ -448,4 +452,5 @@ void host_vk_anti_alias_command(const struct vk_command_anti_alias *command)
 	vkCmdPushConstants(cmd, post.layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(constants), constants);
 	vkCmdDraw(cmd, 3, 1, 0, 0);
 	host_vk_cmd_end_rendering(cmd);
+	host_vk_profile_rendering_end(cmd);
 }

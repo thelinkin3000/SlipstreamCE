@@ -2024,8 +2024,19 @@ static void set_textbox_to_build_number(
 
 	if (!build_number_string[0])
 	{
+		/* port: this build's name and number, for the Xbox's "01.01.14.2342" (a local build has no number) */
+		void main_build_identity(long *number, char *flavor, size_t flavor_size, char *repository,
+			size_t repository_size, char *version, size_t version_size);
+		char flavor[32], repository[64], version[96], text[64];
+		long number = 0;
+
+		main_build_identity(&number, flavor, sizeof(flavor), repository, sizeof(repository), version, sizeof(version));
+		if (number > 0)
+			snprintf(text, sizeof(text), "SlipstreamCE - v%ld", number);
+		else
+			snprintf(text, sizeof(text), "SlipstreamCE - dev");
 		ascii_to_wide(
-			"01.01.14.2342",
+			text,
 			build_number_string,
 			sizeof(build_number_string));
 	}
@@ -2258,19 +2269,23 @@ static void player_profile_edit_select_menu_update_extended_description(
 	{
 		description_definition = ui_widget_definition_get(
 			list_widget->parameters.list.extended_description->definition_tag_index);
+		/* port: the text and the picture first, and after them the port's
+		own (the button-layout overlay shown in the picture's place:
+		tools/port_settings.py's WIDGET_PATCHES), which this leaves alone */
 		match_vassert(
 			"c:\\halo\\SOURCE\\interface\\ui_widget_game_data_input_functions.c",
 			0x844,
-			description_definition->child_count == 2,
+			description_definition->child_count >= 2,
 			"expected a container widget w/ 2 children for the player profile edit settings list extended description");
 
 		description_child = list_widget->parameters.list.extended_description->child;
 		description_child->parameters.text_box.string_list_index = index;
 		/* port: Gameplay is the row before About (tools/port_settings.py's
 		PROFILE_ROWS). The picture's frames are one for each of the nine
-		rows the PC version had, then the controller layouts, so Gameplay
-		shows About's picture, and About, the row after it, its own */
-		picture_index = child && child->name && !strcmp(child->name, "gameplay_profile_item") ? 8 :
+		rows the PC version had, About's last, and then Gameplay's: About,
+		the row after Gameplay, shows its own, and Credits, the last, About's */
+		picture_index = child && child->name && !strcmp(child->name, "gameplay_profile_item") ? 9 :
+			child && child->name && !strcmp(child->name, "credits_item") ? 8 :
 			index > 8 ? index - 1 : index;
 		description_child->next->animation.current_frame_index = picture_index;
 	}
@@ -2929,7 +2944,7 @@ static void multiplayer_game_directions(
 
 	if (server)
 	{
-		/* port: one machine and one player may start (server_alone) */
+		/* port: one machine and its players may start (server_players_on_one_machine) */
 		boolean waiting_for_machines = !network_game_is_splitscreen_local() &&
 			game &&
 			game->machine_count < 1;

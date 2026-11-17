@@ -450,6 +450,9 @@ static u64 thread_ticks(void)
 	return ticks;
 }
 
+/* the slow frames said in a window of frame_statistics, the rest counted */
+#define SLOW_FRAMES_SAID 20
+
 static void frame_statistics(void)
 {
 	/* the game thread's own run time, and the clock's, at the window's start */
@@ -480,6 +483,44 @@ static void frame_statistics(void)
 	frames++;
 	if (now - previous > longest)
 		longest = now - previous;
+	/* each frame over 20 ms said, with what each thread waited for in it
+	(host_dk_frame_report), at most SLOW_FRAMES_SAID a window and the rest
+	counted: where a dropped frame went */
+	{
+		static u64 frame_busy_start;
+		static uint32_t said, unsaid;
+		struct host_dk_frame_report report;
+		u64 busy = thread_ticks();
+		double milliseconds = (double)(now - previous) * 1000.0 / (double)SDL_GetPerformanceFrequency();
+
+		host_dk_frame_report(&report);
+		host_debug_profile_spike((uint64_t)(milliseconds * 1000000.0));
+		if (milliseconds > 20.0)
+		{
+			if (said < SLOW_FRAMES_SAID)
+			{
+				said++;
+				host_logf(HOST_LOG_INFO, "slow frame: %.1f ms; the game thread ran %.1f ms and waited %.1f ms for room "
+					"in the render queue (%u streams); the render thread presented %u, waited %.1f ms at most for a "
+					"screen image and %.1f ms for a frame's slot; the GPU %.1f ms on its last frame (%.1f on average)",
+					milliseconds,
+					busy && frame_busy_start ? (double)(busy - frame_busy_start) * 1000.0 / (double)armGetSystemTickFreq() :
+						0.0,
+					report.submit_wait_us / 1000.0, (unsigned)report.streams, (unsigned)report.presents,
+					report.acquire_max_us / 1000.0, report.fence_max_us / 1000.0, report.gpu_last_us / 1000.0,
+					report.gpu_average_us / 1000.0);
+			}
+			else
+				unsaid++;
+		}
+		frame_busy_start = busy;
+		if (now - start >= (uint64_t)(interval * (double)SDL_GetPerformanceFrequency()))
+		{
+			if (unsaid)
+				host_logf(HOST_LOG_INFO, "slow frame: %u more in these seconds not said", (unsigned)unsaid);
+			said = unsaid = 0;
+		}
+	}
 	{
 		/* how the frames' times spread: vsync puts them on multiples of
 		16.7 ms, a slower thread or the GPU anywhere */
@@ -504,6 +545,16 @@ static void frame_statistics(void)
 		host_logf(HOST_LOG_INFO, "frame times: %u under 15 ms, %u 15-18, %u 18-22, %u 22-28, %u 28-35, %u over 35",
 			frame_buckets[0], frame_buckets[1], frame_buckets[2], frame_buckets[3], frame_buckets[4], frame_buckets[5]);
 		memset(frame_buckets, 0, sizeof(frame_buckets));
+		/* (and every sixth time, 30 s, the memory: host_memory_report) */
+		{
+			static unsigned reports;
+
+			if (++reports % 6 == 0)
+			{
+				host_memory_report("in play");
+				host_texture_cache_report();
+			}
+		}
 		{
 			u64 busy = thread_ticks();
 			u64 wall = armGetSystemTick();
@@ -525,6 +576,9 @@ int host_sdl_gl_swap_window(uint32_t window)
 {
 	SDL_Window *object = handle_get(window, _handle_window);
 
+	/* (the datagrams the game held this frame go: host_net.c) */
+	host_net_frame_end();
+	host_sd_activity_frame(); /* (with the profiler on: host_syscall.c) */
 	if (!object)
 		return 0;
 	if ((void *)object == (void *)&standin_window)
@@ -541,6 +595,10 @@ int host_sdl_gl_swap_window(uint32_t window)
 			now = next;
 		}
 		next = now - next > interval ? now + interval : next + interval;
+		/* (the frame handed over: the game goes on once the one before it is
+		presented, host_dk_pace) */
+		if (host_dk_presenting)
+			host_dk_pace();
 		frame_statistics();
 		return 1;
 	}
@@ -555,17 +613,6 @@ int host_sdl_gl_swap_window(uint32_t window)
 }
 
 /* ---------- events */
-
-/* the gamepad buttons held, for the exit combination (hotkey and start,
-as the firmware's other ports) */
-static uint32_t buttons_held;
-
-static int exit_combination(void)
-{
-	uint32_t hotkey = (1u << SDL_CONTROLLER_BUTTON_GUIDE) | (1u << SDL_CONTROLLER_BUTTON_BACK);
-
-	return (buttons_held & hotkey) && (buttons_held & (1u << SDL_CONTROLLER_BUTTON_START));
-}
 
 static int translate(const SDL_Event *event, struct host_event *result)
 {
@@ -594,22 +641,26 @@ static int translate(const SDL_Event *event, struct host_event *result)
 		result->kind = _host_event_gamepad_removed;
 		result->which = (uint32_t)event->cdevice.which;
 		return 1;
+	/* (the buttons are read from the gamepad's state, not its events; there is no button combination that quits:
+	Start and Back together once closed the game at once, mid-match) */
 	case SDL_CONTROLLERBUTTONDOWN:
 	case SDL_CONTROLLERBUTTONUP:
-		if (event->cbutton.button < 32)
-		{
-			if (event->type == SDL_CONTROLLERBUTTONDOWN)
-				buttons_held |= 1u << event->cbutton.button;
-			else
-				buttons_held &= ~(1u << event->cbutton.button);
-		}
-		if (event->type == SDL_CONTROLLERBUTTONDOWN && exit_combination())
-		{
-			host_logf(HOST_LOG_INFO, "exit combination pressed");
-			result->kind = _host_event_quit;
-			return 1;
-		}
 		return 0;
+	/* (the touchscreen, handheld: SDL2's fingers, 0 to 1 of the screen as
+	SDL3's are) */
+	case SDL_FINGERDOWN:
+	case SDL_FINGERMOTION:
+	case SDL_FINGERUP:
+		result->kind = event->type == SDL_FINGERDOWN ? _host_event_finger_down :
+			event->type == SDL_FINGERMOTION ? _host_event_finger_motion : _host_event_finger_up;
+		result->touch_id = (uint64_t)event->tfinger.touchId;
+		result->finger_id = (uint64_t)event->tfinger.fingerId;
+		result->x = event->tfinger.x;
+		result->y = event->tfinger.y;
+		result->dx = event->tfinger.dx;
+		result->dy = event->tfinger.dy;
+		result->pressure = event->tfinger.pressure;
+		return 1;
 	case SDL_WINDOWEVENT:
 		if (event->window.event == SDL_WINDOWEVENT_FOCUS_GAINED)
 		{
@@ -1404,16 +1455,10 @@ int host_sdl_show_simple_message_box(uint32_t flags, const char *title, const ch
 
 /* a question (the mods at startup: port_mods.c): the log, and no answer,
 which the guest takes as not able to ask */
-int host_sdl_show_message_box(uint32_t flags, const char *title, const char *message, int default_index,
-	const char *button0, const char *button1, const char *button2)
+int host_sdl_show_message_box(struct host_message_box *box)
 {
-	(void)flags;
-	(void)default_index;
-	(void)button0;
-	(void)button1;
-	(void)button2;
-	host_logf(HOST_LOG_WARN, "%s: %s", title, message);
-	return -1;
+	host_logf(HOST_LOG_WARN, "%s: %s", (const char *)(uintptr_t)box->title, (const char *)(uintptr_t)box->message);
+	return 0;
 }
 
 /* ---------- Android's on-screen touch controls (port/android/host/host_touch.c)
@@ -1426,6 +1471,72 @@ ignored (the controller's rumble is host_sdl_rumble_gamepad's). */
 void host_gesture_insets(int *insets)
 {
 	memset(insets, 0, 4 * sizeof(*insets));
+}
+
+/* (the overlay's devices: the Switch has no Android touch overlay to show or
+hide, touch_input.c) */
+int host_touch_devices(void)
+{
+	return 0;
+}
+
+/* (the phone's GPU family, for the GL ES renderer's Android fixes: none on
+the Switch, guest_render_policy.c) */
+int host_android_chip_family(void)
+{
+	return 0;
+}
+
+/* (Android's keyboard for a name typed on the touchscreen, sdl_platform.c:
+the Switch types its names with its own keyboard applet) */
+int host_sdl_text_input(uint32_t window, int type)
+{
+	(void)window;
+	(void)type;
+	return 0;
+}
+
+/* (a page opened in the browser: Discord's link, player_link.c; none on the
+Switch) */
+int host_sdl_open_url(const char *url)
+{
+	(void)url;
+	return 0;
+}
+
+/* (the Theater's EXPORT and IMPORT are the Android app's pickers: the
+Switch's replays are on the card, port/linux/game/menu_functions.c) */
+void host_android_export_replays(const char *folder)
+{
+	(void)folder;
+}
+
+void host_android_import_replays(const char *folder)
+{
+	(void)folder;
+}
+
+/* (and the Mods screen's IMPORT, Video Setup's IMPORT DRIVER, and the map
+lists' IMPORT) */
+void host_android_import_mods(const char *folder)
+{
+	(void)folder;
+}
+
+void host_android_import_vk_drivers(const char *folder)
+{
+	(void)folder;
+}
+
+void host_android_import_maps(const char *folder)
+{
+	(void)folder;
+}
+
+/* (Settings > Gameplay > GAME FILES is Android's alone) */
+void host_android_move_game_files(const char *where)
+{
+	(void)where;
 }
 
 void host_touch_read(int32_t *state)
@@ -1458,4 +1569,16 @@ void host_touch_bindings(const int32_t *controls)
 void host_touch_gyro_mode(int mode)
 {
 	(void)mode;
+}
+
+int host_touch_menu_fingers(void)
+{
+	return 3;
+}
+
+/* (a replay's buttons for the overlay to press: none to press them) */
+void host_touch_targets(const int32_t *targets, int count)
+{
+	(void)targets;
+	(void)count;
 }

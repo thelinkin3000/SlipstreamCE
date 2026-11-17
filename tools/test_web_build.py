@@ -40,7 +40,7 @@ def graph(release=False, emcc="/opt/emsdk/upstream/emscripten/emcc"):
     sln = SimpleNamespace(build_dir=Path("build"), web_emcc=emcc, port_release=release, port_profile=False,
                           compiler_launcher=None)
     web_build.generate_web_build(ninja_syntax.Writer(out), sln)
-    return re.sub(r" \$\n +", " ", out.getvalue())
+    return re.sub(r" \$\n +", " ", out.getvalue()).replace("\\", "/")
 
 
 def compile_flags(text, source):
@@ -108,6 +108,22 @@ def test_the_link_makes_the_memory_the_window_needs():
     assert "-sASSERTIONS=0" in link_flags(release).split()
 
 
+def test_the_link_exports_what_the_page_calls():
+    """every function the page's scripts call on the game's module (game._x,
+    module._x) is exported: KEEPALIVE alone leaves it off the module, and the
+    page then waits for frames it cannot count (the loading notice stays)"""
+    exported = re.search(r"-sEXPORTED_FUNCTIONS=(\S+)", link_flags(graph())).group(1).split(",")
+    called = set()
+    for script in sorted(Path("port/web/site").glob("*.js")):
+        called |= set(re.findall(r"\b(?:game|module)\.(_[A-Za-z0-9_]+)", script.read_text()))
+    assert called, "no calls found: the pattern is stale"
+    assert not called - set(exported), f"called on the module, not exported: {sorted(called - set(exported))}"
+    for name in exported:
+        if name.startswith("_web_"):
+            assert re.search(r"EMSCRIPTEN_KEEPALIVE[^;{]*\b" + name[1:] + r"\(",
+                             "".join(path.read_text() for path in Path("port/web/src").glob("*.c"))), name
+
+
 def test_the_memory_layout_agrees_with_the_sources():
     platform = (ROOT / "port/linux/src/platform.h").read_text()
     base = int(re.search(r"#define PLATFORM_CONTIGUOUS_BASE (0x[0-9A-Fa-f]+)", platform).group(1), 16)
@@ -117,8 +133,11 @@ def test_the_memory_layout_agrees_with_the_sources():
                       r"#define PLATFORM_CONTIGUOUS_SIZE (0x[0-9A-Fa-f]+)", platform, re.S | re.M)
     assert sizes, "platform.h gives the web build the 128 MB window"
     assert web_build.WEB_MEMORY_BYTES == base + int(sizes.group(1), 16)
-    main = (ROOT / "port/web/src/web_main.c").read_text()
-    assert int(re.search(r"#define WEB_HEAP_LIMIT (0x[0-9A-Fa-f]+)", main).group(1), 16) == base
+    memory = (ROOT / "port/web/src/web_memory.h").read_text()
+    assert "#define WEB_HEAP_LIMIT CUSTOM_EDITION_TAG_CACHE_ADDRESS" in memory
+    formats = (ROOT / "port/linux/game/cache_file_formats.h").read_text()
+    ce = int(re.search(r"#define CUSTOM_EDITION_TAG_CACHE_ADDRESS (0x[0-9A-Fa-f]+)", formats).group(1), 16)
+    assert ce < 0x42000000 < 0x74000000 < base
     app = (ROOT / "port/web/site/app.js").read_text()
     assert int(re.search(r"const WEB_MEMORY_BYTES = (0x[0-9A-Fa-f]+)", app).group(1), 16) == web_build.WEB_MEMORY_BYTES
 
@@ -128,7 +147,7 @@ def test_the_site_holds_the_page_its_fonts_licences_and_version():
     phony = re.search(r"^build web: phony ([^\n]*)", text, re.M).group(1)
     outputs = set(phony.split())
     for name in ("halo.js", "halo.wasm", "version.json", "licenses.txt", "fonts/OpenCE-Regular.ttf",
-                 "fonts/Overpass-750.ttf"):
+                 "fonts/Overpass-750.ttf", "fonts/Overpass-900.ttf"):
         assert f"build/web/site/{name}" in outputs, name
     for source in web_build.site_sources():
         assert f"build/web/site/{source.relative_to(Path('port/web/site')).as_posix()}" in outputs, source
@@ -183,13 +202,14 @@ def test_the_menus_name_known_platforms_and_match_their_generator():
 
     for path in sorted((ROOT / "port/assets/menus/ce").glob("*.xml")):
         for value in re.findall(r'platform="([^"]*)"', path.read_text()):
-            assert value.split() and set(value.split()) <= {"desktop", "android", "switch", "web"}, (path.name, value)
+            assert value.split() and set(value.split()) <= {"desktop", "android", "switch", "ps5", "web"}, (path.name, value)
     for name, lines in [*port_settings.settings_files().items(), *port_settings.multiplayer_files().items()]:
         assert (ROOT / "port/assets/menus/ce" / name).read_text() == "\n".join(lines), name
     # the rows a browser has no use for are not on its screens; internet
-    # play's is (port/web/src/web_p2p.c). (The Switch has them all.)
+    # play's is (port/web/src/web_p2p.c). (The Switch has them all, and the
+    # PS5 some.)
     network = (ROOT / "port/assets/menus/ce/main_menu.settings_select.player_setup.player_profile_edit."
                "network_setup.xml").read_text()
     for row in ("op_allow_upnp", "op_join_from_clipboard", "op_auto"):
-        assert re.search(rf'<child widget="[^"]*/{row}"[^>]*platform="desktop android switch"', network), row
-    assert re.search(r'<child widget="[^"]*/op_online"[^>]*platform="desktop android switch web"', network)
+        assert re.search(rf'<child widget="[^"]*/{row}"[^>]*platform="desktop android switch( ps5)?"', network), row
+    assert re.search(r'<child widget="[^"]*/op_online"[^>]*platform="desktop android switch web( ps5)?"', network)

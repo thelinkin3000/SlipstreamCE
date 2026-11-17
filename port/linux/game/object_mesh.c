@@ -157,7 +157,7 @@ static boolean object_mesh_add_part(
 	/* (port: the buffers where the map's window is: halo_port_window.h) */
 	IDirect3DVertexBuffer8_Lock(VERTEX_BUFFER_HARDWARE_FORMAT(vertex_buffer), 0, 0, &vertices, D3DLOCK_READONLY);
 	IDirect3DIndexBuffer8_Lock(TRIANGLE_BUFFER_HARDWARE_FORMAT(triangle_buffer), 0, 0, &indices, D3DLOCK_READONLY);
-#ifdef HALO_ANDROID
+#if defined(HALO_ANDROID) || defined(HALO_MOVABLE_WINDOW)
 	/* (an index buffer's lock is its data's address as the map has it) */
 	indices = PORT_WINDOW_REBASE(indices);
 #endif

@@ -172,6 +172,7 @@ symbols in this file:
 /* ---------- headers */
 
 #include "interface/progress_bar.h"
+#include "loading_widescreen.h" /* port: port/linux/src/loading_widescreen.c */
 #include "cache/cache_files.h"
 /* The January object retains out-of-line copies of the D3D and D3DX inline
  * wrappers.  The stock XDK definitions of D3DINLINE (static __forceinline) and
@@ -312,6 +313,11 @@ void tgaLoadImageData(
 	struct tga_image *image);
 
 /* ---------- globals */
+
+/* port: rasterizer_xbox.c's (rasterizer_xbox_internal.h, which this file
+does not include) */
+void rasterizer_forget_hardware_state(
+	void);
 
 extern struct pixel_shader_definition blur_shader;
 extern struct pixel_shader_definition regular_shader;
@@ -1576,12 +1582,41 @@ void progress_bar_initialize(
 void progress_bar_dispose(
 	void)
 {
+	/* port: shutdown need not render another frame to retire the chant. */
+	long sound_index;
+
+	/* port: retire the loading-only framing choice at shutdown too. */
+	loading_widescreen_end();
+	for (sound_index= 0; sound_index<NUMBER_OF_PROGRESS_BAR_SOUNDS; sound_index++)
+	{
+		if (progress_bar_globals.sounds[sound_index])
+		{
+			IDirectSoundBuffer_Stop(progress_bar_globals.sounds[sound_index]);
+			IDirectSoundBuffer_Release(progress_bar_globals.sounds[sound_index]);
+			progress_bar_globals.sounds[sound_index]= NULL;
+		}
+	}
 	return;
 }
 
 void progress_bar_begin(
 	boolean skip_frame_capture)
 {
+	/* port: a quick second load can reuse textures and voices before the
+	next eachframe cleanup. Restart the voices stopped at the last end. */
+	long sound_index;
+
+	/* port: drawing and feedback capture use the same framing this load. */
+	loading_widescreen_begin();
+	for (sound_index= 0; sound_index<NUMBER_OF_PROGRESS_BAR_SOUNDS; sound_index++)
+	{
+		if (progress_bar_globals.sounds[sound_index])
+		{
+			IDirectSoundBuffer_SetCurrentPosition(progress_bar_globals.sounds[sound_index], 0);
+			IDirectSoundBuffer_SetVolume(progress_bar_globals.sounds[sound_index], -5000);
+			IDirectSoundBuffer_Play(progress_bar_globals.sounds[sound_index], 0, 0, DSBPLAY_LOOPING);
+		}
+	}
 	progress_bar_mode.capture_frame= !skip_frame_capture;
 	progress_bar_mode.active= TRUE;
 	SetThreadPriority((void *)-2, 2);
@@ -1592,6 +1627,16 @@ void progress_bar_begin(
 void progress_bar_end(
 	void)
 {
+	/* port: stop on success or failure, even if no normal frame follows. */
+	long sound_index;
+
+	/* port: normal rendering keeps its established front-buffer framing. */
+	loading_widescreen_end();
+	for (sound_index= 0; sound_index<NUMBER_OF_PROGRESS_BAR_SOUNDS; sound_index++)
+	{
+		if (progress_bar_globals.sounds[sound_index])
+			IDirectSoundBuffer_Stop(progress_bar_globals.sounds[sound_index]);
+	}
 	progress_bar_mode.active= FALSE;
 	SetThreadPriority((void *)-2, 0);
 
@@ -2029,7 +2074,15 @@ static void progress_bar_render(
 	IDirect3DDevice8_GetTransform(global_d3d_device, D3DTS_PROJECTION, &progress_bar_globals.saved_projection);
 	IDirect3DDevice8_SetTransform(global_d3d_device, D3DTS_WORLD, &progress_bar_globals.world);
 	IDirect3DDevice8_SetTransform(global_d3d_device, D3DTS_VIEW, &progress_bar_globals.view);
-	IDirect3DDevice8_SetTransform(global_d3d_device, D3DTS_PROJECTION, &progress_bar_globals.projection);
+	/* port: widescreen expands the stock effect horizontally; otherwise
+	keep its central 640 columns. The front-buffer capture matches this. */
+	{
+		D3DXMATRIX projection= progress_bar_globals.projection;
+
+		if (!loading_widescreen_active())
+			projection._11*= 640.f/(real)halo_screen_width();
+		IDirect3DDevice8_SetTransform(global_d3d_device, D3DTS_PROJECTION, &projection);
+	}
 	IDirect3DDevice8_SetRenderState(global_d3d_device, D3DRS_ALPHABLENDENABLE, TRUE);
 	IDirect3DDevice8_SetRenderState(global_d3d_device, D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
 	IDirect3DDevice8_SetRenderState(global_d3d_device, D3DRS_DESTBLEND, D3DBLEND_ONE);
@@ -2087,6 +2140,9 @@ static void progress_bar_render(
 	IDirect3DDevice8_SetTransform(global_d3d_device, D3DTS_VIEW, &progress_bar_globals.saved_view);
 	IDirect3DDevice8_SetTransform(global_d3d_device, D3DTS_PROJECTION, &progress_bar_globals.saved_projection);
 	IDirect3DDevice8_BlockUntilVerticalBlank(global_d3d_device);
+	/* port: the rasterizer's caches of the device's states learn what was
+	set here */
+	rasterizer_forget_hardware_state();
 
 	return;
 }
@@ -2226,7 +2282,9 @@ static void progress_bar_make_stuff_ready(
 		IDirect3DDevice8_SetRenderTarget(global_d3d_device, front_buffer, depth_buffer);
 		IDirect3DSurface8_Release(back_buffer);
 		IDirect3DSurface8_Release(front_buffer);
-		IDirect3DSurface8_Release(depth_buffer);
+		/* port: (none, when no depth buffer is set) */
+		if (depth_buffer)
+			IDirect3DSurface8_Release(depth_buffer);
 	}
 
 	return;
@@ -2266,6 +2324,10 @@ static void progress_bar_load_loading_texture(
 		}
 		fclose(file);
 	}
+	/* port: no disc has loading.tga as a file (the retail default.xbe holds
+	the picture, which importing a disc writes as loading.tga:
+	port/linux/src/xiso.c); without it the texture is left as created,
+	black */
 	IDirect3DTexture8_UnlockRect(*texture, 0);
 
 	return;

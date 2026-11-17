@@ -2,13 +2,15 @@
 """The wire format of HALO_PORT_NETWORK_VERSION (port/linux/network_format.txt).
 
 Taken from the sources: the game's message numbers, sizes and fields
-(network_messages.c, .h) and the distributed netcode's (network_*.c, .h,
-map_share*.c, .h): the enums with _distributed_ members, the DISTRIBUTED_
-constants, the structs sent whole (the _message structs, those whose size is
-taken, and the structs in them) as hashes, and the constants their arrays
-are sized by, as their definitions. An entry the netcode packs itself (a
-unit's state, a relayed action) is covered by its flags and its least and
-largest sizes only.
+(network_messages.c, .h), the distributed netcode's (network_*.c, .h,
+map_share*.c, .h), and the gametype's PC options (game_engine.h's struct
+game_variant_options) and where the game settings record has them: the enums
+with _distributed_ members and the one of the riding deck part's flags
+(vehicle_riding.h), the DISTRIBUTED_ constants, the structs sent
+whole (the _message structs, those whose size is taken, and the structs in
+them) as hashes, and the constants their arrays are sized by, as their
+definitions. An entry the netcode packs itself (a unit's state, a relayed
+action) is covered by its flags and its least and largest sizes only.
 
 test_linux_port.py fails when the sources differ from the record. An item
 changed or removed is one older builds cannot read: raise the version and
@@ -45,6 +47,7 @@ def items():
     """the wire format's items, name to value"""
     paths = sorted((ROOT / "port/linux/game").glob("network_*.[ch]"))
     paths += sorted((ROOT / "port/linux/game").glob("map_share*.[ch]"))
+    paths += [ROOT / "port/linux/game/vehicle_riding.h"]
     paths += [ROOT / "source/networking/network_messages.c", ROOT / "source/networking/network_messages.h"]
     texts = [re.sub(r"/\*.*?\*/|//[^\n]*", " ", path.read_text(encoding="latin-1"), flags=re.S) for path in paths]
     everything = "\n".join(texts)
@@ -58,7 +61,8 @@ def items():
         for block in _blocks(text, r"^struct distributed_\w+\s*\{"):
             structs[re.match(r"struct (\w+)", block).group(1)] = block
         for block in _blocks(text, r"^enum\b[^;{]*\{"):
-            if "_distributed_" not in block and "network_game_message_type" not in block:
+            if ("_distributed_" not in block and "network_game_message_type" not in block and
+                    "_vehicle_riding_deck_falling_bit" not in block):
                 continue
             value = -1
             for member in filter(None, map(str.strip, block[block.index("{") + 1:block.rindex("}")].split(","))):
@@ -112,11 +116,46 @@ def items():
         values = sorted({" ".join((define or expression).replace("\\\n", " ").split()) for define, expression in found})
         add(f"bound {name}", " | ".join(values))
         pending += re.findall(r"\b[A-Z_][A-Z0-9_]*\b", " ".join(values))
+    # the gametype's PC options, which the game settings record carries
+    # whole, and where that record puts them
+    engine = re.sub(r"/\*.*?\*/|//[^\n]*", " ", (ROOT / "source/game/game_engine.h").read_text(encoding="latin-1"),
+                    flags=re.S)
+    add("struct game_variant_options", _hash(next(_blocks(engine, r"^struct game_variant_options\s*\{"))))
+    limits = (ROOT / "port/linux/include/halo_port_limits.h").read_text()
+    for name, value in re.findall(r"^#define (HALO_PORT_NETWORK_GAME_(?:VARIANT_OPTIONS_OFFSET|LOCAL_DATA_OFFSET|SIZE)) "
+                                  r"(.*)$", limits, re.M):
+        add(f"layout {name}", " ".join(value.split()))
     messages = texts[-2]
     for name, size in re.findall(r"^DEFINE_NETWORK_GAME_MESSAGE\((\w+), (.*)\);", messages, re.M):
         add(f"size {name}", " ".join(size.split()))
     for fields, name in re.findall(r"\t\{\n((?:\t\t.*\n)*?)\t\},\n\tNETWORK_GAME_MESSAGE_DEFINITION\((\w+),", messages):
         add(f"fields {name}", _hash(fields))
+    workshop = (ROOT / "port/linux/game/mcc_workshop.h").read_text()
+    for name, value in re.findall(r"^#define (MCC_WORKSHOP_WIRE_\w+) ([^\n]+)", workshop, re.M):
+        add(f"define {name}", value)
+    # MCC package sharing's request, response and manifest entry (messages 103 and 104).
+    share = ""
+    for header in ("mcc_share_session.h", "mcc_share_stage.h", "mcc_share_list.h"):
+        share += re.sub(r"/\*.*?\*/", " ", (ROOT / "port/linux/game" / header).read_text(), flags=re.S)
+    for name in ("mcc_share_request", "mcc_share_response", "mcc_share_entry"):
+        add(f"struct {name}", _hash(next(_blocks(share, rf"^struct {name}\s*\{{"))))
+    for name in ("mcc_share_op", "mcc_share_result", "mcc_share_file_kind"):
+        add(f"enum {name}", _hash(next(_blocks(share, rf"^enum {name}\s*\{{"))))
+    for name, value in re.findall(r"^#define (MCC_SHARE_(?:LEVEL_SIZE|CHUNK_BYTES|MANIFEST_PAGE|LEAF_SIZE|CREDIT_SIZE|STAGE_FILES|"
+                                  r"MAXIMUM_\w+)) ([^\n]+)", share, re.M):
+        add(f"define {name}", value)
+    admission = re.sub(r"/\*.*?\*/", " ",
+                       (ROOT / "port/linux/game/mcc_admission.h").read_text(), flags=re.S)
+    for name in ("mcc_admission_identity", "mcc_admission_message"):
+        add(f"struct {name}", _hash(next(_blocks(admission, rf"^struct {name}\s*\{{"))))
+    add("enum mcc_admission_op", _hash(next(_blocks(admission, r"^enum mcc_admission_op\s*\{"))))
+    for name, value in re.findall(r"^#define (MCC_ADMISSION_\w+) ([^\n]+)", admission, re.M):
+        add(f"define {name}", value)
+    loading = re.sub(r"/\*.*?\*/", " ",
+                     (ROOT / "port/linux/game/mcc_load_network.h").read_text(), flags=re.S)
+    add("struct mcc_load_message", _hash(next(_blocks(loading, r"^struct mcc_load_message\s*\{"))))
+    for name, value in re.findall(r"^#define (MCC_LOAD_NETWORK_\w+) ([^\n]+)", loading, re.M):
+        add(f"define {name}", value)
     return result
 
 

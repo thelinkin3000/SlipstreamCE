@@ -101,9 +101,6 @@ symbols in this file:
 #include "rasterizer_geometry.h"
 #include "rasterizer_geometry_compression.h"
 #include "halo_port_window.h"
-#ifdef HALO_ANDROID
-#include "platform.h"
-#endif
 
 /* ---------- constants */
 
@@ -163,7 +160,7 @@ static short const rasterizer_vertex_type_sizes[]=
 
 /* ---------- public code */
 
-#ifdef HALO_ANDROID
+#if defined(HALO_ANDROID) || defined(HALO_MOVABLE_WINDOW)
 void *vertex_buffer_base_address(
 	struct vertex_buffer const *buffer)
 {

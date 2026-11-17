@@ -19,8 +19,16 @@ cache_file_formats.c.
 /* DamnationCE's 64-bit builds keep Xbox addresses apart from pointers; in
 this build's they are the same */
 #ifndef XBOX_POINTER
+#if defined(HALO_ANDROID) || defined(HALO_MOVABLE_WINDOW)
+/* (where the tags' addresses move: the tag cache, or the window, is not
+where the map was written for, halo_port_window.h) */
+#include "halo_port_window.h"
+#define xbox_pointer(address) PORT_WINDOW_REBASE(address)
+#define XBOX_POINTER(type, address) ((type *)PORT_WINDOW_REBASE(address))
+#else
 #define xbox_pointer(address) ((void *)(address))
 #define XBOX_POINTER(type, address) ((type *)(address))
+#endif
 #define XBOX_ADDRESS(pointer) ((void *)(pointer))
 #endif
 
@@ -57,6 +65,9 @@ Custom Edition map is loaded. */
 boolean custom_edition_cache_stock_tag(
 	long tag_index);
 
+/* Borrowed until map unload; reads remain bounds checked by the source. */
+struct resource_map const *custom_edition_cache_bitmap_resources(void);
+
 /* When `header` (CACHE_FILE_HEADER_BYTES bytes, with `build` its build
 string field) is a Custom Edition cache header that reached the Xbox loader,
 logs why the file at `path` cannot run and returns TRUE: the map is refused,
@@ -70,6 +81,16 @@ boolean custom_edition_cache_refuse(
 (CUSTOM_EDITION_LEVEL_NAME_PREFIX): the cache file loader then reads it from
 the Custom Edition maps folders alone, never from the game's own. */
 boolean custom_edition_level_name(
+	char const *level_name);
+
+/* Whether a level name is custom_maps\<name> of an Xbox multiplayer map (an
+Xbox cache, version 5): the game's own format, unpacked into the map cache
+as the game's maps are (cache_files_windows.c) rather than read by the Custom
+Edition loader, under its level name, never taken for the game's map of the
+name its header gives; a network game on one needs the
+custom_xbox_multiplayer_maps capability of each machine
+(network_extensions.h). */
+boolean custom_xbox_map_level(
 	char const *level_name);
 
 /* TRUE when Custom Edition maps may run (game.custom_edition) and the level
@@ -138,13 +159,15 @@ boolean custom_edition_cache_present(
 	char *message,
 	long message_size);
 
-/* Whether the file `file_name` (custom_maps\<file_name>.map) is a Custom
-Edition cache of a campaign map (a solo scenario, played alone or as
-network co-op), or of a multiplayer map (custom_edition_maps.c). */
-boolean custom_edition_cache_campaign(
-	char const *file_name);
-boolean custom_edition_cache_multiplayer(
-	char const *file_name);
+/* The scenario type of the Custom Edition cache at `path`: a campaign map's
+(_scenario_type_solo, played alone or as network co-op) or a multiplayer
+map's, or another; NONE if it is no Custom Edition cache (nor an Xbox
+multiplayer map: custom_xbox_map_level); *xbox_map (NULL: not asked) whether it
+is an Xbox map. `path` is the file a folder's listing found
+(custom_edition_maps.c), opened once. */
+short custom_edition_cache_file_scenario_type(
+	char const *path,
+	boolean *xbox_map);
 
 /* Loads the Custom Edition map `map_name` names into its tag cache and
 converts its tags for this build, copying its cache header to `header`
@@ -158,6 +181,7 @@ struct cache_file_tag_header *custom_edition_cache_tags_load(
 (paths.custom_edition) */
 boolean custom_edition_install_present(
 	void);
+
 boolean custom_edition_cache_tags_loaded(
 	void);
 /* Whether the structure bsp reference (of the loaded map's scenario) names
@@ -200,7 +224,8 @@ FALSE after logging why it cannot. custom_edition_bitmaps_dispose forgets
 them either way. */
 boolean custom_edition_reordered_bitmaps_find(
 	byte *tag_cache,
-	unsigned long loaded_bytes);
+	unsigned long loaded_bytes,
+	unsigned long behaviours);
 /* As custom_edition_reordered_bitmaps_find, in the loaded map's tags, which
 the validator has checked: for the bitmaps of mods (mod_bitmaps.c), Halo
 PC's on any map. FALSE after logging why it cannot. */

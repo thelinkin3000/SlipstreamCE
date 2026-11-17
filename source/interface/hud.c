@@ -76,6 +76,7 @@ symbols in this file:
 /* ---------- headers */
 
 #include "cseries/cseries.h"
+#include "mcc_grenades.h" /* port: port/linux/game/mcc_grenades.h */
 #include "bitmaps/bitmap_group.h"
 #include "camera/director.h"
 #include "cache/texture_cache.h"
@@ -85,6 +86,7 @@ symbols in this file:
 #include "game/game_globals.h"
 #include "game/players.h"
 #include "interface/hud.h"
+#include "mcc_hud_draw.h" /* port: port/linux/game/mcc_hud_draw.c */
 #include "interface/hud_definitions.h"
 #include "interface/hud_messaging.h"
 #include "interface/hud_unit.h"
@@ -109,6 +111,8 @@ symbols in this file:
 #include "text/draw_string.h"
 #include "coop_spectate.h" /* port: port/linux/game/coop_spectate.c */
 #include "network_coop.h" /* port: port/linux/game/network_coop.c */
+#include "network_chat.h" /* port: port/linux/game/network_chat.c */
+#include "network_votekick.h" /* port: port/linux/game/network_votekick.c */
 #include "text/font_group.h"
 #include "text/text_group.h"
 #include "units/unit_definitions.h"
@@ -948,7 +952,7 @@ static void hud_draw_friendly_indicator(
 				bitmap,
 				&position,
 				&clip,
-				1.0f,
+				mcc_hud_bitmap_scale(interface_get_tag_index(_interface_bitmap_multiplayer_hud)), /* port: MCC bitmap units */
 				0.0f,
 				1.0f);
 		}
@@ -1008,6 +1012,7 @@ allies' if it shows only friends (game_engine_draw_object_in_motion_sensor). */
 /* the platform layer's (port/linux/src/port_config.c) */
 const char *config_string(const char *name);
 double config_real(const char *name);
+int config_boolean(const char *name);
 unsigned long config_changes(void);
 /* port/linux/game/network_voice.c's: a player talking in voice chat (its
 machine), and its speaker drawn */
@@ -1126,6 +1131,37 @@ void hud_player_name_color(
 	}
 }
 
+/* port: the line of sight to an enemy's head, tested once a tick for each
+local player's view rather than at every frame drawn: in a 64-player match
+the names' rays and head markers were a tenth of the HUD's time */
+static struct
+{
+	long player_index;
+	long tick;
+	boolean in_sight;
+} hud_player_name_sight[MAXIMUM_LOCAL_PLAYERS][HALO_PORT_MAXIMUM_NETWORK_PLAYERS];
+
+static boolean hud_player_name_in_sight_this_tick(
+	long player_index,
+	long unit_index,
+	real_point3d const *head_position)
+{
+	long slot = player_index & 0xFFFF;
+	short view = render.local_player_index;
+	long tick = game_time_get();
+
+	if (slot >= HALO_PORT_MAXIMUM_NETWORK_PLAYERS || !VALID_INDEX(view, MAXIMUM_LOCAL_PLAYERS))
+		return hud_player_name_in_sight(unit_index, head_position);
+	if (hud_player_name_sight[view][slot].player_index != player_index ||
+		hud_player_name_sight[view][slot].tick != tick)
+	{
+		hud_player_name_sight[view][slot].player_index = player_index;
+		hud_player_name_sight[view][slot].tick = tick;
+		hud_player_name_sight[view][slot].in_sight = hud_player_name_in_sight(unit_index, head_position);
+	}
+	return hud_player_name_sight[view][slot].in_sight;
+}
+
 static void hud_draw_player_name(
 	long player_index,
 	boolean ally,
@@ -1147,20 +1183,31 @@ static void hud_draw_player_name(
 
 	if (font_index == NONE)
 		return;
+	/* (port: an enemy whose body is well past the range has no head in it
+	either - the head is within a world unit of the body's origin - and is
+	not looked for) */
+	if (!ally &&
+		distance3d(&render.camera.position, &object_get(player->unit_index)->object.position) >= enemy_range + 2.0f)
+	{
+		return;
+	}
 	unit_get_head_position(player->unit_index, &head_position);
 	distance = distance3d(&render.camera.position, &head_position);
 	if (!ally && distance >= enemy_range)
 		return;
-	if (!ally &&
-		(unit_get(player->unit_index)->unit.active_camouflage > 0.5f ||
-		!hud_player_name_in_sight(player->unit_index, &head_position)))
-	{
+	if (!ally && unit_get(player->unit_index)->unit.active_camouflage > 0.5f)
 		return;
+	/* (where the game draws a teammate's triangle; off the screen, no line
+	of sight is tested) */
+	{
+		real_point3d above = head_position;
+
+		above.z += 0.30000001f;
+		matrix4x3_transform_point(&render.frustum.world_to_view, &above, &view_position);
 	}
-	/* (where the game draws a teammate's triangle) */
-	head_position.z += 0.30000001f;
-	matrix4x3_transform_point(&render.frustum.world_to_view, &head_position, &view_position);
 	if (!render_camera_view_to_screen(&render.camera, &render.frustum, &view_position, &screen_position))
+		return;
+	if (!ally && !hud_player_name_in_sight_this_tick(player_index, player->unit_index, &head_position))
 		return;
 	x = (short)fast_ftol(screen_position.x) - render.camera.viewport_bounds.x0;
 	y = (short)fast_ftol(screen_position.y) - render.camera.viewport_bounds.y0;
@@ -1170,7 +1217,8 @@ static void hud_draw_player_name(
 			interface_get_tag_index(_interface_bitmap_multiplayer_hud), 0, 0);
 
 		if (bitmap)
-			y -= bitmap->registration_point.y;
+			y -= (short)(bitmap->registration_point.y *
+				mcc_hud_bitmap_scale(interface_get_tag_index(_interface_bitmap_multiplayer_hud))); /* port: match the MCC arrow's scale */
 	}
 	y -= 2;
 	font = font_definition_get(font_index);
@@ -1304,6 +1352,12 @@ static void temporary_hud_draw(
 			&scenario_get_game_globals()->grenades,
 			unit->unit.current_grenade_index,
 			struct game_globals_grenade);
+		/* port: retain MCC inventory counts with bounded tag-name formatting. */
+		if (mcc_grenades_active())
+			snprintf(temporary + csstrlen(temporary), sizeof(temporary) - csstrlen(temporary), "%d %s|n",
+				mcc_grenades_get(player->unit_index, unit->unit.current_grenade_index),
+				tag_name_strip_path(tag_get_name(grenade->projectile.index)));
+		else
 		snprintf(
 			temporary + csstrlen(temporary),
 			sizeof(temporary) - csstrlen(temporary),
@@ -1397,6 +1451,65 @@ static void temporary_hud_draw(
 	return;
 }
 
+/* port: the match clock (display.match_timer, off by default: Custom
+Edition's HUD has none), counting up from the game's
+first tick, which the items' respawn periods count from as well
+(game_engine_update_item_spawn's game_time_get() % respawn_period): an item
+is back on the map at every multiple of its period on the clock. */
+static boolean hud_match_timer_setting(
+	void)
+{
+	static boolean setting = FALSE;
+	static unsigned long read_at = (unsigned long)-1;
+
+	/* (read again when Settings changes it) */
+	if (read_at != config_changes())
+	{
+		read_at = config_changes();
+		setting = config_boolean("display.match_timer") != 0;
+	}
+
+	return setting;
+}
+
+static void hud_draw_match_timer(
+	void)
+{
+	long font_index = hud_get_font_index();
+	wchar_t time_string[32];
+	real_argb_color color;
+	rectangle2d bounds;
+	struct font_header *font;
+
+	if (!hud_match_timer_setting() || font_index == NONE)
+		return;
+	ticks_to_unicode_time_string(game_time_get(), NUMBEROF(time_string), time_string);
+	/* (a time under a minute is drawn with no minutes digit, which a clock
+	counting up from zero starts at: " :07") */
+	if (time_string[0] == L' ')
+		time_string[0] = L'0';
+	font = font_definition_get(font_index);
+	/* (the HUD's window, which a wide screen widens and a split screen
+	divides, in the view's coordinates; into the corner, where the first
+	person's weapon is not drawn) */
+	bounds.x1 = render.camera.window_bounds.x1 - render.camera.viewport_bounds.x0 - 5;
+	bounds.x0 = bounds.x1 - 320;
+	bounds.y1 = render.camera.window_bounds.y1 - render.camera.viewport_bounds.y0 - 14;
+	bounds.y0 = bounds.y1 - (font->ascending_height + font->descending_height);
+	hud_get_text_color(&color);
+	/* (lifted toward white, and whole: the HUD's own text colour is lost
+	against a map as bright as it) */
+	color.red += (1.0f - color.red) * 0.65f;
+	color.green += (1.0f - color.green) * 0.65f;
+	color.blue += (1.0f - color.blue) * 0.65f;
+	color.alpha = 1.0f;
+	/* (right justified: 1) */
+	draw_string_set_draw_mode(font_index, NONE, 1, 0, &color);
+	rasterizer_draw_unicode_string(&bounds, NULL, NULL, 0, time_string);
+
+	return;
+}
+
 void hud_draw_screen(
 	void)
 {
@@ -1407,6 +1520,8 @@ void hud_draw_screen(
 	if (player_index != NONE)
 	{
 		struct player_datum *player = player_get(player_index);
+		/* port: related MCC HUD elements share this player's unit safe frame. */
+		mcc_hud_view_begin(player->unit_index);
 
 		if ((!game_engine_running() || game_engine_display_team_indicators()) &&
 			!cinematic_in_progress())
@@ -1423,6 +1538,13 @@ void hud_draw_screen(
 		/* port: the network co-op vote to skip a cinematic */
 		if (cinematic_in_progress())
 			coop_skip_vote_draw(render.local_player_index);
+
+		/* port: the match clock, in multiplayer */
+		if (game_engine_running() && !cinematic_in_progress() &&
+			hud_scripted_globals->show_hud)
+		{
+			hud_draw_match_timer();
+		}
 
 		if (!game_time_get_paused() &&
 			render.local_player_index == local_player_get_next(NONE))
@@ -1455,6 +1577,11 @@ void hud_draw_screen(
 		}
 
 		hud_messaging_update(render.local_player_index);
+		/* port: network games' text chat, the lines this view's player hears */
+		network_chat_draw(render.local_player_index);
+		/* port: the players' vote running, its box (F1 yes, F2 no) */
+		network_votekick_draw(render.local_player_index);
+		mcc_hud_view_end(); /* port: no frame choice leaks to another view */
 	}
 
 	rasterizer_hud_end();

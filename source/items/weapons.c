@@ -218,9 +218,14 @@ symbols in this file:
 #include "effects/effect_definitions.h"
 #include "effects/effects.h"
 #include "game/cheats.h"
+#include "muzzle_lighting.h" /* port: port/linux/game/muzzle_lighting.c */
+#include "mcc_script_effects.h" /* port: MCC host-approved ammunition prediction */
+#include "mcc_campaign.h" /* port: MCC host-approved reserve/battery prediction */
 #include "game/game.h"
 #include "game/game_engine.h"
+#include "infection.h" /* port: port/linux/game/infection.c */
 #include "game/players.h"
+#include "game/aim_assist.h" /* port: the reticle's read-only shot direction */
 #include "interface/first_person_weapons.h"
 #include "math/periodic_functions.h"
 #include "models/model_animation_definitions.h"
@@ -230,6 +235,7 @@ symbols in this file:
 #include "sound/sound_definitions.h"
 #include "units/unit_definitions.h"
 #include "units/units.h"
+#include "mcc_projectiles.h" /* port: port/linux/game/mcc_projectiles.c */
 
 #ifdef HALO_PORT_MAXIMUM_NETWORK_PLAYERS
 #include "bitmaps/bitmap_group.h"
@@ -369,6 +375,11 @@ struct trigger_firing_effect
 };
 
 /* ---------- prototypes */
+
+/* port/linux/game/network_objects.c's: whether a client of the distributed
+netcode is deleting an object in distributed_client_delete (the host's, on
+its word, or one the host has not told it of) */
+boolean network_objects_client_deleting(void);
 
 static short weapon_magazine_count(
 	struct weapon_definition const *weapon_definition);
@@ -908,9 +919,16 @@ void weapon_set_total_rounds(
 void weapon_delete(
 	long weapon_index)
 {
-	if (game_engine_running())
+	/* port: release MCC first-person references before the object disappears. */
+	mcc_first_person_weapon_deleted(weapon_index);
+	/* (port: but a flag or ball a client of the distributed netcode deletes,
+	on the host's word or as one the host has not told it of: objects.c's
+	object_delete_initial_recursive) */
+	if (game_engine_running() && !network_objects_client_deleting())
 	{
-		match_assert("c:\\halo\\SOURCE\\items\\weapons.c", 234, !weapon_is_flag(weapon_index));
+		/* port: (but an Infection zombie's skull: infection.c) */
+		match_assert("c:\\halo\\SOURCE\\items\\weapons.c", 234,
+			!weapon_is_flag(weapon_index) || infection_can_delete_skull(weapon_index));
 	}
 
 	return;
@@ -1543,7 +1561,8 @@ static void weapon_magazine_finish_reload(
 	if (rounds_loaded>magazine_definition->rounds_loaded_maximum)
 		rounds_loaded = magazine_definition->rounds_loaded_maximum;
 
-	if (!cheat.infinite_ammo && TEST_FLAG(weapon->item.flags, 1))
+	/* port: MCC clients mirror the host's reserve ammunition rule. */
+	if (!(cheat.infinite_ammo || mcc_campaign_unlimited_ammo()) && TEST_FLAG(weapon->item.flags, 1))
 		magazine->rounds_total = magazine->rounds_total-rounds_loaded+magazine->rounds_loaded;
 
 	magazine->rounds_loaded = rounds_loaded;
@@ -2370,6 +2389,55 @@ static void projectile_distribute(
 	return;
 }
 
+/* port: the player's pre-spread ray, following trigger_create_projectiles'
+origin, offset, autoaim and weapon-origin rules, without creating a shot. */
+boolean weapon_get_projectile_ray(long weapon_index, short trigger_index, real_point3d *origin, real_vector3d *forward)
+{
+	struct weapon_datum *weapon = weapon_get(weapon_index);
+	struct weapon_definition *definition = weapon_definition_get(weapon->definition_index);
+	long owner_index = weapon_get_owner_object_index(weapon_index);
+	struct unit_datum *unit = owner_index != NONE ? unit_try_and_get(owner_index) : NULL;
+	struct weapon_trigger_definition *trigger;
+	struct object_marker marker;
+	real velocity = 0.0f;
+	long target_index; /* port: read-only MCC ray query */
+
+	if (!unit || unit->unit.player_index == NONE || trigger_index < 0 ||
+		trigger_index >= definition->weapon.triggers.count)
+		return FALSE;
+	trigger = TAG_BLOCK_GET_ELEMENT(&definition->weapon.triggers, trigger_index, struct weapon_trigger_definition);
+	if (trigger->projectile.index == NONE)
+		return FALSE;
+	/* port: use the same pre-spread MCC ray as firing. */
+	if (mcc_projectile_ray(weapon_index, owner_index, trigger_index, FALSE, origin, forward, &velocity, &target_index))
+		return TRUE;
+	object_get_marker_by_name(weapon_get_effect_object_index(weapon_index),
+		trigger_index == 0 ? "primary trigger" : "secondary trigger", &marker, 1);
+	*origin = marker.matrix.position;
+	*forward = marker.matrix.forward;
+	if (!TEST_FLAG(trigger->flags, _weapon_trigger_projectiles_cannot_be_aimed_bit) &&
+		!TEST_FLAG(unit->object.damage_flags, _object_dead_bit))
+	{
+		struct unit_definition *unit_definition = unit_definition_get(unit->definition_index);
+		real_vector3d right, up;
+
+		unit_adjust_projectile_ray(owner_index, origin, forward, &velocity,
+			TEST_FLAG(unit_definition->unit.flags, _unit_fires_from_camera_bit), TRUE);
+		cross_product3d(global_up3d, forward, &right);
+		if (normalize3d(&right) == 0.0f)
+			right = *global_left3d;
+		cross_product3d(forward, &right, &up);
+		normalize3d(&up);
+		point_from_line3d(origin, forward, trigger->first_person_weapon_offset.x, origin);
+		point_from_line3d(origin, &right, trigger->first_person_weapon_offset.y, origin);
+		point_from_line3d(origin, &up, trigger->first_person_weapon_offset.z, origin);
+		player_aim_projectile_preview(unit->unit.player_index, origin, forward);
+	}
+	if (TEST_FLAG(trigger->flags, _weapon_trigger_uses_weapon_origin_bit))
+		*origin = marker.matrix.position;
+	return normalize3d(forward) != 0.0f;
+}
+
 static void trigger_create_projectiles(
 	long weapon_index,
 	short trigger_index)
@@ -2413,7 +2481,11 @@ static void trigger_create_projectiles(
 		long projectile_definition_index;
 		short projectile_count;
 
-		if (!TEST_FLAG(trigger_definition->flags, _weapon_trigger_projectiles_cannot_be_aimed_bit) &&
+		/* port: MCC owns camera-relative placement and the pre-creation cover check. */
+		boolean mcc_ray = mcc_projectile_ray(weapon_index, owner_object_index, trigger_index, TRUE,
+			&origin, &forward, &velocity, &target_object_index);
+
+		if (!mcc_ray && !TEST_FLAG(trigger_definition->flags, _weapon_trigger_projectiles_cannot_be_aimed_bit) &&
 			unit &&
 			!TEST_FLAG(unit->object.damage_flags, _object_dead_bit))
 		{
@@ -2570,7 +2642,8 @@ static void trigger_create_projectiles(
 						real_point3d camera_position;
 
 						unit_get_camera_position(owner_object_index, &camera_position);
-						object_force_inside_bsp(projectile_object_index, &camera_position);
+						/* port: MCC already checks cover before attachments emit their first point. */
+						if (!mcc_ray) object_force_inside_bsp(projectile_object_index, &camera_position);
 					}
 					if (target_object_index!=NONE)
 					{
@@ -2633,7 +2706,8 @@ static void weapon_trigger_fire(
 				!(TEST_FLAG(weapon_definition->weapon.flags, _weapon_cannot_fire_at_maximum_age_bit) && weapon->weapon.age>=1.0f) &&
 				(magazine->rounds_loaded>=trigger_definition->minimum_rounds_loaded_per_shot || !TEST_FLAG(trigger->flags, _weapon_trigger_released_since_last_shot_bit)))
 			{
-				if (!cheat.bottomless_clip && (magazine->rounds_loaded-= trigger_definition->rounds_per_shot)<=0)
+				/* port: keep MCC predicted ammunition consistent with the host. */
+				if (!(cheat.bottomless_clip || mcc_script_effect_enabled(MCC_EFFECT_BOTTOMLESS_CLIP)) && (magazine->rounds_loaded-= trigger_definition->rounds_per_shot)<=0)
 				{
 					magazine->rounds_loaded= 0;
 				}
@@ -2652,7 +2726,8 @@ static void weapon_trigger_fire(
 		fired= TRUE;
 	}
 
-	if (cheat.bottomless_clip)
+	/* port: MCC host-approved prediction, without enabling native client cheats. */
+	if (cheat.bottomless_clip || mcc_script_effect_enabled(MCC_EFFECT_BOTTOMLESS_CLIP))
 	{
 		fired= TRUE;
 	}
@@ -2776,7 +2851,8 @@ static void weapon_trigger_fire(
 			trigger->illumination= 1.0f;
 		}
 
-		if (!cheat.bottomless_clip)
+		/* port: MCC's replicated bottomless clip leaves heat unchanged too. */
+		if (!(cheat.bottomless_clip || mcc_script_effect_enabled(MCC_EFFECT_BOTTOMLESS_CLIP)))
 		{
 			weapon->weapon.heat+= trigger_definition->heat_generated_per_round;
 		}
@@ -2790,7 +2866,8 @@ static void weapon_trigger_fire(
 			weapon->weapon.heat= 1.0f;
 		}
 
-		if (TEST_FLAG(weapon->item.flags, _item_belongs_to_player_bit) && !cheat.infinite_ammo)
+		/* port: MCC clients mirror the host's battery consumption rule. */
+		if (TEST_FLAG(weapon->item.flags, _item_belongs_to_player_bit) && !(cheat.infinite_ammo || mcc_campaign_unlimited_ammo()))
 		{
 			weapon->weapon.age+= trigger_definition->age_generated_per_round;
 			if (weapon->weapon.age>1.0f)
@@ -2810,6 +2887,7 @@ static void weapon_trigger_fire(
 			else
 			{
 				trigger_create_projectiles(weapon_index, trigger_index);
+				muzzle_lighting_shot(weapon_index, trigger_index); /* port: successful shot only */
 				ai_handle_unit_effect(owner_object_index, _ai_unit_effect_shooting, trigger_definition->firing_noise);
 			}
 		}

@@ -30,6 +30,7 @@ symbols in this file:
 #include "units/unit_definitions.h"
 #include "units/units.h"
 #include "view_fov.h" /* port: port/linux/game/view_fov.c */
+#include "network_replay.h" /* port: port/linux/game/network_replay_playback.c */
 
 /* ---------- constants */
 
@@ -39,7 +40,9 @@ enum
 	without a bound check, so it must stay the size of the native builds'
 	particle pool (effects/particles.c, halo_port_capacity.h) */
 	MAXIMUM_RENDERED_PARTICLES = HALO_PORT_MAXIMUM_PARTICLES,
-	MAXIMUM_RENDERED_PARTICLE_GROUPS = 512,
+	/* the native builds' (halo_port_capacity.h: the Xbox's 512 on Android
+	and the Xbox builds) */
+	MAXIMUM_RENDERED_PARTICLE_GROUPS = HALO_PORT_MAXIMUM_RENDERED_PARTICLE_GROUPS,
 };
 
 /* ---------- macros */
@@ -78,6 +81,12 @@ boolean local_player_is_first_person(
 		director_get_perspective(local_player_index) ==
 		_director_perspective_first_person;
 
+	/* port: a replay's playback has no local player: its view is first
+	person through the watched player's eyes (their weapon's particles
+	those of the arms drawn: first_person_weapons.c), and the player is
+	not looked up (port/linux/game/network_replay_playback.c) */
+	if (network_replay_viewing())
+		return local_player_index == 0 && network_replay_viewing_eyes();
 	if (!result)
 	{
 		long player_index = local_player_get_player_index(local_player_index);
@@ -128,6 +137,77 @@ static int __cdecl compare_rendered_particles(
 	return result;
 }
 
+/* port: the visible particles in compare_rendered_particles' order, by a
+radix sort on the same key (definition, cluster, attached to the
+first-person weapon) a byte at a time, each pass skipped when every particle
+has the same byte: qsort's (musl's smoothsort, swapping the records by
+memcpy) was a third of the particles' drawing in a 64-player match. It is
+stable, so a group's particles keep the order they were listed in, which
+qsort never promised. */
+static void rendered_particles_sort(
+	struct rendered_particle_datum *particles,
+	long count)
+{
+	static struct rendered_particle_datum scratch[MAXIMUM_RENDERED_PARTICLES];
+	struct rendered_particle_datum *from = particles;
+	struct rendered_particle_datum *to = scratch;
+	long index;
+	short pass;
+
+	/* (least significant first: the flag, the cluster's two bytes, the
+	definition's two; the signed values offset so that they sort as numbers) */
+	for (pass = 0; pass < 5; pass++)
+	{
+		long counts[256];
+		long total = 0;
+		short digit;
+
+		csmemset(counts, 0, sizeof(counts));
+		for (index = 0; index < count; index++)
+		{
+			struct rendered_particle_datum const *particle = &from[index];
+			unsigned long key = pass == 0 ? (unsigned long)(particle->attached_to_first_person_weapon != 0) :
+				pass < 3 ? (unsigned long)(word)(particle->cluster_index ^ 0x8000) >> (8 * (pass - 1)) :
+				(unsigned long)(word)(particle->definition_index ^ 0x8000) >> (8 * (pass - 3));
+
+			counts[key & 0xFF]++;
+		}
+		for (digit = 0; digit < 256; digit++)
+		{
+			if (counts[digit] == count)
+				break;
+		}
+		if (digit < 256)
+			continue;
+		for (digit = 0; digit < 256; digit++)
+		{
+			long here = counts[digit];
+
+			counts[digit] = total;
+			total += here;
+		}
+		for (index = 0; index < count; index++)
+		{
+			struct rendered_particle_datum const *particle = &from[index];
+			unsigned long key = pass == 0 ? (unsigned long)(particle->attached_to_first_person_weapon != 0) :
+				pass < 3 ? (unsigned long)(word)(particle->cluster_index ^ 0x8000) >> (8 * (pass - 1)) :
+				(unsigned long)(word)(particle->definition_index ^ 0x8000) >> (8 * (pass - 3));
+
+			to[counts[key & 0xFF]++] = *particle;
+		}
+		{
+			struct rendered_particle_datum *swap = from;
+
+			from = to;
+			to = swap;
+		}
+	}
+	if (from != particles)
+		csmemcpy(particles, from, (size_t)count * sizeof(*particles));
+
+	return;
+}
+
 void render_particles(
 	void)
 {
@@ -160,8 +240,11 @@ void render_particles(
 			boolean owned_by_local_player =
 				particle->local_player_index == local_player_index;
 
+			/* port: particle_drawn holds back a particle until a tick's
+			update has passed, as the Xbox's frame a tick did */
 			/* port: not the first-person weapon's with it hidden (view_fov.c) */
-			if (render_location_visible(&particle->location) &&
+			if (particle_drawn(particle_index) &&
+				render_location_visible(&particle->location) &&
 				viewmodel_draws_geometry(owned_by_local_player &&
 					TEST_FLAG(particle->flags, _particle_datum_dont_draw_third_person_bit)) &&
 				(!TEST_FLAG(
@@ -181,11 +264,17 @@ void render_particles(
 					(short)particle->definition_index;
 				rendered_particle->cluster_index =
 					particle->location.cluster_index;
+				/* port: a charge stuck to the viewmodel is drawn with it.
+				One that also shows on the body was left on the world's
+				view, and the near plane cut it down. */
 				rendered_particle->attached_to_first_person_weapon =
 					owned_by_local_player &&
+					(TEST_FLAG(
+						particle->flags,
+						_particle_datum_dont_draw_third_person_bit) ||
 					TEST_FLAG(
 						particle->flags,
-						_particle_datum_dont_draw_third_person_bit);
+						_particle_datum_attached_to_local_player_bit));
 			}
 		}
 
@@ -193,11 +282,7 @@ void render_particles(
 		{
 			short group_count = 0;
 
-			qsort(
-				rendered_particles,
-				rendered_particle_count,
-				sizeof(struct rendered_particle_datum),
-				compare_rendered_particles);
+			rendered_particles_sort(rendered_particles, rendered_particle_count);
 
 			{
 				struct rendered_particle_datum *rendered_particle =
@@ -305,7 +390,7 @@ void render_particles(
 						}
 						else
 						{
-							position = particle->position;
+							particle_render_position(rendered_particle->particle_index, &position);
 							direction = particle->direction;
 							/* January explicitly reasserts the detached sentinel here. */
 							particle->object_index = NONE;

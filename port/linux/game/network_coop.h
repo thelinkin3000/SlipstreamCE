@@ -45,9 +45,54 @@ enum
 /* whether this is a network co-op game (not its lobby, whose menu scene also
 has no game engine) */
 boolean network_coop_active(void);
+/* Host: retain the current session roster when loading a checkpoint. */
+void network_coop_restore_players(void);
+/* game_state.c: remember the team only after a checkpoint write succeeds. */
+void network_coop_checkpoint_saved(void);
+/* main.c: host team-wipe policy, including checkpoint roster compatibility. */
+boolean network_coop_wipe_reverts(void);
 /* whether the players collide with each other: FALSE in a co-op game whose
 host set Server Setup's PLAYER COLLISIONS off (bipeds.c, collisions.c) */
 boolean network_coop_player_collisions(void);
+/* whether the players hurt their AI allies: FALSE in a co-op game whose host
+set Server Setup's ALLY FRIENDLY FIRE off (game_engine.c's
+game_engine_friendly_damage) */
+boolean network_coop_ally_friendly_fire(void);
+/* whether this machine's players play with friendly fire between players
+(network.coop_own_friendly_fire: the pause menu's FRIENDLY FIRE) */
+boolean network_coop_own_friendly_fire(void);
+/* host: the choice a client's player's input says is theirs */
+void network_coop_note_player_friendly_fire(long player_index, boolean friendly_fire);
+/* host: whether one player's hit may hurt another: both chose friendly fire,
+or the one hit has been away from the controls for over 70 seconds */
+boolean network_coop_players_friendly_fire(long attacker_player_index, long victim_player_index);
+/* host: whether the player has been away from the controls for over 70
+seconds (as friendly fire counts it) */
+boolean network_coop_player_away(long player_index);
+/* whether the game's host is a dedicated server (its co-op flag), whose
+loading zones ask for most of the players (players.c) */
+boolean network_coop_host_dedicated(void);
+/* host: a dedicated server's loading zones: whether a zone switches the BSP
+only for most of the living players who are not away (server.coop_bsp_switch
+"majority"), and the ticks after a switch before a zone may switch it again
+(server.coop_bsp_switch_cooldown_seconds; 0 elsewhere) */
+boolean network_coop_bsp_switch_majority(void);
+long network_coop_bsp_switch_cooldown_ticks(void);
+/* host: a player standing in a loading zone that needs more players (more:
+how many; in, total: those in such zones and those who count), or one that
+waits for the cooldown (more 0, seconds left in total): told every few
+seconds */
+void network_coop_tell_bsp_switch_waiting(long player_index, long more, long in, long total);
+/* host: a loading zone switched the BSP (from, to the structure BSP
+indices), crossed by these players: everyone told who, the server's log and
+an event (coop_bsp_switch) */
+void network_coop_note_bsp_switch(short from, short to, long const *player_indices, long count);
+/* whether the host's decision for the running game is to carry players standing on a vehicle */
+boolean network_game_port_vehicle_riding(void);
+/* host: the riding decision for a game as it starts, from that game alone (bit 3 of its cooperative_flags) */
+void network_game_port_vehicle_riding_start(struct network_game *game);
+/* a dedicated server: the riding rule (NONE, FALSE or TRUE) of the co-op entry it applied last */
+void network_game_port_vehicle_riding_entry(short rule);
 /* whether this machine is a co-op client, whose devices only the host moves */
 boolean network_coop_devices_remote(void);
 /* devices.c: a group's devices were set straight to its value */
@@ -107,9 +152,17 @@ boolean network_coop_vote_skip(void);
 cinematic, or because the mission failed); now is the game time before the
 revert */
 void network_coop_reverted(long now);
+void network_coop_reset_recovery(void);
 /* main.c: the skip vote is over once the skip has reverted */
 void network_coop_skip_done(void);
 /* the vote count to show, if a skippable cinematic is playing */
 boolean network_coop_skip_vote_status(short *votes, short *voters, boolean *voted);
+
+/* network_replay_playback.c: a replay's view of a cutscene. While a co-op
+cinematic is playing with the scripts holding the camera, the camera they
+hold (a client's, as the host sent it, between its last two ticks by
+fraction; the host's own, its window's), and TRUE; else FALSE. */
+struct observer_result;
+boolean network_coop_cutscene_camera(real fraction, struct observer_result *camera);
 
 #endif

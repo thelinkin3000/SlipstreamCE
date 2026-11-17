@@ -99,6 +99,8 @@ the bitmap has exactly two frames; the game's functions choose others.
 ```
 
 A list of texts, which widgets show by number. `\n` starts a new line.
+The text is always the file's: never a Custom Edition `loc.map`'s, whose
+language is whichever edition it came from.
 
 ### `<widget>`
 
@@ -126,7 +128,7 @@ be a child of many).
 | `description` | A column list's extended description: a widget |
 | `controller` | `1` to `4`, or `any` (the default); a `<child>`'s or `child_controller`: the one it is for |
 | `auto_close`, `auto_close_fade` | It closes itself after this many milliseconds, fading for this many |
-| `platform` | `desktop`, `android` (the Android app), `switch` or `web`, or several separated by spaces: it is only there. Every element takes this. |
+| `platform` | `desktop`, `android` (the Android app), `switch`, `ps5` or `web`, or several separated by spaces: it is only there. Every element takes this. |
 
 Widget flags: `pass_unhandled_to_focused_child` (an event it does not handle
 goes to its focused child: a screen needs it for its list to get events),
@@ -183,7 +185,9 @@ difficulty` are the port's, as the Xbox's take the Xbox's widgets. The
 settings screens': `port settings save` (OK) writes the settings changed
 (config.toml's, or `profile.<field>`: the profile being edited) and applies
 them, `port settings defaults` shows the defaults, `port settings help` the
-help of the row chosen; Controls Setup's `controls ...` bind the keyboard
+help of the row chosen; HDR Calibration's `port hdr calibration` (a
+`<data>`) has the renderer draw the pattern of the row chosen at the values
+shown; Controls Setup's `controls ...` bind the keyboard
 and mouse's controls (Enter takes the next key or button pressed; left and
 right choose which of two; Escape cancels, Delete clears); Change Color's
 `color picker ...` (the Xbox's names) set the profile's colour. The others
@@ -206,3 +210,6 @@ map=...>`), else a placeholder, placed where the PC version's picture is in
 its frame (`--pictures`: only where, not the picture, is read);
 `NON_HANDDRAWN.md` lists both. It needs `rsvg-convert`, Pillow, NumPy and
 SciPy.
+
+Port-owned settings screens can be regenerated without PC tags with
+`python tools/ce_menus.py --settings-only`; new screens are registered for embedding.

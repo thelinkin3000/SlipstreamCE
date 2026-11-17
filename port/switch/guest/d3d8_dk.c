@@ -21,10 +21,14 @@ and presenting go there; a draw and a visibility test do nothing yet.
 #include "sdl_platform.h"
 #include "halo_ui_pointer.h"
 #include "port_config.h"
+#include "loading_widescreen.h"
+#include "mcc_environment_shader.h"
 #include "posix.h"
 #include "dk_commands.h"
 #include "dk_shaders.h"
 #include "dk_textures.h"
+#include "plasma_model_shader.h"
+#include "plasma_occlusion.h"
 #include "../../linux/game/cache_file_formats.h"
 
 #include <math.h>
@@ -68,27 +72,151 @@ static float screen_scale[2] = { 1.0f, 1.0f };
 static long ui_offset;
 #define UI_OFFSET ((GLint)ui_offset)
 
+#ifdef HALO_ANDROID
+/* port: the settings screen_mode_choose reads, read again only when a setting
+changes: it runs every frame, and each read is a search of every setting by
+name (a fifth of the game thread's string compares in a campaign fight) */
+static struct
+{
+	unsigned long changes;
+	int ready;
+	long width;
+#ifdef HALO_SWITCH
+	long lines;
+	int uncapped, dynamic;
+#endif
+} screen_settings;
+static void screen_settings_read(void)
+{
+	/* display.screen_width, or 0 for the display's shape, which the app
+	passes (port/android/host/host_main.c) */
+	const char *display;
+	long width;
+
+	if (screen_settings.ready && screen_settings.changes == config_changes())
+		return;
+	screen_settings.changes = config_changes();
+	display = getenv("HALO_DISPLAY_WIDTH");
+	width = config_integer("display.screen_width");
+	if (width <= 0)
+		width = display ? atol(display) : 640;
+	if (width < 640)
+		width = 640;
+	if (width > 1600)
+		width = 1600;
+	screen_settings.width = width & ~1L;
+#ifdef HALO_SWITCH
+	screen_settings.lines = atol(config_string("display.resolution_limit"));
+	screen_settings.uncapped = config_boolean("debug.resolution_uncapped") != 0;
+	screen_settings.dynamic = config_boolean("display.dynamic_resolution") != 0;
+#endif
+	screen_settings.ready = 1;
+}
+#endif
+
 #ifdef HALO_SWITCH
 /* the host's (host_dk.c): the height it presents at, 1080 docked and 720 in
 handheld */
 unsigned int host_dk_output_height(void);
+unsigned int host_dk_gpu_frame_us(void);
+
+/* ---------- display.dynamic_resolution
+
+While the GPU's frame, averaged over the last 16 or so (host_dk_gpu_frame_us),
+is over DYNAMIC_DROP_US for DYNAMIC_DROP_FRAMES frames in a row, the screen
+is drawn one step lower (1080 to 900, 900 to 720, 720 to 480: never more);
+it goes back once the frame at the chosen lines, reckoned from the lower
+one's by their pixels, would be under DYNAMIC_RAISE_US for
+DYNAMIC_RAISE_FRAMES frames. A change waits DYNAMIC_HOLD_FRAMES after the
+last (the targets are made again at each), and the average its first
+DYNAMIC_SETTLE_FRAMES (it is the old size's until then). Asked between
+frames (screen_mode_choose, from halo_screen_commit), once a frame. */
+/* (dropped under 55 frames a second, 1/55 s of the GPU, for half a second;
+back up within 90% of a 60 Hz frame for a second) */
+#define DYNAMIC_DROP_US 18182
+#define DYNAMIC_RAISE_US 15000
+#define DYNAMIC_DROP_FRAMES 30
+#define DYNAMIC_RAISE_FRAMES 60
+#define DYNAMIC_HOLD_FRAMES 120
+#define DYNAMIC_SETTLE_FRAMES 20
+
+static struct
+{
+	unsigned int chosen, lower;
+	int dropped;
+	unsigned long frames_since_change, over, under;
+} dynamic;
+
+/* the lines a step below these (the steps 480, 720, 900 and 1080) */
+static unsigned int dynamic_step_below(unsigned int lines)
+{
+	return lines > 900 ? 900 : lines > 720 ? 720 : 480;
+}
+
+static unsigned int dynamic_resolution(unsigned int lines)
+{
+	unsigned int gpu_us;
+
+	if (!screen_settings.dynamic || lines <= SCREEN_HEIGHT)
+	{
+		dynamic.dropped = 0;
+		dynamic.chosen = lines;
+		return lines;
+	}
+	if (lines != dynamic.chosen)
+	{
+		/* (another choice of lines, or the console docked or undocked:
+		begun again at it) */
+		dynamic.chosen = lines;
+		dynamic.dropped = 0;
+		dynamic.frames_since_change = dynamic.over = dynamic.under = 0;
+	}
+	dynamic.lower = dynamic_step_below(lines);
+	dynamic.frames_since_change++;
+	gpu_us = host_dk_gpu_frame_us();
+	if (dynamic.frames_since_change < DYNAMIC_SETTLE_FRAMES || !gpu_us)
+		return dynamic.dropped ? dynamic.lower : lines;
+	if (!dynamic.dropped)
+	{
+		dynamic.over = gpu_us > DYNAMIC_DROP_US ? dynamic.over + 1 : 0;
+		if (dynamic.over >= DYNAMIC_DROP_FRAMES && dynamic.frames_since_change >= DYNAMIC_HOLD_FRAMES)
+		{
+			dynamic.dropped = 1;
+			dynamic.frames_since_change = dynamic.over = dynamic.under = 0;
+			platform_log("dynamic resolution: the GPU at %.1f ms a frame: %u lines, from %u", gpu_us / 1000.0,
+				dynamic.lower, lines);
+		}
+	}
+	else
+	{
+		float ratio = (float)lines / (float)dynamic.lower;
+		float reckoned = gpu_us * ratio * ratio;
+
+		dynamic.under = reckoned < DYNAMIC_RAISE_US ? dynamic.under + 1 : 0;
+		if (dynamic.under >= DYNAMIC_RAISE_FRAMES && dynamic.frames_since_change >= DYNAMIC_HOLD_FRAMES)
+		{
+			dynamic.dropped = 0;
+			dynamic.frames_since_change = dynamic.over = dynamic.under = 0;
+			platform_log("dynamic resolution: the GPU at %.1f ms a frame at %u lines, %.1f at %u: back to %u",
+				gpu_us / 1000.0, dynamic.lower, reckoned / 1000.0, lines, lines);
+		}
+	}
+	return dynamic.dropped ? dynamic.lower : lines;
+}
+
+/* for debug.show_resolution's corner (main.c): whether the screen is a
+step under the chosen lines now */
+int halo_screen_dynamic_resolution_dropped(void)
+{
+	return dynamic.dropped;
+}
 #endif
 
 static void screen_mode_choose(long *width, float scale[2])
 {
 #ifdef HALO_ANDROID
-	/* display.screen_width, or 0 for the display's shape, which the app
-	passes (port/android/host/host_main.c) */
-	const char *display = getenv("HALO_DISPLAY_WIDTH");
-
-	*width = config_integer("display.screen_width");
-	if (*width <= 0)
-		*width = display ? atol(display) : 640;
-	if (*width < 640)
-		*width = 640;
-	if (*width > 1600)
-		*width = 1600;
-	*width &= ~1L;
+	screen_settings_read();
+	*width = screen_settings.width;
 	scale[0] = scale[1] = 1.0f;
 #ifdef HALO_SWITCH
 	/* display.resolution_limit: the lines the screen's targets are drawn at,
@@ -97,12 +225,16 @@ static void screen_mode_choose(long *width, float scale[2])
 	which the host scales them up to: "900" docked is 69% of 1080p's pixels,
 	the GPU's room for 60 a second in a heavy scene */
 	{
-		long lines = atol(config_string("display.resolution_limit"));
+		long lines = screen_settings.lines;
 		unsigned int height = lines > SCREEN_HEIGHT ? (unsigned int)(lines < 1080 ? lines : 1080) : SCREEN_HEIGHT;
 		unsigned int output = host_dk_output_height();
 
-		if (height > output)
+		/* (debug.resolution_uncapped: drawn at those lines all the same, and
+		scaled down to the screen: a Lite's handheld 720p drawing docked
+		1080p's load, for testing it) */
+		if (height > output && !screen_settings.uncapped)
 			height = output;
+		height = dynamic_resolution(height);
 		if (height > SCREEN_HEIGHT)
 			scale[0] = scale[1] = (float)height / (float)SCREEN_HEIGHT;
 	}
@@ -153,9 +285,140 @@ float halo_screen_scale(void)
 	return screen_scale[0] > screen_scale[1] ? screen_scale[0] : screen_scale[1];
 }
 
+/* display.model_detail (as d3d8_gl.c's): "stock" chooses a model's level of
+detail by the Xbox's 480 lines, "native" by the display's, "highest" draws
+the most detailed level of whatever is drawn at all */
+enum
+{
+	_model_detail_stock,
+	_model_detail_native,
+	_model_detail_highest,
+};
+
+/* (read again only when a setting changes: every model asks, every frame) */
+static int model_detail_setting(void)
+{
+	static unsigned long read_at = (unsigned long)-1;
+	static int value;
+
+	if (read_at != config_changes())
+	{
+		const char *setting = config_string("display.model_detail");
+
+		read_at = config_changes();
+		value = !strcmp(setting, "native") ? _model_detail_native :
+			!strcmp(setting, "highest") ? _model_detail_highest : _model_detail_stock;
+	}
+	return value;
+}
+
+int halo_model_detail_stock(void)
+{
+	return model_detail_setting() == _model_detail_stock;
+}
+
+float halo_model_detail_scale(int level)
+{
+	float display_scale;
+
+	if (model_detail_setting() == _model_detail_stock)
+		return 1.0f;
+	if (model_detail_setting() == _model_detail_highest && level)
+		return 1.0e6f;
+	display_scale = halo_screen_pixel_scale();
+	return display_scale > 1.0f ? display_scale : 1.0f;
+}
+
+/* (the OpenGL renderer's alone, which the settings offer only there:
+display.overshield_effect's fade up the body, which this renderer's vertex
+shaders do not draw, and display.hdr's tone mapping) */
+void d3d8_gl_set_height_fade(float inverse_softness, float height, float offset, float scale)
+{
+	(void)inverse_softness;
+	(void)height;
+	(void)offset;
+	(void)scale;
+}
+
+void halo_screen_tone_map(short x0, short y0, short x1, short y1)
+{
+	(void)x0;
+	(void)y0;
+	(void)x1;
+	(void)y1;
+}
+
 void halo_screen_ui_offset(unsigned char centered)
 {
 	ui_offset = centered ? (halo_screen_width() - 640) / 2 : 0;
+}
+
+/* (as d3d8_gl.c's: a split screen's view centres the menus' 640 columns in
+it, a quarter's 320) */
+void halo_screen_ui_offset_view(long view_width)
+{
+	long width = halo_screen_width();
+
+	ui_offset = view_width > 0 && view_width < width ? (view_width > 320 ? (view_width - 320) / 2 : 0) : (width - 640) / 2;
+}
+
+long halo_screen_ui_offset_current(void)
+{
+	return ui_offset;
+}
+
+/* display.reversed_depth is the OpenGL renderer's (d3d8_gl.c): here the
+depth is the Xbox's */
+BOOL xgpu_reversed_depth;
+
+/* HDR Calibration is the desktop's: no HDR display here */
+int halo_hdr_calibration_available(void)
+{
+	return 0;
+}
+
+void halo_hdr_calibration_show(int pattern, int paper_white, int peak_brightness)
+{
+	(void)pattern;
+	(void)paper_white;
+	(void)peak_brightness;
+}
+
+/* the OpenGL renderer's other static geometry (d3d8_gl.c's static buffers, an
+Android fix): here what is in the window is drawn where it is
+(d3d8_resources.c forgets a renamed buffer's copy itself) */
+void xgpu_static_buffers_add(const void *buffers, long count, unsigned long stride, int indices, const void *end)
+{
+	(void)buffers;
+	(void)count;
+	(void)stride;
+	(void)indices;
+	(void)end;
+}
+
+void xgpu_static_buffers_remove(const void *buffers, long count, unsigned long stride, int indices)
+{
+	(void)buffers;
+	(void)count;
+	(void)stride;
+	(void)indices;
+}
+
+void xgpu_static_range_add(const void *start, unsigned long size, int indices)
+{
+	(void)start;
+	(void)size;
+	(void)indices;
+}
+
+void xgpu_static_range_remove(const void *start, int indices)
+{
+	(void)start;
+	(void)indices;
+}
+
+void xgpu_static_forget_all(void)
+{
 }
 
 /* display.shadow_resolution, display.per_pixel_lighting and
@@ -165,11 +428,6 @@ it, and the 3D view is drawn as it is */
 long halo_shadow_map_scale(void)
 {
 	return 1;
-}
-
-void halo_vertex_shader_lighting(unsigned long handle)
-{
-	(void)handle;
 }
 
 void halo_screen_anti_alias(short x0, short y0, short x1, short y1)
@@ -323,6 +581,16 @@ unsigned char halo_screen_fast_blur(void)
 
 /* the part of a frame the game is about to draw, for the host's record of
 the commands it ran (DK_COMMAND_MARKER) */
+int halo_render_defer_sun_glow(void)
+{
+	return 0;
+}
+
+int halo_render_defer_water(void)
+{
+	return 0;
+}
+
 void halo_render_marker(char const *name)
 {
 	struct dk_command_marker *command = stream_command(DK_COMMAND_MARKER, sizeof(*command));
@@ -371,6 +639,14 @@ struct vertex_shader_object
 	struct vertex_element elements[XGPU_VERTEX_ATTRIBUTE_COUNT];
 	unsigned long element_count;
 	unsigned long packed_mask;
+	/* one of the game's model lighting programs with both point lights
+	(halo_vertex_shader_lighting): its draws can have the dynamic lighting's
+	variant */
+	BOOL plasma_model;
+	/* how many times a variant's key was sent to be compiled: a second time
+	means the first failed, and this program draws as stock from then on */
+	unsigned char plasma_sent[4];
+	BOOL plasma_failed;
 };
 
 /* ---------- the device */
@@ -379,6 +655,12 @@ struct dk_device
 {
 	D3DPRESENT_PARAMETERS presentation;
 	D3DSurface back_buffer;
+	/* the frame shown last, as the loading screen reads it (GetBackBuffer
+	with -1: front_buffer_ready); the frame it was last asked for in, and
+	the frame its picture was last taken in (front_buffer_take), each + 1 */
+	D3DSurface front_buffer;
+	unsigned long front_buffer_asked;
+	unsigned long front_buffer_taken;
 	D3DSurface depth_buffer;
 	D3DSurface *render_target;
 	D3DSurface *depth_stencil;
@@ -389,6 +671,9 @@ struct dk_device
 	D3DSHADERCONSTANTMODE shader_constant_mode;
 
 	struct vertex_shader_object *vertex_shader;
+	/* SetVertexShader chose the fixed-function pipeline (with 0): the
+	loading screen's draws (nv2a_dk_fixed_function_glsl) */
+	BOOL fixed_function;
 	struct vertex_shader_object *program_slots[VERTEX_PROGRAM_SLOTS];
 	unsigned long program_address;
 	float constants[XGPU_VERTEX_CONSTANT_COUNT][4];
@@ -477,15 +762,63 @@ finished its submission, which the host ran before */
 #define HANDED_FREE_LIMIT 2048
 
 static void *pending_frees[PENDING_FREE_LIMIT];
+static unsigned long pending_free_sizes[PENDING_FREE_LIMIT];
 static unsigned long pending_free_count;
 static unsigned long pending_free_bytes;
 
 static struct
 {
 	void *buffer;
+	unsigned long size;
 	unsigned long submission;
 } handed_frees[HANDED_FREE_LIMIT];
 static unsigned long handed_free_first, handed_free_count;
+
+/* port: buffers the GPU is done with, kept for the next of their size instead
+of freed. The dynamic lighting's fields upload a few 16 KB volumes every frame,
+and each malloc and free of one was the C library mapping and unmapping pages
+(a system call each way): dk_stream_buffer hands one of these back. */
+#define RECYCLED_LIMIT 32
+#define RECYCLED_LARGEST (64 * 1024)
+static struct
+{
+	void *buffer;
+	unsigned long size;
+} recycled[RECYCLED_LIMIT];
+static unsigned long recycled_count;
+
+static void buffer_retire(void *buffer, unsigned long size)
+{
+	if (size && size <= RECYCLED_LARGEST)
+	{
+		/* (full: the one kept longest makes room, so a size no longer asked
+		for, a loading screen's texture, doesn't hold its place) */
+		if (recycled_count == RECYCLED_LIMIT)
+		{
+			free(recycled[0].buffer);
+			recycled[0] = recycled[--recycled_count];
+		}
+		recycled[recycled_count].buffer = buffer;
+		recycled[recycled_count++].size = size;
+		return;
+	}
+	free(buffer);
+}
+
+void *dk_stream_buffer(unsigned long size)
+{
+	unsigned long index;
+
+	for (index = recycled_count; index-- > 0;)
+		if (recycled[index].size == size)
+		{
+			void *buffer = recycled[index].buffer;
+
+			recycled[index] = recycled[--recycled_count];
+			return buffer;
+		}
+	return malloc(size);
+}
 
 /* the handed-over buffers whose submissions the GPU has finished, freed;
 with wait, all of them, waiting as long as it takes */
@@ -502,7 +835,7 @@ static void handed_frees_release(BOOL wait)
 			usleep(200);
 			continue;
 		}
-		free(handed_frees[index].buffer);
+		buffer_retire(handed_frees[index].buffer, handed_frees[index].size);
 		handed_free_first = (handed_free_first + 1) % HANDED_FREE_LIMIT;
 		handed_free_count--;
 	}
@@ -519,8 +852,11 @@ static void stream_flush(void)
 	{
 		if (handed_free_count == HANDED_FREE_LIMIT)
 			handed_frees_release(TRUE);
+		--pending_free_count;
 		handed_frees[(handed_free_first + handed_free_count) % HANDED_FREE_LIMIT].buffer =
-			pending_frees[--pending_free_count];
+			pending_frees[pending_free_count];
+		handed_frees[(handed_free_first + handed_free_count) % HANDED_FREE_LIMIT].size =
+			pending_free_sizes[pending_free_count];
 		handed_frees[(handed_free_first + handed_free_count) % HANDED_FREE_LIMIT].submission = submission;
 		handed_free_count++;
 	}
@@ -551,6 +887,7 @@ void *dk_stream_command(uint32_t type, unsigned long size)
 
 void dk_stream_free_after_handover(void *buffer, unsigned long size)
 {
+	pending_free_sizes[pending_free_count] = size;
 	pending_frees[pending_free_count++] = buffer;
 	pending_free_bytes += size;
 	if (pending_free_count == PENDING_FREE_LIMIT || pending_free_bytes >= PENDING_FREE_BYTES)
@@ -648,9 +985,16 @@ void WINAPI D3DDevice_SetVerticalBlankCallback(D3DCALLBACK callback)
 	vertical_blank_start();
 }
 
+static void front_buffer_take(void);
+static void targets_used(void);
+
 void WINAPI D3DDevice_BlockUntilVerticalBlank(void)
 {
 	unsigned long count;
+
+	/* (the loading screen's last call: its frame, for the next frame's
+	trails) */
+	front_buffer_take();
 
 	vertical_blank_start();
 	pthread_mutex_lock(&vertical_blank_lock);
@@ -861,6 +1205,13 @@ void xgpu_gl_state_invalidate(void)
 {
 }
 
+/* (the dedicated server's question, whose renderer may be none: this one is
+always up, and those callers' GL does nothing here, as before they asked) */
+int xgpu_gl_ready(void)
+{
+	return 1;
+}
+
 /* ---------- device creation */
 
 Direct3D *WINAPI Direct3DCreate8(UINT sdk_version)
@@ -1023,11 +1374,61 @@ HRESULT WINAPI Direct3D_CreateDevice(UINT adapter, D3DDEVTYPE device_type, void 
 
 /* ---------- the menus' pointer */
 
+/* a point of the window (the touchscreen's: touch_input.c gives its pixels)
+in the menus' 640x480, as the menus draw: the picture letterboxed into the
+display at its own shape, and centred in its width (d3d8_vk.c's) */
+static void ui_point_from_window(float window_x, float window_y, short *x, short *y)
+{
+	int window_width, window_height, pixel_width, pixel_height, width, height, left, top;
+	float buffer_width, buffer_height, screen_x, screen_y;
+
+	*x = *y = -1;
+	halo_screen_width();
+	buffer_width = (float)screen_width * screen_scale[0];
+	buffer_height = (float)SCREEN_HEIGHT * screen_scale[1];
+	platform_video_window_size(&window_width, &window_height);
+	platform_video_drawable_size(&pixel_width, &pixel_height);
+	if (window_width <= 0 || window_height <= 0 || buffer_width <= 0.0f || buffer_height <= 0.0f)
+		return;
+	width = pixel_width;
+	height = (int)((float)pixel_width * buffer_height / buffer_width);
+	if (height > pixel_height)
+	{
+		height = pixel_height;
+		width = (int)((float)pixel_height * buffer_width / buffer_height);
+	}
+	if (width <= 0 || height <= 0)
+		return;
+	left = (pixel_width - width) / 2;
+	top = (pixel_height - height) / 2;
+	screen_x = (window_x * pixel_width / window_width - left) * (float)screen_width / (float)width;
+	screen_y = (window_y * pixel_height / window_height - top) * (float)SCREEN_HEIGHT / (float)height;
+	*x = (short)floorf(screen_x - (float)(screen_width - 640) / 2.0f);
+	*y = (short)floorf(screen_y);
+}
+
+/* the menus' pointer: the touchscreen's taps and drags, handheld
+(port/linux/src/touch_input.c; the host's fingers, host_sdl2.c), as
+d3d8_vk.c gives Android's: the menus' rows, and the game's keyboard's keys */
 int halo_ui_pointer_update(int menus_active, struct halo_ui_pointer *pointer)
 {
-	(void)pointer;
+	struct platform_ui_pointer state;
+
 	platform_menus_set_active(menus_active != 0);
-	return 0;
+	platform_ui_pointer_set_active(menus_active != 0);
+	if (!menus_active || !platform_ui_pointer_read(&state))
+		return 0;
+	memset(pointer, 0, sizeof(*pointer));
+	ui_point_from_window(state.x, state.y, &pointer->x, &pointer->y);
+	ui_point_from_window(state.click_x, state.click_y, &pointer->click_x, &pointer->click_y);
+	pointer->moved = state.moved != FALSE;
+	pointer->left_clicks = (unsigned char)(state.left_clicks < 255 ? state.left_clicks : 255);
+	pointer->right_clicks = (unsigned char)(state.right_clicks < 255 ? state.right_clicks : 255);
+	pointer->wheel_steps = (signed char)(state.wheel_steps < -8 ? -8 : state.wheel_steps > 8 ? 8 : state.wheel_steps);
+	pointer->touch = state.touch != FALSE;
+	pointer->downs = (unsigned char)(state.downs < 255 ? state.downs : 255);
+	ui_point_from_window(state.down_x, state.down_y, &pointer->down_x, &pointer->down_y);
+	return 1;
 }
 
 /* menu_files.c says when it deletes a menu picture's GL texture, for the
@@ -1125,10 +1526,131 @@ void WINAPI D3DDevice_GetDeviceCaps(D3DCAPS8 *caps)
 	caps->MaxPixelShaderValue = 1.0f;
 }
 
+/* ---------- the front buffer
+
+The Xbox's front buffer is the frame on the screen, which the loading screen
+reads back (GetBackBuffer with -1, progress_bar.c) and draws again blurred,
+a little larger and fainter, under each new frame: the trails of its light.
+As in d3d8_gl.c, it is a render target of the menus' 640x480, which takes the
+640 columns in the middle of the frame (where the loading screen draws, as
+the menus do on a wide screen) once the loading screen has drawn it, while
+the screen asks for it: at its BlockUntilVerticalBlank, its last call. The
+host copies it (DK_COMMAND_BLIT); a texture at its data samples the host's
+image, as any render target's does (rendered_find). */
+
+enum
+{
+	FRONT_BUFFER_WIDTH = 640,
+	FRONT_BUFFER_HEIGHT = 480,
+};
+
+/* the front buffer, made the first time it is asked for, and black when the
+frame before did not take its picture (a loading screen's first frame) */
+static BOOL front_buffer_ready(void)
+{
+	/* (its memory could not be had: not asked for again each frame) */
+	static BOOL failed;
+
+	if (failed)
+		return FALSE;
+	if (!device.front_buffer.Data)
+	{
+		d3d8_surface_initialize(&device.front_buffer, D3DFMT_LIN_A8R8G8B8, FRONT_BUFFER_WIDTH, FRONT_BUFFER_HEIGHT);
+		if (!device.front_buffer.Data)
+		{
+			failed = TRUE;
+			return FALSE;
+		}
+	}
+	if (device.front_buffer_taken != device.frame)
+	{
+		/* cleared as the bound target, which the next draw binds back (the
+		targets the host was told differ from the device's again) */
+		D3DSurface *color = device.render_target, *depth = device.depth_stencil;
+		struct dk_command_clear *command;
+		struct dk_surface front;
+		float scale[2];
+
+		device.render_target = &device.front_buffer;
+		device.depth_stencil = NULL;
+		if (targets_bind(NULL))
+		{
+			surface_describe(&device.front_buffer, FALSE, &front, scale);
+			command = stream_command(DK_COMMAND_CLEAR, sizeof(*command) + 4 * sizeof(uint32_t));
+			targets_used();
+			command->flags = DK_CLEAR_RED | DK_CLEAR_GREEN | DK_CLEAR_BLUE | DK_CLEAR_ALPHA;
+			command->color[0] = command->color[1] = command->color[2] = 0.0f;
+			command->color[3] = 1.0f;
+			command->depth = 1.0f;
+			command->stencil = 0;
+			command->rectangle_count = 1;
+			command->rectangles[0][0] = 0;
+			command->rectangles[0][1] = 0;
+			command->rectangles[0][2] = front.pixel_width;
+			command->rectangles[0][3] = front.pixel_height;
+		}
+		device.render_target = color;
+		device.depth_stencil = depth;
+	}
+	device.front_buffer_asked = device.frame + 1;
+	return TRUE;
+}
+
+/* the frame as the loading screen has drawn it, copied into the front
+buffer, when this frame asked for it (D3DDevice_BlockUntilVerticalBlank) */
+static void front_buffer_take(void)
+{
+	struct dk_command_blit *command;
+	struct dk_surface back_buffer, front;
+	float back_scale[2], front_scale[2];
+	uint32_t width, left;
+
+	if (!device.front_buffer.Data || device.front_buffer_asked != device.frame + 1)
+		return;
+	surface_describe(&device.back_buffer, FALSE, &back_buffer, back_scale);
+	surface_describe(&device.front_buffer, FALSE, &front, front_scale);
+	if (back_buffer.kind != DK_SURFACE_COLOR || front.kind != DK_SURFACE_COLOR)
+		return;
+	width = (uint32_t)(FRONT_BUFFER_WIDTH * back_scale[0] + 0.5f);
+	if (width > back_buffer.pixel_width)
+		width = back_buffer.pixel_width;
+	left = (back_buffer.pixel_width - width) / 2;
+	/* The widescreen loading screen (display.widescreen_loading) draws the
+	effect across the whole width: all of it is captured back into the
+	feedback texture, as d3d8_gl.c's front_buffer_take does. Its centre alone,
+	drawn again across the width, stretched each frame's trail sideways by
+	the screen's width over 640, and the picture smeared. */
+	if (loading_widescreen_active())
+	{
+		left = 0;
+		width = back_buffer.pixel_width;
+	}
+	command = stream_command(DK_COMMAND_BLIT, sizeof(*command));
+	command->source = back_buffer;
+	command->destination = front;
+	command->from[0] = left;
+	command->from[1] = 0;
+	command->from[2] = width;
+	command->from[3] = back_buffer.pixel_height;
+	command->to[0] = 0;
+	command->to[1] = 0;
+	command->to[2] = front.pixel_width;
+	command->to[3] = front.pixel_height;
+	rendered_note(&front);
+	device.front_buffer_taken = device.frame + 1;
+}
+
 void WINAPI D3DDevice_GetBackBuffer(INT back_buffer, D3DBACKBUFFER_TYPE type, D3DSurface **result)
 {
-	(void)back_buffer;
 	(void)type;
+	/* -1: the front buffer, the frame shown last, which the loading screen
+	blurs into its light's trails (progress_bar.c) */
+	if (back_buffer == -1 && front_buffer_ready())
+	{
+		device.front_buffer.Common++;
+		*result = &device.front_buffer;
+		return;
+	}
 	/* like Direct3D, the caller gets a reference it must release */
 	device.back_buffer.Common++;
 	*result = &device.back_buffer;
@@ -1209,6 +1731,61 @@ static void resource_used(void *resource)
 {
 	if (resource)
 		((D3DResource *)resource)->Lock = submission;
+}
+
+void halo_resource_wait(D3DResource *resource);
+
+/* A buffer written once and kept outside the window, whose bytes would go
+through the frame's upload buffer at every draw (and a model's are many: 42
+draws of a 95 KB list of indices filled it, and the draws after them were lost:
+the world without its textures, no HUD). The host copies it once instead
+(DK_COMMAND_STATIC_MAKE), at its first draw: this may be called off the game's
+thread, the stream's own. Its size is behind the buffer (d3d8_resources.c). */
+void xgpu_static_buffer_add(const void *resource, unsigned long size, int indices)
+{
+	DWORD *fields = (DWORD *)resource;
+
+	if (!size || (indices ? platform_is_contiguous((const void *)(uintptr_t)fields[1]) :
+		!(fields[0] & D3DCOMMON_HEAP_VERTICES)))
+	{
+		return;
+	}
+	fields[3] = (DWORD)size;
+	fields[0] |= D3DCOMMON_HOST_COPY_WANTED;
+}
+
+static void host_copy_make(void *resource)
+{
+	DWORD *fields = (DWORD *)resource;
+
+	/* (a map's buffers' Common is the map's: only ours says these) */
+	if ((fields[0] & (D3DCOMMON_D3DCREATED | D3DCOMMON_HOST_COPY_WANTED)) ==
+		(D3DCOMMON_D3DCREATED | D3DCOMMON_HOST_COPY_WANTED))
+	{
+		struct dk_command_static *command = stream_command(DK_COMMAND_STATIC_MAKE, sizeof(*command));
+
+		command->address = fields[1];
+		command->size = fields[3];
+		fields[0] = (fields[0] & ~(DWORD)D3DCOMMON_HOST_COPY_WANTED) | D3DCOMMON_HOST_COPIED;
+	}
+}
+
+/* from its release: the draws that read it past (a copy the host could not
+make is read from this memory, which goes next), and the host's copy let go */
+void xgpu_static_buffer_remove(const void *resource, int indices)
+{
+	DWORD *fields = (DWORD *)resource;
+
+	(void)indices;
+	if ((fields[0] & D3DCOMMON_D3DCREATED) && (fields[0] & D3DCOMMON_HOST_COPIED))
+	{
+		struct dk_command_static *command;
+
+		halo_resource_wait((D3DResource *)resource);
+		command = stream_command(DK_COMMAND_STATIC_FREE, sizeof(*command));
+		command->address = fields[1];
+		command->size = fields[3];
+	}
 }
 
 /* the resources the current state reads or writes: the bound render
@@ -1304,12 +1881,67 @@ latest count - while the GPU is behind, an earlier test's - as d3d8_gl.c's
 query buffer gives: the game asks at the start of the next frame, and
 waiting there would stop the CPU until the GPU caught up. A count is in
 the host's pixels, made the game's (visibility_area): the screen's targets
-can be drawn bigger (display.resolution_limit). */
+can be drawn bigger (display.resolution_limit).
+
+Each End is numbered at its slot (xgpu_visibility_tests_ended), and noted
+with the submission it is in (visibility_written): once the GPU has finished
+that submission its count is in the slot, and a result read after that is of
+that test or a later one (visibility_counted). A lens flare's slot is read
+only once a count of one of the flare's own tests has come
+(xgpu_visibility_test_counted, rasterizer_lights.c). */
+
+/* the host's slot of the game's: 1 up, as the host has none 0 (dk_commands.h).
+The game's first lens flare of a frame tests in its slot 0: made slot 1, as it
+was, the first two flares were given the second's count. Each of the game's
+4096 has its own: of 4095, the game's 0 and 4095 (the transparent geometry's
+test, 0xfff) were both slot 1, and the first lens flare slot read the
+transparent geometry's count, its own test or not (rasterizer_lights.c) */
+static unsigned long visibility_slot(DWORD index)
+{
+	return index % (DK_VISIBILITY_SLOTS - 1) + 1;
+}
 
 static BOOL visibility_pending[DK_VISIBILITY_SLOTS];
 /* the host's pixels to a game pixel where each test drew: its count is
 divided by it, the game dividing by its own test's area (lens flares) */
 static float visibility_area[DK_VISIBILITY_SLOTS];
+/* the tests ended at each slot, and the number of the latest whose count the
+slot has had when a result was read (0: none) */
+static ULONGLONG visibility_ended[DK_VISIBILITY_SLOTS];
+static ULONGLONG visibility_counted[DK_VISIBILITY_SLOTS];
+/* the tests not yet known written, oldest first: their slot, number and
+submission. (Full - the GPU far behind - a test is not noted, and its count
+is never taken for its own: a later test's is.) */
+#define VISIBILITY_WRITTEN_LIMIT 4096
+static struct
+{
+	unsigned short slot;
+	unsigned long submission;
+	ULONGLONG test;
+} visibility_written[VISIBILITY_WRITTEN_LIMIT];
+static unsigned long visibility_written_first, visibility_written_count;
+
+/* the tests in the submissions the GPU has finished: their counts are in
+their slots */
+static void visibility_written_update(void)
+{
+	unsigned int retired;
+
+	if (!visibility_written_count)
+		return;
+	retired = host_dk_retired();
+	while (visibility_written_count)
+	{
+		unsigned long first = visibility_written_first;
+
+		if (retired < visibility_written[first].submission)
+			break;
+		if (visibility_counted[visibility_written[first].slot] < visibility_written[first].test)
+			visibility_counted[visibility_written[first].slot] = visibility_written[first].test;
+		visibility_written_first = (first + 1) % VISIBILITY_WRITTEN_LIMIT;
+		visibility_written_count--;
+	}
+}
 
 void WINAPI D3DDevice_BeginVisibilityTest(void)
 {
@@ -1326,13 +1958,20 @@ HRESULT WINAPI D3DDevice_EndVisibilityTest(DWORD index)
 	if (!device.visibility_test_active)
 		return S_OK;
 	device.visibility_test_active = FALSE;
-	index %= DK_VISIBILITY_SLOTS;
-	if (!index)
-		index = 1;
+	index = visibility_slot(index);
 	command = stream_command(DK_COMMAND_VISIBILITY_END, sizeof(*command));
 	command->index = (uint32_t)index;
 	visibility_pending[index] = TRUE;
 	visibility_area[index] = target_scale[0] * target_scale[1];
+	visibility_ended[index]++;
+	if (visibility_written_count < VISIBILITY_WRITTEN_LIMIT)
+	{
+		unsigned long last = (visibility_written_first + visibility_written_count++) % VISIBILITY_WRITTEN_LIMIT;
+
+		visibility_written[last].slot = (unsigned short)index;
+		visibility_written[last].submission = submission;
+		visibility_written[last].test = visibility_ended[index];
+	}
 	return S_OK;
 }
 
@@ -1340,9 +1979,9 @@ HRESULT WINAPI D3DDevice_GetVisibilityTestResult(DWORD index, UINT *result, ULON
 {
 	if (time_stamp)
 		*time_stamp = 0;
-	index %= DK_VISIBILITY_SLOTS;
-	if (!index)
-		index = 1;
+	index = visibility_slot(index);
+	/* (before the count is read: it is then of these tests or later ones) */
+	visibility_written_update();
 	if (result)
 	{
 		unsigned int count = visibility_pending[index] ? host_dk_visibility((unsigned int)index) : 0;
@@ -1351,6 +1990,17 @@ HRESULT WINAPI D3DDevice_GetVisibilityTestResult(DWORD index, UINT *result, ULON
 		*result = visibility_area[index] > 1.0f ? (UINT)(count / visibility_area[index] + 0.5f) : count;
 	}
 	return S_OK;
+}
+
+/* (xgpu.h) */
+unsigned long long xgpu_visibility_tests_ended(unsigned long index)
+{
+	return visibility_ended[visibility_slot(index)];
+}
+
+unsigned long long xgpu_visibility_test_counted(unsigned long index)
+{
+	return visibility_counted[visibility_slot(index)];
 }
 
 /* ---------- render and texture stage state */
@@ -1461,6 +2111,18 @@ void WINAPI D3DDevice_SetTexture(DWORD stage, D3DBaseTexture *texture)
 {
 	if (stage < D3DTSS_MAXSTAGES)
 		device.textures[stage] = texture;
+}
+
+/* a registered MCC header no stage may keep once its registration goes: the
+next draw would ask the texture cache for an image that is gone (as
+d3d8_gl.c's; port/linux/src/mcc_texture_bridge.c) */
+void xgpu_mcc_texture_unbind(DWORD const *resource)
+{
+	unsigned long stage;
+
+	for (stage = 0; stage < D3DTSS_MAXSTAGES; stage++)
+		if ((DWORD const *)device.textures[stage] == resource)
+			device.textures[stage] = NULL;
 }
 
 void WINAPI D3DDevice_SetPalette(DWORD stage, D3DPalette *palette)
@@ -1597,6 +2259,20 @@ HRESULT WINAPI D3DDevice_CreateVertexShader(CONST DWORD *declaration, CONST DWOR
 	return S_OK;
 }
 
+static struct vertex_shader_object *vertex_shader_from_handle(DWORD handle);
+
+/* (every draw is lit as its vertex shader lights it: above. What is asked of
+it here is whether the dynamic lighting can add to that) */
+void halo_vertex_shader_lighting(unsigned long handle)
+{
+	struct vertex_shader_object *object = vertex_shader_from_handle((DWORD)handle);
+	struct nv2a_vertex_lighting lighting;
+
+	if (object && object->instructions)
+		object->plasma_model = nv2a_vertex_shader_lighting(object->instructions, object->instruction_count, &lighting) &&
+			lighting.lights == 2;
+}
+
 static struct vertex_shader_object *vertex_shader_from_handle(DWORD handle)
 {
 	struct vertex_shader_object *object = (struct vertex_shader_object *)handle;
@@ -1621,7 +2297,13 @@ void WINAPI D3DDevice_SetVertexShader(DWORD handle)
 		device.vertex_shader = object;
 		device.program_address = 0;
 		device.program_slots[0] = object;
+		device.fixed_function = FALSE;
 	}
+	/* 0: the fixed-function pipeline, which only the loading screen uses
+	(progress_bar.c). Another handle that is no shader changes nothing, as
+	before */
+	else if (!handle)
+		device.fixed_function = TRUE;
 }
 
 void WINAPI D3DDevice_LoadVertexShader(DWORD handle, DWORD address)
@@ -1634,6 +2316,9 @@ void WINAPI D3DDevice_SelectVertexShader(DWORD handle, DWORD address)
 {
 	struct vertex_shader_object *object = vertex_shader_from_handle(handle);
 
+	/* (a program, loaded or packed at the address: never the fixed-function
+	pipeline, which SetVertexShader with 0 sets) */
+	device.fixed_function = FALSE;
 	if (object)
 		device.vertex_shader = object;
 	if (address < VERTEX_PROGRAM_SLOTS)
@@ -1667,16 +2352,61 @@ static struct vertex_shader_object *current_program(void)
 	return program ? program : device.vertex_shader;
 }
 
-/* the game finished loading a map (scenario_load) */
-void d3d8_gl_map_loaded(const char *name)
+/* a position in immediate mode by the fixed-function pipeline's transforms
+(d3d8_gl.c's fixed_function_transform): Direct3D's row vectors, times
+world, view, then projection */
+static void fixed_function_transform(float *position)
 {
-	/* d3d8_gl.c's program_record_map_hash: the map's name hashed, so the
-	keys met on it can be raised in the background compile's queue */
+	static const D3DTRANSFORMSTATETYPE order[3] = { D3DTS_WORLD, D3DTS_VIEW, D3DTS_PROJECTION };
+	int which, column;
+
+	for (which = 0; which < 3; which++)
+	{
+		const D3DMATRIX *matrix = &device.transforms[order[which]];
+		float in[4];
+
+		memcpy(in, position, sizeof(in));
+		for (column = 0; column < 4; column++)
+		{
+			position[column] = in[0] * matrix->m[0][column] + in[1] * matrix->m[1][column] +
+				in[2] * matrix->m[2][column] + in[3] * matrix->m[3][column];
+		}
+	}
+}
+
+/* the game finished loading a map (scenario_load) */
+/* d3d8_gl.c's program_record_map_hash: the map's name hashed, so the keys
+met on it can be raised in the background compile's queue */
+static uint32_t map_hash(const char *name)
+{
 	uint32_t hash = 2166136261UL;
 
 	for (; *name; name++)
 		hash = (hash ^ (unsigned char)*name) * 16777619UL;
-	dk_shader_map_loaded(hash ? hash : 1);
+	return hash ? hash : 1;
+}
+
+/* the loading screen is up for a map (game_precache_new_map) */
+void d3d8_gl_map_loading(const char *name)
+{
+	dk_shader_map_loading(map_hash(name));
+}
+
+/* whether it stays up a frame more, for the map's shaders */
+int d3d8_gl_map_waiting(void)
+{
+	return dk_shader_map_waiting();
+}
+
+/* how far the shaders' part of it has come, 0 to 1 */
+float d3d8_gl_map_progress(void)
+{
+	return dk_shader_map_progress();
+}
+
+void d3d8_gl_map_loaded(const char *name)
+{
+	dk_shader_map_loaded(map_hash(name));
 }
 
 /* ---------- the shader dump (debug.gpu_dump_shaders; DEKO3D.md, phase 4)
@@ -1980,7 +2710,7 @@ static unsigned long long constants_told;
 
 /* the state the uniform blocks above come from: when none of it has changed
 they need no converting (most draws share it with the draw before) */
-#define DRAW_UNIFORM_INPUT_COUNT (4 + 4 + 16 + 1 + 16 + 2 + 4 + 1 + 1 + 3 + 6 * D3DTSS_MAXSTAGES)
+#define DRAW_UNIFORM_INPUT_COUNT (4 + 4 + 16 + 1 + 16 + 2 + 4 + 1 + 1 + 3 + 6 * D3DTSS_MAXSTAGES + 12)
 
 static DWORD draw_uniform_inputs[DRAW_UNIFORM_INPUT_COUNT];
 static BOOL draw_uniform_inputs_known;
@@ -2088,6 +2818,14 @@ static void draw_state_make(BOOL has_depth, struct dk_draw_state *state)
 	if (state->offset_enable)
 	{
 		state->offset_slope = dword_to_float(rs[D3DRS_POLYGONOFFSETZSLOPESCALE]);
+		/* The slope is the depth's change across a pixel, and a target
+		drawn at several pixels to the game's one has that many times less
+		depth across each: the Xbox's slope term, taken across its own
+		pixels, is that many times the scale. On a surface seen at an angle
+		it is most of the bias (the Pelican's lights on its curved hull sank
+		in as slivers at 1080 lines, as d3d8_gl.c's did). The units are the
+		Xbox's already: the depth here is the Xbox's (xgpu_reversed_depth). */
+		state->offset_slope *= target_scale[0] > target_scale[1] ? target_scale[0] : target_scale[1];
 		state->offset_units = dword_to_float(rs[D3DRS_POLYGONOFFSETZOFFSET]);
 	}
 }
@@ -2161,6 +2899,87 @@ static void draw_constants_send(void)
 /* the uniforms that are not the vertex constants (d3d8_gl.c's
 draw_uniforms), converted when the state they come from has changed, and
 written when the host does not hold the result */
+/* ---------- the dynamic lighting's model variant
+
+Only a draw of a program with both point lights, with a light of the feature's
+in one of them, asks for it. It is compiled in the background, and meanwhile
+(and for good, if it fails) the draw uses the stock shader, so that a model
+never leaves the screen because a light has touched it. Every other draw's key
+and shader are as they were. */
+
+static struct
+{
+	/* the variant this draw uses (XGPU_PLASMA_MODEL_*; 0 for stock), and for
+	it what the shader reads; zero otherwise, as the parameters are for stock */
+	unsigned int bits;
+	float parameters[4], transforms[2][4];
+	uint32_t images[2];
+} plasma_draw;
+static uint32_t plasma_images_told[2];
+
+static void plasma_draw_prepare(const struct vertex_shader_object *program, BOOL immediate)
+{
+	unsigned int mask = 0;
+	int slot;
+
+	if (!immediate && program->plasma_model && !program->plasma_failed)
+		mask = plasma_model_lighting_mask();
+	if (!mask)
+	{
+		if (plasma_draw.bits)
+			memset(&plasma_draw, 0, sizeof(plasma_draw));
+		return;
+	}
+	memset(&plasma_draw, 0, sizeof(plasma_draw));
+	plasma_draw.bits = XGPU_PLASMA_MODEL_FALLOFF;
+	for (slot = 0; slot < 2; slot++)
+	{
+		const DWORD *field;
+
+		plasma_draw.parameters[slot] = (mask & (1u << slot)) ? 1.0f : 0.0f;
+		field = plasma_occlusion_model_texture(slot, plasma_draw.transforms[slot]);
+		if (field)
+		{
+			struct xgpu_texture_description description;
+			int kind = 0;
+			uint32_t id = dk_texture_get(field, NULL, &kind, &description);
+
+			if (id && kind == DK_TEXTURE_3D)
+			{
+				plasma_draw.images[slot] = id;
+				plasma_draw.parameters[2 + slot] = 1.0f;
+				plasma_draw.bits |= XGPU_PLASMA_MODEL_OCCLUSION;
+			}
+		}
+	}
+	/* (a slot with no field does not read its image, but its binding has to
+	hold a 3D one) */
+	if (plasma_draw.bits & XGPU_PLASMA_MODEL_OCCLUSION)
+	{
+		if (!plasma_draw.images[0])
+			plasma_draw.images[0] = plasma_draw.images[1];
+		if (!plasma_draw.images[1])
+			plasma_draw.images[1] = plasma_draw.images[0];
+	}
+}
+
+/* the fields the draw reads, told to the host when they change */
+static void plasma_images_send(void)
+{
+	struct dk_command_plasma_occlusion *command;
+
+	if (!memcmp(plasma_images_told, plasma_draw.images, sizeof(plasma_images_told)))
+		return;
+	command = stream_command(DK_COMMAND_PLASMA_OCCLUSION, sizeof(*command));
+	memcpy(command->images, plasma_draw.images, sizeof(command->images));
+	memset(&command->sampler, 0, sizeof(command->sampler));
+	command->sampler.min_linear = command->sampler.mag_linear = 1;
+	command->sampler.mip_filter = DK_MIP_NONE;
+	command->sampler.wrap[0] = command->sampler.wrap[1] = command->sampler.wrap[2] = DK_WRAP_CLAMP;
+	command->sampler.anisotropy = 1.0f;
+	memcpy(plasma_images_told, plasma_draw.images, sizeof(plasma_images_told));
+}
+
 static void draw_parameters_send(float texture_scale[4][4])
 {
 	DWORD inputs[DRAW_UNIFORM_INPUT_COUNT];
@@ -2189,6 +3008,10 @@ static void draw_parameters_send(float texture_scale[4][4])
 	inputs[count++] = (DWORD)UI_OFFSET;
 	memcpy(&inputs[count], texture_clip, 3 * sizeof(float));
 	count += 3;
+	memcpy(&inputs[count], plasma_draw.parameters, 4 * sizeof(float));
+	count += 4;
+	memcpy(&inputs[count], plasma_draw.transforms, 8 * sizeof(float));
+	count += 8;
 	for (stage = 0; stage < D3DTSS_MAXSTAGES; stage++)
 	{
 		DWORD *state = D3D__TextureState[stage];
@@ -2215,6 +3038,8 @@ static void draw_parameters_send(float texture_scale[4][4])
 		vertex.point_and_screen[0] = D3D__RenderState[D3DRS_POINTSIZE] ?
 			dword_to_float(D3D__RenderState[D3DRS_POINTSIZE]) : 1.0f;
 		vertex.point_and_screen[1] = (float)UI_OFFSET;
+		memcpy(vertex.plasma_model, plasma_draw.parameters, sizeof(vertex.plasma_model));
+		memcpy(vertex.plasma_occ_transform, plasma_draw.transforms, sizeof(vertex.plasma_occ_transform));
 
 
 		for (stage = 0; stage < 8; stage++)
@@ -2427,6 +3252,8 @@ static void pixel_key_make(struct nv2a_pixel_shader_key *key, float texture_scal
 	key->combiner_state[D3DRS_PSFINALCOMBINERCONSTANT0] = 0;
 	key->combiner_state[D3DRS_PSFINALCOMBINERCONSTANT1] = 0;
 	key->texture_modes = D3D__RenderState[D3DRS_PSTEXTUREMODES];
+	/* (MCC's environment lightmap pass: mcc_environment_shader.h) */
+	key->mcc_bump_attenuation = (unsigned char)mcc_environment_shader_active();
 	if (texture_clip[2] != 0.0f)
 		key->texture_modes |= NV2A_PIXEL_KEY_CLIP | ((unsigned long)texture_clip_stage << NV2A_PIXEL_KEY_CLIP_STAGE_SHIFT) |
 			(texture_clip_3d ? NV2A_PIXEL_KEY_CLIP_3D : 0) | (texture_clip_black ? NV2A_PIXEL_KEY_CLIP_BLACK : 0);
@@ -2487,7 +3314,11 @@ static void pixel_key_make(struct nv2a_pixel_shader_key *key, float texture_scal
 				}
 			}
 			if (stage == 0)
+			{
 				key->coverage_alpha = description.hires_coverage != FALSE;
+				key->point_threshold = description.hires_point_threshold != FALSE;
+				key->ce_meter_channels = description.ce_meter_channels != FALSE;
+			}
 			key->sampler_type[stage] = kind == DK_TEXTURE_CUBE ? _xgpu_sampler_cube : kind == DK_TEXTURE_3D ?
 				_xgpu_sampler_3d : _xgpu_sampler_2d;
 			sampler_make(stage, description.levels > 1, description.hires, &textures->stages[stage].sampler);
@@ -2497,6 +3328,7 @@ static void pixel_key_make(struct nv2a_pixel_shader_key *key, float texture_scal
 	key->coverage_alpha = key->coverage_alpha && D3D__RenderState[D3DRS_ALPHABLENDENABLE] &&
 		D3D__RenderState[D3DRS_SRCBLEND] == D3DBLEND_CONSTANTCOLOR &&
 		D3D__RenderState[D3DRS_DESTBLEND] == D3DBLEND_SRCALPHA;
+	key->point_threshold = key->point_threshold && key->coverage_alpha;
 	key->alpha_test_function = D3D__RenderState[D3DRS_ALPHATESTENABLE] ? D3D__RenderState[D3DRS_ALPHAFUNC] : 0;
 	key->fog_enable = D3D__RenderState[D3DRS_FOGENABLE] != 0;
 	key->fog_table_mode = (unsigned char)D3D__RenderState[D3DRS_FOGTABLEMODE];
@@ -2543,7 +3375,10 @@ static BOOL draw_prepare(BOOL immediate)
 	uint32_t vertex_shader, pixel_shader;
 	BOOL has_depth = FALSE;
 
-	if (!program || !device.vertex_shader || !program->instructions)
+	/* (the fixed-function pipeline's draws: immediate mode's only, as in
+	d3d8_gl.c; draws from vertex buffers have no declaration to read them
+	by, and no game draw makes one) */
+	if (device.fixed_function ? !immediate : !program || !device.vertex_shader || !program->instructions)
 	{
 		stats.skipped_no_program++;
 		return FALSE;
@@ -2555,10 +3390,34 @@ static BOOL draw_prepare(BOOL immediate)
 	}
 	pixel_key_make(&pixel_key, texture_scale, &textures);
 	memset(&vertex_key, 0, sizeof(vertex_key));
-	vertex_key.program_hash = program->program_hash;
-	vertex_key.packed_mask = immediate ? 0 : (uint32_t)device.vertex_shader->packed_mask;
+	if (device.fixed_function)
+		vertex_key.program_hash = DK_FIXED_FUNCTION_PROGRAM_HASH;
+	else
+	{
+		vertex_key.program_hash = program->program_hash;
+		vertex_key.packed_mask = immediate ? 0 : (uint32_t)device.vertex_shader->packed_mask;
+	}
+	/* (the dynamic lighting's variant if it is ready, else the stock shader) */
+	plasma_draw_prepare(program, immediate);
+	vertex_shader = 0;
+	if (plasma_draw.bits)
+	{
+		struct dk_vertex_key plasma_key = vertex_key;
+		int unknown = 0;
+
+		plasma_key.packed_mask |= (uint32_t)plasma_draw.bits << DK_VERTEX_KEY_PLASMA_SHIFT;
+		vertex_shader = dk_shader_variant_for_draw(&plasma_key, &unknown);
+		if (unknown && ++program->plasma_sent[plasma_draw.bits & 3] > 1)
+		{
+			platform_log("GPU: vertex shader %lu's dynamic lighting variant failed to compile: stock from now on", program->id);
+			program->plasma_failed = TRUE;
+		}
+		if (!vertex_shader)
+			memset(&plasma_draw, 0, sizeof(plasma_draw));
+	}
 	/* (both are asked for, so that both are queued if neither is ready) */
-	vertex_shader = dk_shader_for_draw(DK_SHADER_STAGE_VERTEX, &vertex_key);
+	if (!vertex_shader)
+		vertex_shader = dk_shader_for_draw(DK_SHADER_STAGE_VERTEX, &vertex_key);
 	pixel_shader = dk_shader_for_draw(DK_SHADER_STAGE_PIXEL, &pixel_key);
 	if (!vertex_shader || !pixel_shader)
 	{
@@ -2574,6 +3433,8 @@ static BOOL draw_prepare(BOOL immediate)
 	draw_constants_send();
 	draw_parameters_send(texture_scale);
 	draw_textures_send(&textures);
+	if (plasma_draw.bits & XGPU_PLASMA_MODEL_OCCLUSION)
+		plasma_images_send();
 	return TRUE;
 }
 
@@ -2689,16 +3550,35 @@ static BOOL indices_fixed(const WORD *indices, unsigned long count)
 	return custom && start >= custom && end <= custom + CUSTOM_EDITION_TAG_CACHE_BYTES;
 }
 
+/* whether a draw's indices are in the index buffer SetIndices selected, the
+host's copy of which it reads */
+static BOOL index_buffer_host_copy(const WORD *indices, unsigned long count)
+{
+	const DWORD *fields = (const DWORD *)device.index_buffer;
+	unsigned long at = (unsigned long)(uintptr_t)indices;
+
+	return fields && (fields[0] & D3DCOMMON_D3DCREATED) &&
+		(fields[0] & (D3DCOMMON_HOST_COPY_WANTED | D3DCOMMON_HOST_COPIED)) && at >= fields[1] &&
+		at + count * sizeof(WORD) <= (unsigned long)fields[1] + fields[3];
+}
+
 static void draw_write(D3DPRIMITIVETYPE type, unsigned long count, unsigned long first, unsigned long vertex_count,
 	const WORD *indices, long vertex_offset)
 {
 	struct dk_command_draw *command;
 	unsigned long stream, streams = 0, slot = 0;
-	unsigned long index_bytes = indices && count * sizeof(WORD) <= INLINE_INDEX_LIMIT && !indices_fixed(indices, count) ?
-		(count * sizeof(WORD) + 3) & ~3UL : 0;
+	BOOL copied = indices && index_buffer_host_copy(indices, count);
+	unsigned long index_bytes = indices && !copied && count * sizeof(WORD) <= INLINE_INDEX_LIMIT &&
+		!indices_fixed(indices, count) ? (count * sizeof(WORD) + 3) & ~3UL : 0;
 
+	if (copied)
+		host_copy_make(device.index_buffer);
 	for (stream = 0; stream < DK_STREAM_COUNT; stream++)
+	{
 		streams += (format_told.stream_mask >> stream) & 1;
+		if (((format_told.stream_mask >> stream) & 1) && device.streams[stream].buffer)
+			host_copy_make(device.streams[stream].buffer);
+	}
 	command = stream_command(DK_COMMAND_DRAW, sizeof(*command) + streams * 2 * sizeof(uint32_t) + index_bytes);
 	command->primitive = primitive_of(type);
 	command->count = (uint32_t)count;
@@ -2714,7 +3594,12 @@ static void draw_write(D3DPRIMITIVETYPE type, unsigned long count, unsigned long
 
 		if (!((format_told.stream_mask >> stream) & 1))
 			continue;
-		command->streams[slot][0] = (uint32_t)(uintptr_t)PLATFORM_PHYSICAL_TO_VIRTUAL(device.streams[stream].data) +
+		/* (a model past the budget's are at their address: d3d8_resources.c) */
+		command->streams[slot][0] = (device.streams[stream].buffer &&
+			(device.streams[stream].buffer->Common & (D3DCOMMON_D3DCREATED | D3DCOMMON_HEAP_VERTICES)) ==
+			(D3DCOMMON_D3DCREATED | D3DCOMMON_HEAP_VERTICES) ?
+			(uint32_t)device.streams[stream].data :
+			(uint32_t)(uintptr_t)PLATFORM_PHYSICAL_TO_VIRTUAL(device.streams[stream].data)) +
 			(uint32_t)(first * stride);
 		command->streams[slot][1] = (uint32_t)(stride ? stride * vertex_count : STRIDELESS_STREAM_BYTES);
 		slot++;
@@ -2825,6 +3710,12 @@ void WINAPI D3DDevice_End(void)
 	}
 	if (!draw_prepare(TRUE))
 		return;
+	/* (the fixed-function pipeline's: positions into clip space) */
+	if (device.fixed_function)
+	{
+		for (vertex = 0; vertex < count; vertex++)
+			fixed_function_transform(device.immediate_vertices + vertex * floats);
+	}
 	memset(&format, 0, sizeof(format));
 	for (index = 0; index < XGPU_VERTEX_ATTRIBUTE_COUNT; index++)
 	{
@@ -2870,6 +3761,89 @@ void WINAPI D3DDevice_End(void)
 			left &= left - 1;
 		}
 	}
+	draw_resources_used(FALSE, FALSE);
+}
+
+static void set_attribute(INT reg, float a, float b, float c, float d);
+
+void WINAPI D3DDevice_DrawVerticesImmediate(D3DPRIMITIVETYPE type, DWORD mask, CONST FLOAT *data, UINT count)
+{
+	unsigned long registers = (unsigned long)__builtin_popcountl(mask), stride = registers * 4 * sizeof(float);
+	unsigned long index, fed = 0, reg;
+	struct dk_vertex_format format;
+	struct dk_command_draw *command;
+	const float *last;
+
+	if (!count || !(mask & 1) || (mask >> XGPU_VERTEX_ATTRIBUTE_COUNT))
+		return;
+	/* (as the vertices would leave them, one at a time) */
+	last = data + (count - 1) * registers * 4;
+	for (reg = 0, index = 0; reg < XGPU_VERTEX_ATTRIBUTE_COUNT; reg++)
+	{
+		if (mask & (1UL << reg))
+			memcpy(device.attributes[reg], last + index++ * 4, 4 * sizeof(float));
+	}
+	/* (the fixed-function pipeline's positions are transformed: End does) */
+	if (device.fixed_function)
+	{
+		UINT vertex;
+
+		D3DDevice_Begin(type);
+		for (vertex = 0; vertex < count; vertex++)
+		{
+			const float *in = data + vertex * registers * 4;
+
+			for (reg = XGPU_VERTEX_ATTRIBUTE_COUNT, index = registers; reg-- > 0;)
+			{
+				if (mask & (1UL << reg))
+				{
+					index--;
+					set_attribute((INT)reg, in[index * 4], in[index * 4 + 1], in[index * 4 + 2], in[index * 4 + 3]);
+				}
+			}
+		}
+		D3DDevice_End();
+		return;
+	}
+	if (type == D3DPT_QUADLIST)
+		count &= ~3U;
+	if (!count)
+		return;
+	if (count * stride + 4096 > STREAM_SIZE)
+	{
+		stats.skipped_size++;
+		return;
+	}
+	if (!draw_prepare(TRUE))
+		return;
+	memset(&format, 0, sizeof(format));
+	for (index = 0; index < XGPU_VERTEX_ATTRIBUTE_COUNT; index++)
+	{
+		if (mask & (1UL << index))
+		{
+			format.attributes[index].format = DK_ATTRIBUTE_FLOAT4;
+			format.attributes[index].stream = 0;
+			format.attributes[index].offset = (uint32_t)(fed++ * 4 * sizeof(float));
+		}
+		else
+		{
+			format.attributes[index].format = DK_ATTRIBUTE_UNFED;
+			memcpy(format.constants[index], device.attributes[index], sizeof(format.constants[index]));
+		}
+	}
+	format.strides[0] = (uint32_t)stride;
+	format.stream_mask = 1;
+	draw_format_send(&format);
+	command = stream_command(DK_COMMAND_DRAW, sizeof(*command) + 2 * sizeof(uint32_t) + count * stride);
+	command->primitive = primitive_of(type);
+	command->count = (uint32_t)count;
+	command->index_address = 0;
+	command->vertex_offset = 0;
+	command->inline_bytes = (uint32_t)(count * stride);
+	command->stream_count = 1;
+	command->streams[0][0] = 0;
+	command->streams[0][1] = (uint32_t)(count * stride);
+	memcpy(&command->streams[1], data, count * stride);
 	draw_resources_used(FALSE, FALSE);
 }
 
@@ -3115,6 +4089,17 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 	}
 	else
 	{
+		/* (port: the vertical blanks that retire the flips counted, started
+		here if the game has not yet: the boot's loading screen presents
+		before it sets its callback or waits for one, and with
+		display.interpolation off its third frame waited for ever, a black
+		screen) */
+		if (!vertical_blank_thread_started)
+		{
+			pthread_mutex_unlock(&vertical_blank_lock);
+			vertical_blank_start();
+			pthread_mutex_lock(&vertical_blank_lock);
+		}
 		while (pending_flips >= 2)
 			pthread_cond_wait(&vertical_blank_condition, &vertical_blank_lock);
 		pending_flips++;

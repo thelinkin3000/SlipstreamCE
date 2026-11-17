@@ -9,7 +9,9 @@ controller (port/linux/src/xinput_sdl.c). The game hands back what the
 overlay needs to know: whether it is in a game with no menu or cinematic up
 and the input.touch_controls setting (host_touch_scene), the profile's
 button mapping, which names the buttons (host_touch_bindings), and how hard
-port 0 rumbles.
+port 0 rumbles. The overlay also says whether the device has a touchscreen
+and a controller (host_touch_devices), for the game's own touchscreen
+buttons.
 */
 
 #include <jni.h>
@@ -45,11 +47,26 @@ static volatile int gyro_mode;
 static int rumble_amplitude;
 static int64_t rumble_ns;
 static volatile int touch_scene;
+/* the fingers that tap together to open the overlay menu, the overlay's
+General option; touch_input.c counts them in the menus */
+static volatile int menu_fingers = 3;
+/* the overlay's devices (host_touch_devices): a touchscreen, a game
+controller (a stick or a hat, not a phone's few gamepad keys) */
+#define HOST_TOUCH_DEVICE_TOUCHSCREEN 1
+#define HOST_TOUCH_DEVICE_CONTROLLER 2
+static volatile int touch_devices;
 /* the game control on each controller button (-1: none), and a count of
 its changes, which the overlay polls */
 #define TOUCH_BUTTONS 16
 static int32_t touch_bindings[TOUCH_BUTTONS];
 static int touch_bindings_serial;
+/* a replay's buttons on the screen (host_touch_targets): their count, then
+TOUCH_TARGET_FIELDS each, and a count of their changes, which the overlay
+polls */
+#define TOUCH_MAXIMUM_TARGETS 16
+#define TOUCH_TARGET_FIELDS 5
+static int32_t touch_targets[1 + TOUCH_MAXIMUM_TARGETS * TOUCH_TARGET_FIELDS];
+static int touch_targets_serial;
 
 static int64_t now_ns(void)
 {
@@ -147,6 +164,19 @@ JNIEXPORT jint JNICALL Java_com_halo_decomp_TouchControls_nativeGyroMode(JNIEnv 
 	return gyro_mode;
 }
 
+JNIEXPORT void JNICALL Java_com_halo_decomp_TouchControls_nativeMenuFingers(JNIEnv *env, jclass cls, jint fingers)
+{
+	(void)env;
+	(void)cls;
+	if (fingers == 3 || fingers == 4)
+		menu_fingers = fingers;
+}
+
+int host_touch_menu_fingers(void)
+{
+	return menu_fingers;
+}
+
 JNIEXPORT void JNICALL Java_com_halo_decomp_TouchControls_nativeLookReset(JNIEnv *env, jclass cls)
 {
 	(void)env;
@@ -235,6 +265,58 @@ JNIEXPORT jint JNICALL Java_com_halo_decomp_TouchControls_nativeBindings(JNIEnv 
 	if (controls && (*env)->GetArrayLength(env, controls) >= TOUCH_BUTTONS)
 		(*env)->SetIntArrayRegion(env, controls, 0, TOUCH_BUTTONS, (const jint *)copy);
 	return serial;
+}
+
+/* the guest's, when a replay's buttons change: count of them, each x0, y0,
+x1, y1 (ten-thousandths of the screen) and the game's controller button
+(port/linux/game/network_replay_playback.c) */
+void host_touch_targets(const int32_t *targets, int count)
+{
+	if (count < 0)
+		count = 0;
+	if (count > TOUCH_MAXIMUM_TARGETS)
+		count = TOUCH_MAXIMUM_TARGETS;
+	pthread_mutex_lock(&touch_lock);
+	touch_targets[0] = count;
+	memcpy(touch_targets + 1, targets, (size_t)count * TOUCH_TARGET_FIELDS * sizeof(*targets));
+	touch_targets_serial++;
+	pthread_mutex_unlock(&touch_lock);
+}
+
+/* the replay's buttons into targets (when it is not null: their count, then
+TOUCH_TARGET_FIELDS each); returns their count of changes */
+JNIEXPORT jint JNICALL Java_com_halo_decomp_TouchControls_nativeTargets(JNIEnv *env, jclass cls,
+	jintArray targets)
+{
+	int32_t copy[1 + TOUCH_MAXIMUM_TARGETS * TOUCH_TARGET_FIELDS];
+	int serial;
+
+	(void)cls;
+	pthread_mutex_lock(&touch_lock);
+	memcpy(copy, touch_targets, sizeof(copy));
+	serial = touch_targets_serial;
+	pthread_mutex_unlock(&touch_lock);
+	if (targets && (*env)->GetArrayLength(env, targets) >= (jsize)(sizeof(copy) / sizeof(copy[0])))
+		(*env)->SetIntArrayRegion(env, targets, 0, (jsize)(sizeof(copy) / sizeof(copy[0])), (const jint *)copy);
+	return serial;
+}
+
+/* the overlay's devices, as it last found them (TouchControls'
+refreshInputDevices) */
+JNIEXPORT void JNICALL Java_com_halo_decomp_TouchControls_nativeDevices(JNIEnv *env, jclass cls,
+	jboolean touchscreen, jboolean controller)
+{
+	(void)env;
+	(void)cls;
+	touch_devices = (touchscreen ? HOST_TOUCH_DEVICE_TOUCHSCREEN : 0) |
+		(controller ? HOST_TOUCH_DEVICE_CONTROLLER : 0);
+}
+
+/* the guest's: the overlay's devices as HOST_TOUCH_DEVICE_* bits; 0 until it
+has looked */
+int host_touch_devices(void)
+{
+	return touch_devices;
 }
 
 /* 0 until the game has read its controller once */

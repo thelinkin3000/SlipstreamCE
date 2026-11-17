@@ -256,6 +256,14 @@ real periodic_function_evaluate(
 		time *= 25.6f;
 		fraction = (real)fmod((double)time, 1.0);
 		index = fast_ftol(time-fraction);
+		/* port: negative periods or phases can put time before zero. fmod
+		leaves a negative remainder; interpolate in the preceding interval
+		instead of extrapolating beyond the current sample. */
+		if (fraction < 0.0f)
+		{
+			fraction += 1.0f;
+			index--;
+		}
 		table = periodic_function_tables[function_type];
 		index &= PERIODIC_FUNCTION_TABLE_MASK;
 		first_value = table[index] * (1.0f/255.0f);
@@ -274,7 +282,11 @@ real periodic_function_evaluate(
 			return result;
 		}
 
-		return (1.0f-fraction)*first_value + second_value*fraction;
+		/* port: the native builds' x87 code can carry 255*(1.0f/255.0f) at
+		more than single precision, a hair past 1, and the game asserts that
+		colours driven by these functions stay within [0, 1] */
+		result = (1.0f-fraction)*first_value + second_value*fraction;
+		return PIN(result, 0.0f, 1.0f);
 	}
 
 	return 0.0f;

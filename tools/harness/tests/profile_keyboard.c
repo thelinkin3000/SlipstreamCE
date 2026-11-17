@@ -10,6 +10,7 @@ typedef short SHORT;
 struct platform_input_state { unsigned char keys[TEST_SCANCODE_COUNT], mouse_buttons[8]; BOOL mouse_released, menus; };
 #define SDL_SCANCODE_COUNT TEST_SCANCODE_COUNT
 #define console_is_active() FALSE
+#define network_chat_typing() FALSE
 #define platform_screen_keyboard(show, password) ((void)0)
 typedef struct { unsigned short wButtons; BYTE bAnalogButtons[8]; SHORT sThumbLX, sThumbLY; } XINPUT_GAMEPAD;
 #define SDL_BUTTON_X1 4
@@ -20,6 +21,9 @@ static struct { boolean active, shift_active, caps_active, symbols_active;
     wchar_t *text_buffer, *cursor; unsigned long time_of_last_event;
     long caret_bitmap_index; wchar_t saved_text[MAXIMUM_VIRTUAL_KEYBOARD_SAVED_TEXT_LENGTH];
 } virtual_keyboard_globals;
+/* a menu's free text (virtual_keyboard_launch_text): none here, so that Done
+keeps a profile's rules */
+static struct { boolean active, masked; wchar_t caption[64]; } virtual_keyboard_free_text;
 static boolean unique = TRUE, clean = TRUE, keyboard_available = TRUE;
 static int processed, errors;
 #define VIRTUAL_KEYBOARD_TAG 1

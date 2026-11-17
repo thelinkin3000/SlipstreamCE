@@ -170,6 +170,7 @@ symbols in this file:
 #include "rasterizer/xbox/rasterizer_xbox_plasma_energy.h"
 #include "rasterizer/xbox/rasterizer_xbox_water.h"
 #include "rasterizer/xbox/shader_transparent_chicago_preprocessor.h"
+#include "needler_lighting.h" /* port: port/linux/game/needler_lighting.c */
 
 /* ---------- constants */
 
@@ -866,6 +867,8 @@ void rasterizer_transparent_geometry_dispose_aux_buffer(
 
 /* ---------- private code */
 
+#include "mcc_chicago.inl" /* port: MCC-only authored blending compatibility. */
+
 /* port: mesh and material checks run only when model tags load. */
 #include "rasterizer/rasterizer_transparent_enclosure.h"
 
@@ -908,7 +911,7 @@ boolean rasterizer_transparent_geometry_is_enclosure(
 	IDirect3DVertexBuffer8_Lock(VERTEX_BUFFER_HARDWARE_FORMAT(outer), 0, 0, &outer_data, D3DLOCK_READONLY);
 	IDirect3DVertexBuffer8_Lock(VERTEX_BUFFER_HARDWARE_FORMAT(inner), 0, 0, &inner_data, D3DLOCK_READONLY);
 	IDirect3DIndexBuffer8_Lock(TRIANGLE_BUFFER_HARDWARE_FORMAT(triangles), 0, 0, &index_data, D3DLOCK_READONLY);
-#ifdef HALO_ANDROID
+#if defined(HALO_ANDROID) || defined(HALO_MOVABLE_WINDOW)
 	/* (an index buffer's lock is its data's address as the map has it) */
 	index_data = PORT_WINDOW_REBASE(index_data);
 #endif
@@ -2350,6 +2353,12 @@ void rasterizer_transparent_geometry_group_draw(
 									component_index < NUMBEROF(constant_color0.n);
 									component_index++)
 									constant_color0.n[component_index] = function_value*color_delta.n[component_index] + stage->constant_color0.n[component_index];
+								/* port: the native builds' rounding can put this blend
+								of two valid colours a hair outside [0, 1] */
+								for (component_index = 0;
+									component_index < NUMBEROF(constant_color0.n);
+									component_index++)
+									constant_color0.n[component_index] = PIN(constant_color0.n[component_index], 0.0f, 1.0f);
 
 								match_assert(
 									"c:\\halo\\SOURCE\\rasterizer\\xbox\\rasterizer_xbox_transparent_geometry.c",
@@ -2396,6 +2405,9 @@ void rasterizer_transparent_geometry_group_draw(
 								pixel_shader.constant_0[stage_index] =
 									real_argb_color_to_pixel32(&constant_color0);
 							}
+							/* port: brighten the optional Needler core before fog. */
+							needler_lighting_transparent(group->shader, &pixel_shader,
+								shader_transparent_generic->generic.stages.count);
 							break;
 						}
 
@@ -2685,6 +2697,9 @@ void rasterizer_transparent_geometry_group_draw(
 							success = success && shader_transparent_chicago_create(
 								group->shader,
 								&pixel_shader);
+							/* port: optional world-model needle emission, before fog. */
+							needler_lighting_transparent(group->shader, &pixel_shader,
+								shader_transparent_chicago->chicago.maps.count);
 
 							if (rasterizer_debug_options.draw_environment_fog)
 							{
@@ -2836,6 +2851,9 @@ void rasterizer_transparent_geometry_group_draw(
 									}
 								}
 							}
+							/* port: keep MCC blend semantics out of the legacy shader path. */
+							mcc_chicago_blend(&shader_transparent_chicago->chicago,
+								&pixel_shader, rasterizer_debug_options.draw_environment_fog);
 							break;
 						}
 

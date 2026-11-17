@@ -117,6 +117,15 @@ folders is read. A map you do not have is downloaded from the other players
 while you wait in the lobby. Refer to the root
 [README.md](../../README.md#custom-edition-maps).
 
+The maps and Custom Edition maps can be in other folders: set
+`game.maps.path` and `game.custom_maps.path` under `[game]` in
+`config.toml` (`maps.path = "sdmc:/halo/maps"`; a relative path is in
+`sdmc:/switch/halo/`). The game reads them once, at the start. A disc image
+is only unpacked into `sdmc:/switch/halo/maps/`, so a maps folder named
+there must already hold the maps: if it is missing or has no `ui.map`, the
+game says so and quits. A custom maps folder that is missing gets a warning,
+and the game goes on without Custom Edition maps.
+
 ## Gyro aiming
 
 The stick aims as it does anywhere else. Open a profile, choose Gamepads, and
@@ -128,8 +137,10 @@ each way (`1` is the sensor's own turn; the screen goes from `0.25` to `10`).
 Invert horizontal and invert vertical are separate, and neither follows the
 stick's Invert Look. The same five are `input.gyro_aim`,
 `input.gyro_sensitivity_horizontal`, `input.gyro_sensitivity_vertical`,
-`input.gyro_invert_horizontal` and `input.gyro_invert_vertical` in
-`config.toml`. Each local player reads their own controller. A Pro Controller,
+`input.gyro_invert_horizontal` and `input.gyro_invert_vertical`, which each
+profile keeps in the `settings.toml` in its folder (`config.toml`'s are those
+of a profile that has not set them). Each local player reads their own
+controller, with their own profile's settings. A Pro Controller,
 the console held in the hands, and a single Joy-Con each use their one sensor;
 when two Joy-Con are attached, the right one is read. It is not used in the
 menus. In a split-screen match on this console alone, the pause menu's LEAVE

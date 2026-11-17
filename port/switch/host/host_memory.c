@@ -241,6 +241,10 @@ int host_memory_range_is_reserved(uint64_t address, uint64_t size)
 /* the guest image's range, held from the start until the image claims it
 (host_memory_hold_image_range); 0 to 0 when nothing is held */
 static uint64_t image_hold_base, image_hold_end;
+/* the placeholder mapped over the image's range from the start of main
+(host_memory_hold_image_range), and whether the image's own memory has
+taken its place (host_memory_initialize) */
+static int image_placeholder, image_mapped;
 
 /* The range the largest window can take, held from the start of main too
 (host_memory_hold_window_range) until the window is placed. A window of
@@ -259,13 +263,34 @@ one. 0 to 0 when nothing is held. */
 static uint64_t window_hold_base, window_hold_end;
 static VirtmemReservation *window_hold;
 
+/* Custom Edition's tag cache range (HALO_GUEST_CUSTOM_EDITION_BASE), held
+from the start of main as the image's is (host_memory_hold_image_range), for
+the whole run: it lies just past the image, where the console's mappings
+below 4 GB go next, and a thread's stack (0x11000 or 0x21000 bytes, a host
+thread's) landed in it on some runs before it was reserved, and Custom
+Edition maps could not run. 0 to 0 when nothing is held. */
+static uint64_t custom_edition_hold_base, custom_edition_hold_end;
+
+/* MCC's tag window (0x50000000, 64 MB: host_memory_hold_mcc_range), kept out
+of the window, the pools and every mapping of the port's own for the whole
+run, whether or not it could be mapped from the start: where the launcher
+put something there first, an MCC map's tags go elsewhere and their
+addresses move (halo_port_window.h), and that only works while nothing else
+of the guest's lies in the range they were written for, so that an address
+there is always one still to move. 0 to 0 before main. */
+static uint64_t mcc_claim_base, mcc_claim_end;
+
 static int range_claimed(uint64_t address, uint64_t size)
 {
 	int index;
 
 	if (address < image_hold_end && image_hold_base < address + size)
 		return 1;
+	if (address < mcc_claim_end && mcc_claim_base < address + size)
+		return 1;
 	if (address < window_hold_end && window_hold_base < address + size)
+		return 1;
+	if (address < custom_edition_hold_end && custom_edition_hold_base < address + size)
 		return 1;
 	for (index = 0; index < reservation_count; index++)
 	{
@@ -332,8 +357,10 @@ uint64_t host_memory_reserved_region(uint64_t size)
  * 0x30036000, whose 256 MB end at 0x40036000, and the image could never be
  * loaded at 0x40000000. */
 /* (all of the image, which has grown past 32 MB: a hold that stopped short
-of its end let pool 0 be placed across the rest, at the hold's end) */
-#define IMAGE_HOLD_SIZE (48u * 1024 * 1024)
+of its end let pool 0 be placed across the rest, at the hold's end. It grew
+past 48 MB too, to 0x3f1c3000 with its zeroed data, so the hold is now all
+the room it has: up to Custom Edition's tag cache, held as well) */
+#define IMAGE_HOLD_SIZE (HALO_GUEST_CUSTOM_EDITION_BASE - HALO_GUEST_IMAGE_BASE)
 
 void host_memory_hold_image_range(void)
 {
@@ -348,6 +375,35 @@ void host_memory_hold_image_range(void)
 	if (!hold)
 		host_logf(HOST_LOG_ERROR, "libnx would not hold the guest image's range at %08x; a thread's stack may "
 			"land in it", HALO_GUEST_IMAGE_BASE);
+	/* And memory mapped over it, until the image's own takes its place.
+
+	libnx's hold keeps its own placements out - the threads' stacks - and
+	the kernel knows nothing of it. The kernel places a thread's local
+	storage page itself, at a free address of its choosing, whenever a new
+	thread finds the pages it has full, and on one run it put one at
+	0x3d7be000 (type 0c), inside the image's range: every thread made before
+	the image is loaded is a chance of that, the thread lives as long as the
+	game, and the image could not be loaded ("cannot reserve the guest image
+	range"). The kernel does not place anything over a mapping, so the range
+	is mapped from here, before any thread exists. It costs the hold's
+	memory until the image is loaded, a few seconds. */
+	if (mmap((void *)(uintptr_t)HALO_GUEST_IMAGE_BASE, IMAGE_HOLD_SIZE, PROT_READ | PROT_WRITE,
+			MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) == (void *)(uintptr_t)HALO_GUEST_IMAGE_BASE)
+		image_placeholder = 1;
+	else
+		host_logf(HOST_LOG_ERROR, "could not map the guest image's range at %08x ahead of the image; a thread's "
+			"local storage may land in it", HALO_GUEST_IMAGE_BASE);
+
+	/* (and Custom Edition's tag cache's, for the whole run) */
+	custom_edition_hold_base = HALO_GUEST_CUSTOM_EDITION_BASE;
+	custom_edition_hold_end = HALO_GUEST_CUSTOM_EDITION_END;
+	virtmemLock();
+	hold = virtmemAddReservation((void *)(uintptr_t)HALO_GUEST_CUSTOM_EDITION_BASE,
+		HALO_GUEST_CUSTOM_EDITION_END - HALO_GUEST_CUSTOM_EDITION_BASE);
+	virtmemUnlock();
+	if (!hold)
+		host_logf(HOST_LOG_ERROR, "libnx would not hold Custom Edition's tag cache range at %08x; a thread's stack "
+			"may land in it", HALO_GUEST_CUSTOM_EDITION_BASE);
 }
 
 void host_memory_hold_window_range(void)
@@ -413,6 +469,8 @@ void host_memory_log_regions(void)
 	}
 }
 
+static int note_reservation(uint64_t address, uint64_t size, int for_a_purpose);
+
 static int reserve(uint64_t address, uint64_t size, int for_a_purpose)
 {
 	/* taken by anything already mapped, or by another reservation */
@@ -421,6 +479,14 @@ static int reserve(uint64_t address, uint64_t size, int for_a_purpose)
 		errno = EEXIST;
 		return -1;
 	}
+	return note_reservation(address, size, for_a_purpose);
+}
+
+/* the range written down as this port's, here and to libnx, without asking
+what is mapped there: reserve's, and the image's, whose own memory is
+already there when it is (host_memory_initialize) */
+static int note_reservation(uint64_t address, uint64_t size, int for_a_purpose)
+{
 	if (reservation_count >= RESERVATION_LIMIT)
 	{
 		errno = ENOMEM;
@@ -466,14 +532,14 @@ whole run of free space, so walking upwards from a starting address gives
 the gaps without needing a file to be open. That matters here, because
 this runs before anything else in the port has.
 */
-static uint64_t find_gap(uint64_t size, uint64_t minimum, uint64_t alignment)
+static uint64_t find_gap_below(uint64_t size, uint64_t minimum, uint64_t alignment, uint64_t limit)
 {
 	uint64_t address;
 
 	if (alignment > 1)
 		minimum = round_up(minimum) & ~(alignment - 1);
 	address = minimum < LOW_START ? LOW_START : minimum;
-	while (address + size <= LOW_LIMIT)
+	while (address + size <= limit)
 	{
 		MemoryInfo information = { 0 };
 		u32 page_info = 0;
@@ -490,7 +556,7 @@ static uint64_t find_gap(uint64_t size, uint64_t minimum, uint64_t alignment)
 
 			if (alignment > 1)
 				start = (start + alignment - 1) & ~(u64)(alignment - 1);
-			while (start + size <= information.addr + information.size)
+			while (start + size <= information.addr + information.size && start + size <= limit)
 			{
 				uint64_t move;
 
@@ -505,6 +571,10 @@ static uint64_t find_gap(uint64_t size, uint64_t minimum, uint64_t alignment)
 				move = start;
 				if (image_hold_base <= move && move < image_hold_end)
 					move = image_hold_end;
+				if (custom_edition_hold_base <= move && move < custom_edition_hold_end)
+					move = custom_edition_hold_end;
+				if (mcc_claim_base <= move && move < mcc_claim_end)
+					move = mcc_claim_end;
 				for (int index = 0; index < reservation_count; index++)
 				{
 					if (reservations[index].base <= move &&
@@ -522,6 +592,11 @@ static uint64_t find_gap(uint64_t size, uint64_t minimum, uint64_t alignment)
 		address = round_up(information.addr + information.size);
 	}
 	return 0;
+}
+
+static uint64_t find_gap(uint64_t size, uint64_t minimum, uint64_t alignment)
+{
+	return find_gap_below(size, minimum, alignment, LOW_LIMIT);
 }
 
 /* reports whatever already occupies part of a range, so a refusal to use it
@@ -599,12 +674,16 @@ static struct pool *pool_new(uint64_t pages)
 
 		for (attempt = 0; attempt < 64; attempt++)
 		{
-			uint64_t address = find_gap(size, minimum, 1);
+			/* (only where the guest's memory can really be mapped: one
+			a50.map load's second pool went to a1011000, past the stack
+			region's end at 80000000, and every mapping in it was refused,
+			with hundreds of megabytes free in the region below) */
+			uint64_t address = find_gap_below(size, minimum, 1, host_mman_guest_limit());
 
 			if (!address && minimum != LOW_START)
 			{
 				minimum = LOW_START;
-				address = find_gap(size, minimum, 1);
+				address = find_gap_below(size, minimum, 1, host_mman_guest_limit());
 			}
 			if (!address)
 				break;
@@ -648,6 +727,13 @@ uint32_t host_memory_window_size(void)
 uint32_t host_memory_image_base(void)
 {
 	return (uint32_t)image_base;
+}
+
+/* whether the image's memory is mapped already, in the placeholder's place
+(host_memory_initialize), which the loader then only fills */
+int host_memory_image_mapped(void)
+{
+	return image_mapped;
 }
 
 /* A window of size bytes: where the game and its data expect it, but only if
@@ -764,6 +850,20 @@ int host_memory_initialize(uint32_t base, uint32_t size)
 	image_end = base + round_up(size);
 	/* (the image's own reservation stands for the hold from here) */
 	image_hold_base = image_hold_end = 0;
+	/* The placeholder held the range (host_memory_hold_image_range): the
+	image's memory takes its place, the one mapped the moment the other is
+	given back, so the range is free for no longer than that. */
+	if (image_placeholder)
+	{
+		image_placeholder = 0;
+		if (munmap((void *)(uintptr_t)HALO_GUEST_IMAGE_BASE, IMAGE_HOLD_SIZE) == 0 &&
+			mmap((void *)(uintptr_t)image_base, image_end - image_base, PROT_READ | PROT_WRITE,
+				MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) == (void *)(uintptr_t)image_base &&
+			note_reservation(image_base, image_end - image_base, 0) == 0)
+			image_mapped = 1;
+		else
+			host_logf(HOST_LOG_WARN, "the guest image's memory could not take the placeholder's place");
+	}
 	/* Claiming the image's fixed address can lose a race with the console's
 	 * own low-memory manager, which places mappings below 4 GB from the
 	 * bottom up and does not know this program wants 0x40000000. Where the
@@ -777,7 +877,7 @@ int host_memory_initialize(uint32_t base, uint32_t size)
 	 * reuses its space, so the reservation is retried for a few seconds
 	 * before it is called a failure. Each attempt says what was in the way,
 	 * so a conflict that is permanent looks different from one that clears. */
-	for (attempt = 0; attempt < 20; attempt++)
+	for (attempt = 0; attempt < 20 && !image_mapped; attempt++)
 	{
 		if (reserve(image_base, image_end - image_base, 0) == 0)
 			break;
@@ -789,7 +889,7 @@ int host_memory_initialize(uint32_t base, uint32_t size)
 		log_conflicts(image_base, image_end - image_base);
 		usleep(250000);
 	}
-	if (attempt == 20)
+	if (attempt == 20 && !image_mapped)
 	{
 		host_logf(HOST_LOG_ERROR, "cannot reserve the guest image range at %08llx (%s)",
 			(unsigned long long)image_base, strerror(errno));
@@ -804,12 +904,11 @@ int host_memory_initialize(uint32_t base, uint32_t size)
 	window took it once, at 0x40000000: the guest's request for it then
 	landed inside the window, and lumoria_a.map's tag data was loaded over
 	the game state (game.c's "!game_globals->active"). */
-	if (reserve(HALO_GUEST_CUSTOM_EDITION_BASE, HALO_GUEST_CUSTOM_EDITION_END - HALO_GUEST_CUSTOM_EDITION_BASE, 0) != 0)
-	{
-		host_logf(HOST_LOG_WARN, "Custom Edition's tag cache range %08x-%08x is taken: its maps cannot run",
-			(unsigned)HALO_GUEST_CUSTOM_EDITION_BASE, (unsigned)HALO_GUEST_CUSTOM_EDITION_END);
-		log_conflicts(HALO_GUEST_CUSTOM_EDITION_BASE, HALO_GUEST_CUSTOM_EDITION_END - HALO_GUEST_CUSTOM_EDITION_BASE);
-	}
+	/* (its hold stands for it from here: libnx keeps both reservations) */
+	custom_edition_hold_base = custom_edition_hold_end = 0;
+	/* (where it is taken the guest puts the tag cache elsewhere, and says so:
+	port/linux/src/xbox_memory.c) */
+	(void)reserve(HALO_GUEST_CUSTOM_EDITION_BASE, HALO_GUEST_CUSTOM_EDITION_END - HALO_GUEST_CUSTOM_EDITION_BASE, 0);
 
 	/* The window, as large as the console will give: each size is tried
 	 * where the game and its data expect it, then at the address this build
@@ -845,6 +944,7 @@ int host_memory_initialize(uint32_t base, uint32_t size)
 		(unsigned int)(window_size / (1024 * 1024)),
 		(unsigned long long)window_base, (unsigned long long)window_end,
 		(unsigned long long)image_base, (unsigned long long)image_end);
+	host_memory_report("the window placed");
 	return 0;
 }
 
@@ -1441,4 +1541,135 @@ ARM translation); the Switch's tracking is page protection alone, with
 nothing to do at a frame's start */
 void host_memory_watch_begin_frame(void)
 {
+}
+
+/* MCC's tag window (port/linux/src/mcc_memory.c): its maps' tag data is linked
+to 0x50000000, 64 MB, which is also the bottom of the range held for the
+Xbox window (WINDOW_HOLD_BASE). Mapped by the guest at map load, it was
+almost never free: the window took it on runs that placed the window at
+0x50000000, and on the others something had landed in it since the start
+of main - one run, at 0x508d5000, below a window the same something pushed
+up to 0x57000000 - a thread's local storage page, most likely, which the
+kernel places where it likes, libnx's reservations or not (the image's
+placeholder, host_memory_hold_image_range). The map was refused: "the MCC
+tag address window at 50000000 (64 MiB) is unavailable".
+
+So it is mapped here, before any thread exists, and kept for the whole run:
+the kernel places nothing over a mapping, the window's placement and the
+host's mappings step past it, and the guest is handed the same memory at
+each MCC map's load (as Android's host does, port/android/host/
+host_mcc_memory.c). It costs 64 MB of the heap for the run. Zeroed before
+it is handed out again, as a fresh mapping would be. */
+#define MCC_TAG_BASE 0x50000000u
+#define MCC_TAG_SIZE 0x04000000u
+
+static pthread_mutex_t mcc_lock = PTHREAD_MUTEX_INITIALIZER;
+/* mapped at MCC_TAG_BASE; handed to the guest; used since it was zeroed */
+static int mcc_held, mcc_active, mcc_dirty;
+/* a window the guest asked for at another linked address (mcc_memory.c
+accepts 0x42000000-0x70000000), mapped for it alone; or, asked for at no
+address (0), anywhere in the guest's pools (host_low_map), where a map's
+tags go when their base is taken and their addresses move (halo_port_window.h):
+the guest's own mmap of 64 MB is given the window's reserved range by
+host_mman.c's find_free, which it cannot have */
+static void *mcc_other;
+static int mcc_other_low;
+
+void host_memory_hold_mcc_range(void)
+{
+	mcc_claim_base = MCC_TAG_BASE;
+	mcc_claim_end = (uint64_t)MCC_TAG_BASE + MCC_TAG_SIZE;
+	virtmemLock();
+	(void)virtmemAddReservation((void *)(uintptr_t)MCC_TAG_BASE, MCC_TAG_SIZE);
+	virtmemUnlock();
+	/* (the log is not open yet: a failure is said at the first map load) */
+	if (mmap((void *)(uintptr_t)MCC_TAG_BASE, MCC_TAG_SIZE, PROT_READ | PROT_WRITE,
+			MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0) == (void *)(uintptr_t)MCC_TAG_BASE)
+		mcc_held = 1;
+}
+
+long long host_mcc_memory_reserve(unsigned int address, unsigned int size)
+{
+	long long result;
+
+	/* the MCC reader's allowed windows (mcc_memory.c), or anywhere (0) */
+	if ((address & 0xffffu) || size != MCC_TAG_SIZE || (address && (address < 0x42000000u || address > 0x70000000u)))
+		return -EINVAL;
+	pthread_mutex_lock(&mcc_lock);
+	if (mcc_active || mcc_other)
+		result = -EBUSY;
+	else if (!address)
+	{
+		/* (the pools keep out of every range the game data is linked for,
+		held or claimed: range_claimed) */
+		void *allocation = host_low_map(size, PROT_READ | PROT_WRITE);
+
+		if (allocation)
+		{
+			mcc_other = allocation;
+			mcc_other_low = 1;
+			result = (long long)(uintptr_t)allocation;
+		}
+		else
+			result = -ENOMEM;
+	}
+	else if (address == MCC_TAG_BASE && mcc_held)
+	{
+		if (mcc_dirty)
+			memset((void *)(uintptr_t)MCC_TAG_BASE, 0, MCC_TAG_SIZE);
+		mcc_active = mcc_dirty = 1;
+		result = address;
+	}
+	else
+	{
+		void *wanted = (void *)(uintptr_t)address;
+		void *allocation = mmap(wanted, size, PROT_READ | PROT_WRITE,
+			MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
+
+		if (allocation == wanted)
+		{
+			mcc_other = allocation;
+			result = address;
+		}
+		else
+		{
+			result = -(errno ? errno : EEXIST);
+			if (allocation != MAP_FAILED)
+				munmap(allocation, size);
+			if (address == MCC_TAG_BASE)
+				host_logf(HOST_LOG_ERROR, "mcc memory: the tag window at %08x could not be held from the start "
+					"of main, and is not free now", address);
+			log_conflicts(address, size);
+		}
+	}
+	pthread_mutex_unlock(&mcc_lock);
+	return result;
+}
+
+int host_mcc_memory_release(unsigned int address, unsigned int size)
+{
+	int error = 0;
+
+	pthread_mutex_lock(&mcc_lock);
+	if (size != MCC_TAG_SIZE)
+		error = -EINVAL;
+	else if (address == MCC_TAG_BASE && mcc_held && mcc_active)
+		mcc_active = 0;
+	else if (mcc_other && mcc_other == (void *)(uintptr_t)address && mcc_other_low)
+	{
+		host_low_unmap(mcc_other, size);
+		mcc_other = NULL;
+		mcc_other_low = 0;
+	}
+	else if (mcc_other && mcc_other == (void *)(uintptr_t)address)
+	{
+		if (munmap(mcc_other, size))
+			error = -errno;
+		else
+			mcc_other = NULL;
+	}
+	else
+		error = -EINVAL;
+	pthread_mutex_unlock(&mcc_lock);
+	return error;
 }

@@ -10,25 +10,46 @@ levels above the executable (the repository root for build/linux/halo).
 h:\ is the Halo Custom Edition install paths.custom_edition names, if any
 (its maps folder holds the resource maps Custom Edition maps need, and more
 maps).
+d:\maps and d:\custom_maps are the folders game.maps.path and
+game.custom_maps.path name, when they name one (a relative one under the
+data root), read once, at the first path translated.
 Every other drive letter X:\ is the subdirectory X/ of the save root (z:\ holds the persistent cache and saves,
 u:\ user data, t:\ title data): paths.saves, else
 $XDG_DATA_HOME/halo-linux or ~/.local/share/halo-linux. Path components are
-matched case-insensitively, like the Xbox's FATX volumes.
+matched case-insensitively, like the Xbox's FATX volumes: each is looked for
+as it is spelt first, one stat, and only if that is not there is its folder
+read for another spelling - on a file system that ignores case itself (the
+Switch's card, Windows), not even then. A folder read for each name looked
+up in it made a folder of many files cost the square of their number: the
+custom maps' scan, which looks up each map and its description, took
+seconds.
 */
 
 #include "platform.h"
 #include "posix.h"
 #include "port_config.h"
+#include "server_mode.h"
+#include "steam_workshop.h"
+#include "mcc_local_package.h"
 
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
 /* ---------- paths */
+
+/* whether the file system tells names apart by case (else a name not there
+as it is spelt is not there in any spelling) */
+#if defined(HALO_SWITCH) || defined(_WIN32)
+#define FILE_SYSTEM_HAS_CASE 0
+#else
+#define FILE_SYSTEM_HAS_CASE 1
+#endif
 
 static BOOL directory_exists(const char *path)
 {
@@ -112,7 +133,10 @@ const char *platform_data_root(void)
 				}
 			}
 #if !defined(HALO_ANDROID) && !defined(HALO_WEB)
-			if (!has_maps(root) && executable_directory[0] && platform_offer_game_data(executable_directory) &&
+			/* (a dedicated server asks nobody: it says what is missing and
+			stops, server_mode.c) */
+			if (!has_maps(root) && executable_directory[0] && !halo_server_headless() &&
+				platform_offer_game_data(executable_directory) &&
 				has_maps(executable_directory))
 			{
 				snprintf(root, sizeof(root), "%s", executable_directory);
@@ -204,31 +228,231 @@ const char *platform_custom_edition_root(void)
 	return root;
 }
 
+/* the folder a setting names (game.maps.path, game.custom_maps.path) into
+folder, a relative one under the data root; empty if it names none */
+static void configured_folder(const char *setting, char *folder, unsigned long size)
+{
+	const char *path = config_string(setting);
+
+	folder[0] = 0;
+	if (!path || !*path)
+		return;
+	/* (absolute: /..., a drive's C:\... or C:/..., the Switch's sdmc:/...) */
+	if (path[0] == '/' || path[0] == '\\' || strstr(path, ":/") || strstr(path, ":\\"))
+		snprintf(folder, size, "%s", path);
+	else
+		snprintf(folder, size, "%s/%s", platform_data_root(), path);
+	trim_separators(folder);
+	platform_log("%s: %s", setting, folder);
+}
+
+/* whether two names are the same, whatever their case */
+static BOOL same_name(const char *first, const char *second)
+{
+	while (*first && tolower((unsigned char)*first) == tolower((unsigned char)*second))
+	{
+		first++;
+		second++;
+	}
+	return !*first && !*second;
+}
+
+/* the folder holding mcc_maps: game.mcc.path's (Android's GAME FILES moves
+it with the maps: GameFiles.java), else the data root. mcc_staging stays in
+the data root (a package published from it to another storage is copied:
+posix_mcc_share_publish). Read once. */
+const char *platform_mcc_root(void)
+{
+	static char root[MAX_PATH];
+	static int read;
+
+	if (!read)
+	{
+		read = 1;
+		configured_folder("game.mcc.path", root, sizeof(root));
+		if (!root[0])
+			snprintf(root, sizeof(root), "%s", platform_data_root());
+	}
+	return root;
+}
+
+/* d:\'s maps, custom_maps and mcc_maps folders, if game.maps.path,
+game.custom_maps.path or game.mcc.path moves them (the path's first name,
+which is matched whatever its case): the folder, else NULL */
+static const char *moved_folder(const char *name)
+{
+	static char maps[MAX_PATH], custom_maps[MAX_PATH], mcc_maps[MAX_PATH];
+	static int read;
+
+	if (!read)
+	{
+		char mcc[MAX_PATH];
+
+		read = 1;
+		configured_folder("game.maps.path", maps, sizeof(maps));
+		configured_folder("game.custom_maps.path", custom_maps, sizeof(custom_maps));
+		configured_folder("game.mcc.path", mcc, sizeof(mcc));
+		if (mcc[0])
+			snprintf(mcc_maps, sizeof(mcc_maps), "%s/mcc_maps", mcc);
+	}
+	if (maps[0] && same_name(name, "maps"))
+		return maps;
+	if (custom_maps[0] && same_name(name, "custom_maps"))
+		return custom_maps;
+	if (mcc_maps[0] && same_name(name, "mcc_maps"))
+		return mcc_maps;
+	return NULL;
+}
+
+/* whether the first length characters of a and b match, ignoring case
+(the Windows build has no strings.h); a shorter string matches only up to
+its end, which must come at the same place in both */
+static BOOL names_match(const char *a, const char *b, unsigned long length)
+{
+	unsigned long index;
+
+	for (index = 0; index < length; index++)
+	{
+		if (tolower((unsigned char)a[index]) != tolower((unsigned char)b[index]))
+			return FALSE;
+		if (!a[index])
+			return TRUE;
+	}
+	return TRUE;
+}
+
+/* mcc_maps\<Workshop item id>\... where the data root has no such package folder: the item's maps folder in the
+player's Steam library (steam_workshop.h). The rest of the path after the id in rest */
+static int translate_workshop(const char *cursor, char *resolved, unsigned long size, const char **rest)
+{
+	char id[STEAM_WORKSHOP_ID_SIZE], package[1024], data_folder[1100], local_name[256];
+	unsigned long length = 0;
+
+	while (*cursor == '\\' || *cursor == '/')
+		cursor++;
+	/* MCC-owned local layout resolution is independent of Steam discovery. */
+	if (mcc_local_package_path(cursor, platform_mcc_root(), resolved, size))
+	{
+		*rest = cursor + strlen(cursor);
+		return 1;
+	}
+	if (!names_match(cursor, "mcc_maps", 8) || (cursor[8] != '\\' && cursor[8] != '/'))
+		return 0;
+	cursor += 9;
+	/* MCC-owned resource discovery also serves the virtual fopen path. */
+	if (steam_workshop_resource_path(cursor, platform_mcc_root(), resolved, size))
+	{
+		*rest = cursor + strlen(cursor);
+		return 1;
+	}
+	while (cursor[length] >= '0' && cursor[length] <= '9' && length + 1 < sizeof(id))
+	{
+		id[length] = cursor[length];
+		length++;
+	}
+	id[length] = 0;
+	if (!length || (cursor[length] && cursor[length] != '\\' && cursor[length] != '/'))
+		return 0;
+	/* a package folder of that name in the data root wins */
+	if (posix_find_entry_case_insensitive(platform_mcc_root(), "mcc_maps", local_name, sizeof(local_name)))
+	{
+		snprintf(data_folder, sizeof(data_folder), "%s/%s", platform_mcc_root(), local_name);
+		if (posix_find_entry_case_insensitive(data_folder, id, local_name, sizeof(local_name)))
+			return 0;
+	}
+	if (!steam_workshop_package_folder(id, package, sizeof(package)) ||
+		strlen(package) >= size)
+		return 0;
+	snprintf(resolved, size, "%s", package);
+	trim_separators(resolved);
+	*rest = cursor + length;
+	return 1;
+}
+
+/* the data root's files and folders kept elsewhere when the settings say
+(paths.logs, paths.custom_maps): a read-only data root, a dedicated
+server's maps mounted so. The rest of the path after them in rest */
+static int translate_elsewhere(const char *cursor, char *resolved, unsigned long size, const char **rest)
+{
+	static const char *const logs[] = { "debug.txt", "bans.txt", "cheaters.txt" };
+	const char *logs_folder = config_string("paths.logs");
+	const char *custom_maps = config_string("paths.custom_maps");
+	unsigned long index;
+
+	while (*cursor == '\\' || *cursor == '/')
+		cursor++;
+	if (translate_workshop(cursor, resolved, size, rest))
+		return 1;
+	for (index = 0; logs_folder[0] && index < sizeof(logs) / sizeof(logs[0]); index++)
+	{
+		if (names_match(cursor, logs[index], strlen(logs[index]) + 1))
+		{
+			make_directories(logs_folder);
+			snprintf(resolved, size, "%s", logs_folder);
+			trim_separators(resolved);
+			*rest = cursor;
+			return 1;
+		}
+	}
+	if (custom_maps[0] && names_match(cursor, "custom_maps", 11) && (!cursor[11] || cursor[11] == '\\' ||
+		cursor[11] == '/'))
+	{
+		snprintf(resolved, size, "%s", custom_maps);
+		trim_separators(resolved);
+		*rest = cursor + 11;
+		return 1;
+	}
+	return 0;
+}
+
 void platform_translate_path(const char *xbox_path, char *host_path, unsigned long host_path_size)
 {
 	char resolved[1024];
 	const char *cursor = xbox_path;
 	unsigned long length;
+	BOOL on_data_root = TRUE;
 
 	snprintf(resolved, sizeof(resolved), "%s", platform_data_root());
 	if (((cursor[0] >= 'a' && cursor[0] <= 'z') || (cursor[0] >= 'A' && cursor[0] <= 'Z')) && cursor[1] == ':')
 	{
 		char drive = (char)(cursor[0] | 0x20);
 
+		on_data_root = drive == 'd';
+
 		if (drive == 'h' && platform_custom_edition_root()[0])
 		{
 			snprintf(resolved, sizeof(resolved), "%s", platform_custom_edition_root());
 		}
+		else if (drive == 'd' && translate_elsewhere(cursor + 2, resolved, sizeof(resolved), &cursor))
+		{
+			/* (its folder already where the setting keeps it: game.maps.path
+			and game.custom_maps.path do not move it again) */
+			on_data_root = FALSE;
+			cursor -= 2;
+		}
 		else if (drive != 'd')
 		{
+			/* (port: looked for once a run, not at every path: each file
+			of the saved games' took a stat of its drive's folder, 199 of
+			z's in five seconds of the Switch's start) */
+			static unsigned char drive_ready[26];
 			struct posix_file_information information;
 
 			snprintf(resolved, sizeof(resolved), "%s/%c", platform_save_root(), drive);
 			/* every Xbox drive always exists; create its directory on first use */
-			if (posix_stat(resolved, &information) != 0)
-				posix_make_directory(resolved);
+			if (drive >= 'a' && drive <= 'z' && !drive_ready[drive - 'a'])
+			{
+				if (posix_stat(resolved, &information) != 0)
+					posix_make_directory(resolved);
+				drive_ready[drive - 'a'] = 1;
+			}
 		}
 		cursor += 2;
+	}
+	else
+	{
+		/* (a path without a drive, as the package resources are named) */
+		translate_workshop(cursor, resolved, sizeof(resolved), &cursor);
 	}
 
 	while (*cursor)
@@ -247,20 +471,32 @@ void platform_translate_path(const char *xbox_path, char *host_path, unsigned lo
 		leave the root */
 		if (!component_length || strspn(component, ". ") == component_length)
 			continue;
-
-		if (posix_find_entry_case_insensitive(resolved, component, on_disk, sizeof(on_disk)))
+		/* (d:\'s first name, if it is a folder a setting moved) */
+		if (on_data_root)
 		{
-			/* prefer an exact match when several spellings exist */
+			const char *moved = moved_folder(component);
+
+			on_data_root = FALSE;
+			if (moved)
+			{
+				snprintf(resolved, sizeof(resolved), "%s", moved);
+				continue;
+			}
+		}
+
+		/* (as it is spelt first, which also wins when several spellings
+		are there; the folder read for another only where case counts) */
+		{
 			char exact[1100];
 			struct posix_file_information information;
 
-			snprintf(exact, sizeof(exact), "%s/%s", resolved, component);
-			if (posix_stat(exact, &information) == 0)
-				snprintf(on_disk, sizeof(on_disk), "%s", component);
-		}
-		else
-		{
 			snprintf(on_disk, sizeof(on_disk), "%s", component);
+			snprintf(exact, sizeof(exact), "%s/%s", resolved, component);
+			/* (port: where case does not count, the stat answered nothing
+			and cost one for each folder of every path: 1,355 of them in
+			five seconds of the Switch's start) */
+			if (FILE_SYSTEM_HAS_CASE && posix_stat(exact, &information) != 0)
+				posix_find_entry_case_insensitive(resolved, component, on_disk, sizeof(on_disk));
 		}
 		length = strlen(resolved);
 		snprintf(resolved + length, sizeof(resolved) - length, "/%s", on_disk);
@@ -268,18 +504,137 @@ void platform_translate_path(const char *xbox_path, char *host_path, unsigned lo
 	snprintf(host_path, host_path_size, "%s", resolved);
 }
 
+/* ---------- the maps folder's maps */
+
+enum
+{
+	/* a cache file's header: 'head' and its version */
+	MAP_HEADER_SIGNATURE = 0x68656164,
+	/* (Halo PC's: retail's, and Custom Edition's) */
+	HALO_PC_MAP_VERSION = 7,
+	CUSTOM_EDITION_MAP_VERSION = 609,
+};
+
+/* a map file's cache version, by its header; 0 if it is not a cache file */
+static long map_file_version(const char *path)
+{
+	unsigned char header[8];
+	FILE *file = fopen(path, "rb");
+	long version = 0;
+
+	if (!file)
+		return 0;
+	if (fread(header, 1, sizeof(header), file) == sizeof(header) &&
+		(header[0] | header[1] << 8 | header[2] << 16 | (unsigned long)header[3] << 24) == MAP_HEADER_SIGNATURE)
+	{
+		version = (long)(header[4] | header[5] << 8 | header[6] << 16 | (unsigned long)header[7] << 24);
+	}
+	fclose(file);
+	return version;
+}
+
+static BOOL map_version_is_pc(long version)
+{
+	return version == HALO_PC_MAP_VERSION || version == CUSTOM_EDITION_MAP_VERSION;
+}
+
+static BOOL name_ends_with(const char *name, const char *ending)
+{
+	size_t length = strlen(name);
+	size_t ending_length = strlen(ending);
+	size_t index;
+
+	if (length < ending_length)
+		return FALSE;
+	for (index = 0; index < ending_length; index++)
+	{
+		if (tolower((unsigned char)name[length - ending_length + index]) != tolower((unsigned char)ending[index]))
+			return FALSE;
+	}
+	return TRUE;
+}
+
+/* the Halo PC maps in the maps folder, which play only from custom_maps:
+how many, and the first PLATFORM_MAPS_FOLDER_NAMED's names */
+static long pc_maps_in_maps(char *names, unsigned long names_size)
+{
+	char folder[1024];
+	char name[256];
+	long count = 0;
+	void *directory;
+
+	platform_translate_path("d:\\maps", folder, sizeof(folder));
+	directory = posix_directory_open(folder);
+	if (!directory)
+		return 0;
+	while (posix_directory_next(directory, name, sizeof(name)))
+	{
+		char path[1300];
+
+		if (!name_ends_with(name, ".map"))
+			continue;
+		snprintf(path, sizeof(path), "%s/%s", folder, name);
+		if (!map_version_is_pc(map_file_version(path)))
+			continue;
+		if (count < PLATFORM_MAPS_FOLDER_NAMED)
+		{
+			size_t length = strlen(names);
+
+			snprintf(names + length, names_size - length, "%s%s", length ? ", " : "", name);
+		}
+		count++;
+	}
+	posix_directory_close(directory);
+	return count;
+}
+
+void platform_maps_folder_check(struct platform_maps_folder *maps)
+{
+	const char *root = platform_data_root();
+	char path[1024];
+
+	memset(maps, 0, sizeof(*maps));
+	/* the data root as the player finds it (whole: Windows' is the
+	executable's folder's, or paths.data's) */
+#ifndef _WIN32
+	if (root[0] != '/' && getcwd(maps->root, sizeof(maps->root)))
+	{
+		size_t length = strlen(maps->root);
+
+		if (strcmp(root, "."))
+			snprintf(maps->root + length, sizeof(maps->root) - length, "/%s", root);
+	}
+	else
+#endif
+	{
+		snprintf(maps->root, sizeof(maps->root), "%s", root);
+	}
+	platform_translate_path("d:\\maps\\ui.map", path, sizeof(path));
+	maps->ui_version = map_file_version(path);
+	maps->state = map_version_is_pc(maps->ui_version) ? _maps_folder_halo_pc :
+		!maps->ui_version ? _maps_folder_no_ui : _maps_folder_xbox;
+	maps->stray_pc_maps = pc_maps_in_maps(maps->stray_names, sizeof(maps->stray_names));
+}
+
 /* ---------- file handles */
+
+struct read_ahead;
 
 struct platform_file
 {
 	int descriptor;
 	char path[1024];
+	/* platform_file_read_ahead's, or NULL */
+	struct read_ahead *read_ahead;
 };
+
+static void read_ahead_stop(struct platform_file *file);
 
 static void file_destroy(struct platform_handle *handle)
 {
 	struct platform_file *file = handle->data;
 
+	read_ahead_stop(file);
 	close(file->descriptor);
 	free(file);
 }
@@ -292,13 +647,12 @@ static struct platform_file *file_from_handle(HANDLE handle)
 }
 
 /* The game is about to write a new map over one of its map cache files
-(source/cache/cache_files_windows.c). The Switch's host keeps those files in
-memory (port/switch/host/host_memory_files.c): the file is emptied and given
-its size back, so the old map's memory goes before the new map's is taken.
-A file on a disk is written over as it is. */
+(source/cache/cache_files_windows.c). The hosts keep those files in memory
+(port/android/host/host_memory_files.c, on the Switch, Android and the PS5):
+the file is emptied and given its size back, so the old map's memory goes
+before the new map's is taken. */
 void platform_file_discard(HANDLE handle)
 {
-#ifdef HALO_SWITCH
 	struct platform_file *file = file_from_handle(handle);
 	struct posix_file_information information;
 
@@ -307,9 +661,6 @@ void platform_file_discard(HANDLE handle)
 		posix_truncate(file->descriptor, 0, 0);
 		posix_truncate(file->descriptor, information.size_low, information.size_high);
 	}
-#else
-	(void)handle;
-#endif
 }
 
 HANDLE WINAPI CreateFileA(LPCSTR file_name, DWORD desired_access, DWORD share_mode,
@@ -546,6 +897,187 @@ BOOL WINAPI WriteFile(HANDLE handle, LPCVOID buffer, DWORD count, LPDWORD bytes_
 	return result;
 }
 
+/* ---------- read ahead (platform_file_read_ahead)
+
+A map unpacked into the cache was read 128 KB at a time, each read waited
+for before zlib took it, so the card and zlib took turns: a campaign
+level's copy was its reads' time and zlib's added (2.9 s and 2.3 s of a30's
+5.3 s on the Switch). A thread of the file's own reads it from its start,
+a megabyte at a time, into a ring READ_AHEAD_SIZE ahead of the game's
+reads, which are copied out of it as it fills; a read behind the ring or
+past it (none, as the game reads the map) goes to the file as before. */
+
+enum
+{
+	READ_AHEAD_SIZE = 8 * 1024 * 1024,
+	READ_AHEAD_CHUNK = 1024 * 1024,
+};
+
+struct read_ahead
+{
+	pthread_t thread;
+	pthread_mutex_t lock;
+	pthread_cond_t changed;
+	char *ring;
+	unsigned long long file_size;
+	/* the ring holds the file's bytes from consumed to filled, each at its offset modulo the ring's size */
+	unsigned long long consumed, filled;
+	int stop, error;
+	/* the reader's time reading, and waiting for room (the game behind it), and the game's waiting for it */
+	unsigned long long read_us, room_us, waited_us;
+};
+
+static unsigned long long read_ahead_now_us(void)
+{
+	struct timespec now;
+
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	return (unsigned long long)now.tv_sec * 1000000ULL + (unsigned long long)now.tv_nsec / 1000ULL;
+}
+
+static void *read_ahead_thread(void *context)
+{
+	struct platform_file *file = context;
+	struct read_ahead *ahead = file->read_ahead;
+
+	pthread_mutex_lock(&ahead->lock);
+	while (!ahead->stop && !ahead->error && ahead->filled < ahead->file_size)
+	{
+		unsigned long long at = ahead->filled, room = ahead->consumed + READ_AHEAD_SIZE - ahead->filled;
+		size_t wanted = READ_AHEAD_CHUNK, position = (size_t)(at % READ_AHEAD_SIZE);
+		ssize_t result;
+		unsigned long long started;
+
+		if (room < READ_AHEAD_CHUNK && room < ahead->file_size - at)
+		{
+			started = read_ahead_now_us();
+			pthread_cond_wait(&ahead->changed, &ahead->lock);
+			ahead->room_us += read_ahead_now_us() - started;
+			continue;
+		}
+		if (wanted > room)
+			wanted = (size_t)room;
+		if (wanted > ahead->file_size - at)
+			wanted = (size_t)(ahead->file_size - at);
+		if (wanted > READ_AHEAD_SIZE - position)
+			wanted = READ_AHEAD_SIZE - position;
+		pthread_mutex_unlock(&ahead->lock);
+		started = read_ahead_now_us();
+		result = pread(file->descriptor, ahead->ring + position, wanted, (off_t)at);
+		pthread_mutex_lock(&ahead->lock);
+		ahead->read_us += read_ahead_now_us() - started;
+		if (result < 0 && errno == EINTR)
+			continue;
+		if (result <= 0)
+			ahead->error = 1;
+		else
+			ahead->filled += (unsigned long long)result;
+		pthread_cond_broadcast(&ahead->changed);
+	}
+	pthread_mutex_unlock(&ahead->lock);
+	return NULL;
+}
+
+void platform_file_read_ahead(HANDLE handle)
+{
+	struct platform_file *file = file_from_handle(handle);
+	struct read_ahead *ahead;
+	off_t size;
+
+	if (!file || file->read_ahead)
+		return;
+	size = lseek(file->descriptor, 0, SEEK_END);
+	ahead = calloc(1, sizeof(*ahead));
+	if (size <= 0 || !ahead)
+	{
+		free(ahead);
+		return;
+	}
+	ahead->ring = malloc(READ_AHEAD_SIZE);
+	if (!ahead->ring)
+	{
+		free(ahead);
+		return;
+	}
+	ahead->file_size = (unsigned long long)size;
+	pthread_mutex_init(&ahead->lock, NULL);
+	pthread_cond_init(&ahead->changed, NULL);
+	file->read_ahead = ahead;
+	if (pthread_create(&ahead->thread, NULL, read_ahead_thread, file) != 0)
+	{
+		file->read_ahead = NULL;
+		pthread_cond_destroy(&ahead->changed);
+		pthread_mutex_destroy(&ahead->lock);
+		free(ahead->ring);
+		free(ahead);
+	}
+}
+
+/* a read from the ring: TRUE with *done its bytes, or FALSE for one it does not hold, read from the file instead */
+static BOOL read_ahead_read(struct platform_file *file, void *buffer, DWORD count, DWORD *done,
+	unsigned long long offset)
+{
+	struct read_ahead *ahead = file->read_ahead;
+	unsigned long long end, started;
+	DWORD copied = 0;
+
+	pthread_mutex_lock(&ahead->lock);
+	if (offset < ahead->consumed || offset > ahead->file_size ||
+		(unsigned long long)count > READ_AHEAD_SIZE || offset + count > ahead->consumed + READ_AHEAD_SIZE)
+	{
+		pthread_mutex_unlock(&ahead->lock);
+		return FALSE;
+	}
+	end = offset + count < ahead->file_size ? offset + count : ahead->file_size;
+	started = read_ahead_now_us();
+	while (ahead->filled < end && !ahead->error)
+		pthread_cond_wait(&ahead->changed, &ahead->lock);
+	ahead->waited_us += read_ahead_now_us() - started;
+	if (ahead->filled < end)
+	{
+		pthread_mutex_unlock(&ahead->lock);
+		return FALSE;
+	}
+	while (offset + copied < end)
+	{
+		size_t position = (size_t)((offset + copied) % READ_AHEAD_SIZE);
+		size_t piece = (size_t)(end - offset - copied);
+
+		if (piece > READ_AHEAD_SIZE - position)
+			piece = READ_AHEAD_SIZE - position;
+		memcpy((char *)buffer + copied, ahead->ring + position, piece);
+		copied += (DWORD)piece;
+	}
+	/* (what is before the read is not wanted again: room for the reader) */
+	ahead->consumed = end;
+	pthread_cond_broadcast(&ahead->changed);
+	pthread_mutex_unlock(&ahead->lock);
+	*done = copied;
+	return TRUE;
+}
+
+static void read_ahead_stop(struct platform_file *file)
+{
+	struct read_ahead *ahead = file->read_ahead;
+
+	if (!ahead)
+		return;
+	pthread_mutex_lock(&ahead->lock);
+	ahead->stop = 1;
+	pthread_cond_broadcast(&ahead->changed);
+	pthread_mutex_unlock(&ahead->lock);
+	pthread_join(ahead->thread, NULL);
+	platform_log("read ahead: %s: %.1f MB read in %.2f s (%.1f MB/s), %.2f s waiting for room, the reads waited "
+		"%.2f s for it%s", file->path, ahead->filled / 1e6, ahead->read_us / 1e6,
+		ahead->read_us ? ahead->filled / (double)ahead->read_us : 0.0, ahead->room_us / 1e6, ahead->waited_us / 1e6,
+		ahead->error ? " (a read failed: the rest from the file)" : "");
+	pthread_cond_destroy(&ahead->changed);
+	pthread_mutex_destroy(&ahead->lock);
+	free(ahead->ring);
+	free(ahead);
+	file->read_ahead = NULL;
+}
+
 /* ReadFileEx/WriteFileEx complete immediately; as on Win32, the completion
 routine runs during the issuing thread's next alertable wait. */
 
@@ -570,7 +1102,10 @@ BOOL WINAPI ReadFileEx(HANDLE handle, LPVOID buffer, DWORD count, LPOVERLAPPED o
 			SetLastError(ERROR_INVALID_PARAMETER);
 		return FALSE;
 	}
-	result = read_at(file, buffer, count, &done, TRUE, overlapped_offset(overlapped));
+	if (file->read_ahead && read_ahead_read(file, buffer, count, &done, overlapped_offset(overlapped)))
+		result = TRUE;
+	else
+		result = read_at(file, buffer, count, &done, TRUE, overlapped_offset(overlapped));
 	overlapped->Internal = result ? ERROR_SUCCESS : GetLastError();
 	if (result && done == 0 && count > 0)
 		overlapped->Internal = ERROR_HANDLE_EOF;

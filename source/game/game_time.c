@@ -75,7 +75,11 @@ symbols in this file:
 #include "networking/network_game_globals.h"
 #include "networking/network_server_manager.h"
 #include "saved games/game_state.h"
+#include "scenario/scenario.h" /* port: game_time_menu_scene */
+#include "scenario/scenario_definitions.h"
 #include "profile_sections.h" /* port: port/linux/include/profile_sections.h */
+#include "network_replay.h" /* port: port/linux/game/network_replay_playback.c */
+#include "mcc_game_speed.h" /* port: port/linux/game/mcc_game_speed.c */
 /* port/linux/game/network_distributed.c's */
 void network_distributed_tick(void);
 
@@ -116,6 +120,8 @@ struct game_time_globals_struct
 /* ---------- globals */
 
 static struct game_time_globals_struct *game_time_globals;
+/* port: a reliable host update's time, not part of the saved world. */
+static long game_time_distributed_target = NONE;
 
 /* ---------- public code */
 
@@ -130,6 +136,7 @@ void game_time_initialize(
 {
 	game_time_globals = (struct game_time_globals_struct *)game_state_malloc("game time globals", NULL, sizeof(*game_time_globals));
 	memset(game_time_globals, 0, sizeof(*game_time_globals));
+	game_time_distributed_target = NONE; /* port: no previous session's target */
 
 	return;
 }
@@ -140,6 +147,7 @@ void game_time_initialize_for_new_map(
 	match_assert("c:\\halo\\SOURCE\\game\\game_time.c", 131, game_time_globals && !game_time_globals->initialized);
 	memset(game_time_globals, 0, sizeof(*game_time_globals));
 	game_time_globals->initialized = TRUE;
+	game_time_distributed_target = NONE; /* port: no previous map's target */
 
 	return;
 }
@@ -147,6 +155,7 @@ void game_time_initialize_for_new_map(
 void game_time_dispose_from_old_map(
 	void)
 {
+	game_time_distributed_target = NONE; /* port: discard the departing map's target */
 	if (game_time_globals)
 	{
 		game_time_globals->initialized = FALSE;
@@ -167,6 +176,7 @@ void game_time_end(
 {
 	match_assert("c:\\halo\\SOURCE\\game\\game_time.c", 196, game_time_globals);
 	game_time_globals->active = FALSE;
+	game_time_distributed_target = NONE; /* port: discard the finished game's target */
 
 	return;
 }
@@ -179,6 +189,22 @@ void game_time_set_distributed(
 	game_time_globals->local_time = time;
 	game_time_globals->server_time = time;
 	game_time_globals->leftover_dt = 0.f;
+	game_time_distributed_target = NONE; /* port: a new clock invalidates its target */
+
+	return;
+}
+
+/* port: remember only validated reliable host time. Small stalls used to
+leave clients behind indefinitely; game_time_update runs the missing ticks. */
+void game_time_synchronize_distributed(
+	long time)
+{
+	if (!game_time_globals || !game_time_globals->initialized ||
+		!game_time_globals->active || !network_game_distributed_client() ||
+		game_time_menu_scene() || time < 0 || time > 0x3FFFFFFF)
+		return;
+	if (time > game_time_globals->local_time && time > game_time_distributed_target)
+		game_time_distributed_target = time;
 
 	return;
 }
@@ -282,6 +308,9 @@ real game_time_get_tick_fraction(
 	if (!game_time_globals || !game_time_globals->active || game_time_globals->paused)
 		return 1.0f;
 	fraction = game_time_globals->leftover_dt * game_time_globals->speed * TICKS_PER_SECOND;
+	/* port: MCC clients interpolate using only the host's approved speed. */
+	if (network_game_distributed_client())
+		fraction = game_time_globals->leftover_dt * mcc_game_speed_client(game_time_globals->speed) * TICKS_PER_SECOND;
 	return PIN(fraction, 0.0f, 1.0f);
 }
 
@@ -293,7 +322,7 @@ real game_time_get_speed(
 	/* port: a client of another's game runs at the host's speed (its own
 	set before it joined too: cheats_network_client_enforce) */
 	if (network_game_distributed_client())
-		return 1.0f;
+		return mcc_game_speed_client(1.0f); /* port: legacy clients remain at one */
 	return game_time_globals->speed;
 }
 
@@ -341,6 +370,18 @@ boolean game_time_held(
 	return client && !network_game_client_server_has_started_game(client);
 }
 
+/* port: whether the main menu's scene is what ticks. It runs on this
+machine's clock and takes no player input: a tick waits for the players'
+input, an action for each, and the menus change who the local players are
+(profiles), and a lobby's network game owns the queues, so with none the
+ticks stopped and the scene froze behind the menus (players.c gives its
+players idle actions) */
+boolean game_time_menu_scene(
+	void)
+{
+	return global_scenario && global_scenario->type == _scenario_type_main_menu;
+}
+
 void game_time_start(
 	void)
 {
@@ -383,12 +424,17 @@ void game_time_update(
 	real time_delta_sec)
 {
 	match_assert("c:\\halo\\SOURCE\\game\\game_time.c", 205, game_time_globals);
+	/* port: MCC speed updates must continue when simulation is stopped. */
+	mcc_game_speed_frame();
 
 	if (game_time_globals->active)
 	{
 		long connection;
 		long ticks_elapsed;
 		real ticks_per_second = game_time_globals->speed*TICKS_PER_SECOND;
+		/* port: preserve native client cheat enforcement; use MCC host state separately. */
+		if (network_game_distributed_client())
+			ticks_per_second = mcc_game_speed_client(game_time_globals->speed)*TICKS_PER_SECOND;
 
 		/* The native builds draw several frames per tick
 		(port/linux/game/render_interpolation.c). A frame that runs no tick has
@@ -424,6 +470,10 @@ void game_time_update(
 				spiral to frames of many seconds. Behind the host by more, it
 				takes the host's tick instead (network_client_manager.c) */
 				connection = NETWORK_TICKS_PER_FRAME;
+				/* port: a replay's skip ahead, more
+				(port/linux/game/network_replay_playback.c) */
+				if (network_replay_playing())
+					connection = network_replay_ticks_per_frame(connection);
 				break;
 			case _game_connection_local:
 				connection = 7;
@@ -449,6 +499,15 @@ void game_time_update(
 			game_time_globals->leftover_dt = game_time - ticks_elapsed_real/ticks_per_second;
 			if (game_time_globals->leftover_dt < 0.f)
 				game_time_globals->leftover_dt = 0.f;
+			/* port: debug.fixed_step, a game of this machine alone: one tick a
+			frame that has time (main.c gives it a tick's; a 30th of a second in
+			a float is not one tick exactly), so that what runs once a frame
+			(aiming) sees the game's time; game_speed has no effect */
+			if (halo_fixed_step() && game_connection() == _game_connection_local && time_delta_sec > 0.f)
+			{
+				ticks_elapsed = 1;
+				game_time_globals->leftover_dt = 0.f;
+			}
 			match_assert("c:\\halo\\SOURCE\\game\\game_time.c", 306,
 				game_time_globals->leftover_dt>=0.f && game_time_globals->leftover_dt<100.f);
 
@@ -456,6 +515,19 @@ void game_time_update(
 			{
 				long final_local_time;
 				long maximum_possible_server_time;
+
+				/* port: recover a small clock deficit by simulating, not skipping,
+				ticks. Keep the fractional time above and the frame's existing cap;
+				at most double its normal work, never extrapolating the host's time. */
+				if (network_game_distributed_client() && !game_time_held() &&
+					!game_time_menu_scene() && game_time_globals->local_time >= 0 &&
+					game_time_distributed_target > game_time_globals->local_time)
+				{
+					long ticks_behind = game_time_distributed_target - game_time_globals->local_time;
+					long extra_ticks = MIN(ticks_elapsed, ticks_behind - ticks_elapsed);
+					if (extra_ticks > 0)
+						ticks_elapsed += MIN(extra_ticks, TICKS_PER_SECOND - ticks_elapsed);
+				}
 
 				final_local_time = game_time_globals->local_time + ticks_elapsed;
 				switch (game_connection())
@@ -472,7 +544,13 @@ void game_time_update(
 				with its own input and the latest the host relayed, from the
 				host's first game update, which brings the host's time: the
 				host ticks only once every machine has loaded) */
-				if (game_connection() == _game_connection_network_client)
+				/* port: the main menu's scene ticks on this machine's clock,
+				in a lobby too (game_time_menu_scene) */
+				if (game_time_menu_scene())
+				{
+					maximum_possible_server_time = final_local_time;
+				}
+				else if (game_connection() == _game_connection_network_client)
 				{
 					maximum_possible_server_time = game_time_held() ?
 						game_time_globals->server_time : final_local_time;
@@ -487,12 +565,18 @@ void game_time_update(
 
 					for (update_index = 0; update_index < server_updates; update_index++)
 					{
+						/* port: a replay's records of the tick reached, before it
+						runs (port/linux/game/network_replay_playback.c) */
+						if (network_replay_playing())
+							network_replay_playback_tick();
 						game_tick();
 						profile_scope(game_time_render_interpolation_tick_section, render_interpolation_tick();)
 						game_time_globals->server_time++;
 						game_time_globals->local_time++;
-						/* the distributed netcode's per-tick state */
-						profile_scope(game_time_network_distributed_tick_section, network_distributed_tick();)
+						/* the distributed netcode's per-tick state (port: none of
+						the main menu's scene, which a lobby's machines do not share) */
+						if (!game_time_menu_scene())
+							profile_scope(game_time_network_distributed_tick_section, network_distributed_tick();)
 					}
 				}
 

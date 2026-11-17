@@ -103,6 +103,13 @@ boolean network_game_server_switch_machine_from_postgame_to_pregame(
 void network_game_server_set_machine_hardware_id(
 	struct network_game_server_client_machine *machine,
 	char const *hardware_id);
+/* port: the Discord pass and proof a joining machine showed, and its name
+(port/linux/game/network_link.c) */
+void network_game_server_set_machine_link(
+	struct network_game_server_client_machine *machine,
+	void const *pass,
+	void const *proof,
+	char const *name);
 void network_game_server_queue_player_for_addition(
 	struct network_game_server *server,
 	struct network_player *player);
@@ -123,6 +130,11 @@ struct network_game_server_client_machine *network_game_server_get_client_machin
 struct network_game_server_client_machine *network_game_server_get_client_machine_at_address(
 	struct network_game_server *server,
 	unsigned long address);
+/* port: the machine at an address, preferring one that isn't the host's own
+(a second game on the host's computer shares its address) */
+struct network_game_server_client_machine *network_game_server_get_remote_client_machine_at_address(
+	struct network_game_server *server,
+	unsigned long address);
 struct network_game *network_game_server_get_game(
 	struct network_game_server *server);
 boolean network_game_server_remove_machine_from_game(
@@ -136,6 +148,10 @@ boolean network_game_server_lobby_is_open(
 	struct network_game_server *server);
 /* a client machine's slower may add to the countdown (once each countdown) */
 boolean network_game_server_client_machine_may_slow_countdown(
+	struct network_game_server *server,
+	struct network_game_server_client_machine *machine);
+/* the countdown event a machine's faster makes (the host's starts the game) */
+short network_game_server_client_machine_faster_event(
 	struct network_game_server *server,
 	struct network_game_server_client_machine *machine);
 /* ---------- globals */

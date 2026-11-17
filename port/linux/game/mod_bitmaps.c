@@ -37,9 +37,10 @@ A bitmap's pixels are read from the file as the texture cache loads them
 as the hardware wants them as a Custom Edition map's are
 (rasterizer_xbox_bitmap_rebuild_hardware_format); the renderer is told
 which keep their channels where Halo PC does (multipurpose maps and HUD
-meters: custom_edition_bitmaps.c). A bitmap whose pixels are more than a
-quarter of the texture cache is left out: it could not be drawn with what
-the map draws around it. A bitmap is drawn, not simulated: nothing a network
+meters: custom_edition_bitmaps.c), unless the mod's mod.toml says its keep
+them where the Xbox does (channel_order = "xbox": bitmaps taken from an Xbox
+map). A bitmap whose pixels are more than a quarter of the texture cache is
+left out: it could not be drawn with what the map draws around it. A bitmap is drawn, not simulated: nothing a network
 game's machines agree on reads one.
 
 The map's bitmap tag takes the file's values in place, so everything that
@@ -66,8 +67,28 @@ a bitmap made is kept until the map goes, as anything may still hold it.
 #include "mods.h"
 
 #include <stddef.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef HALO_SWITCH
+/* the host's cache of textures' bytes, outside the Xbox window (port/switch/host/host_texture_cache.c) */
+int host_texture_cache_get(uint64_t key, uint32_t buffer, uint32_t size);
+void host_texture_cache_put(uint64_t key, uint32_t buffer, uint32_t size);
+void host_texture_cache_clear(void);
+/* (port/switch/guest/dk_commands.h's struct host_texture_prefetch, as the host reads it) */
+struct host_texture_prefetch
+{
+	uint64_t key;
+	uint32_t offset;
+	uint32_t size;
+	uint32_t path;
+	uint32_t reserved;
+};
+void host_texture_cache_prefetch(uint32_t items, uint32_t count);
+void memory_watch_prepare_write(void *address, unsigned long size);
+static void mod_bitmaps_prefetch(void);
+#endif
 
 /* the platform layer's (port/linux/src) */
 void halo_custom_edition_texels_channels(void const *texels, unsigned char channel_order);
@@ -1188,6 +1209,11 @@ long mod_bitmaps_update(
 				played_count, loaded_count, removed_count, refused_count);
 		}
 	}
+#ifdef HALO_SWITCH
+	/* (the map's played bitmaps read ahead: those already in the host's cache are skipped) */
+	if (played_count)
+		mod_bitmaps_prefetch();
+#endif
 
 	return played_count;
 }
@@ -1197,6 +1223,11 @@ void mod_bitmaps_tags_unloaded(
 	void)
 {
 	struct mod_bitmap *made = mod_bitmaps_globals.bitmaps;
+
+#ifdef HALO_SWITCH
+	/* (the host's copies of the map's mod bitmaps go with them) */
+	host_texture_cache_clear();
+#endif
 
 	while (made)
 	{
@@ -1223,13 +1254,100 @@ boolean mod_bitmaps_contain(
 	return bitmap_of(bitmap) != NULL;
 }
 
+#ifdef HALO_SWITCH
+/* the host's cache's key of a bitmap's pixels: the file as the mods were last found, and where in it. port: the
+main menu's (the ui map's) with HOST_TEXTURE_CACHE_KEEP (bit 62): kept by the host when a map goes
+(host_texture_cache_clear), so a return to the menus has them, where it read every one from the card again. (Bit 63
+is a Custom Edition map's texture's: custom_edition_cache.c.) */
+#define HOST_TEXTURE_CACHE_KEEP (1ull << 62)
+static unsigned long long mod_bitmaps_cache_key(
+	struct mod_bitmap const *made,
+	unsigned long offset)
+{
+	unsigned long long key = ((unsigned long long)(port_mods_scans() & 0x3FFF) << 48) ^
+		((unsigned long long)(made->file & 0xFFFF) << 32) ^ (unsigned long long)offset;
+
+	/* (the map's name as the mods are given it: its scenario's, stripped) */
+	if (!csstrcasecmp(mods_map_name(), "ui"))
+		key |= HOST_TEXTURE_CACHE_KEEP;
+	return key;
+}
+
+/* Every bitmap the map plays from a mod's file, read into the host's cache
+ahead of the game, on a thread of the host's: Halo reads a texture the first
+time a frame draws it, and a mod's read from the card in the middle of a
+frame took it past 33 ms, again and again in a match as new weapons,
+vehicles and effects came into view (port/switch/host/host_texture_cache.c) */
+static void mod_bitmaps_prefetch(
+	void)
+{
+	struct host_texture_prefetch *items;
+	long tag_index, count = 0, made_count = 0;
+
+	for (tag_index = 0; tag_index < mod_bitmaps_globals.override_count; tag_index++)
+	{
+		struct mod_bitmap const *made = mod_bitmaps_globals.overrides[tag_index].bitmap;
+
+		if (made)
+			count += made->group.bitmaps.count;
+	}
+	if (!count || !(items = malloc((size_t)count * sizeof(*items))))
+		return;
+	for (tag_index = 0; tag_index < mod_bitmaps_globals.override_count; tag_index++)
+	{
+		struct mod_bitmap const *made = mod_bitmaps_globals.overrides[tag_index].bitmap;
+		long index;
+
+		for (index = 0; made && index < made->group.bitmaps.count && made_count < count; index++)
+		{
+			struct bitmap_data const *bitmap = &made->bitmaps[index];
+			unsigned long offset = made->pixel_data_offset + (unsigned long)bitmap->pixels_offset;
+
+			if (bitmap->pixels_size <= 0)
+				continue;
+			items[made_count].key = mod_bitmaps_cache_key(made, offset);
+			items[made_count].offset = (uint32_t)offset;
+			items[made_count].size = (uint32_t)bitmap->pixels_size;
+			items[made_count].path = (uint32_t)(uintptr_t)made->path;
+			items[made_count].reserved = 0;
+			made_count++;
+		}
+	}
+	host_texture_cache_prefetch((uint32_t)(uintptr_t)items, (uint32_t)made_count);
+	free(items);
+}
+#endif
+
+/* a bitmap's pixels from its file: on the Switch, from the host's cache if
+it has them, and kept there once read (the texture cache takes a mod's
+bitmaps back from it, not from the card), by the file as the mods were last
+found, and where in it */
+static boolean mod_bitmaps_pixels_read(
+	struct mod_bitmap const *made,
+	unsigned long offset,
+	void *buffer,
+	unsigned long size)
+{
+#ifdef HALO_SWITCH
+	unsigned long long key = mod_bitmaps_cache_key(made, offset);
+
+	memory_watch_prepare_write(buffer, size);
+	if (host_texture_cache_get(key, (uint32_t)(uintptr_t)buffer, (uint32_t)size))
+		return TRUE;
+	if (!port_mods_file_read(made->file, offset, buffer, size))
+		return FALSE;
+	host_texture_cache_put(key, (uint32_t)(uintptr_t)buffer, (uint32_t)size);
+	return TRUE;
+#else
+	return port_mods_file_read(made->file, offset, buffer, size);
+#endif
+}
+
 boolean mod_bitmaps_read(
 	struct bitmap_data *bitmap,
 	void *buffer)
 {
 	struct mod_bitmap *made = bitmap_of(bitmap);
-	unsigned long size;
-	unsigned long stamp[2];
 
 	if (!made)
 	{
@@ -1237,13 +1355,21 @@ boolean mod_bitmaps_read(
 		another: an Xbox map's bitmap where a mod's was has the Xbox's) */
 		if (mod_bitmaps_globals.orders_found && !custom_edition_cache_tags_loaded())
 			halo_custom_edition_texels_channels(buffer, _custom_edition_channels_xbox);
-		return FALSE;
+		/* (or the menus' Spartan's, kept from another map: menu_chief.c) */
+		{
+			extern boolean menu_chief_bitmap_read(struct bitmap_data const *bitmap, void *buffer);
+
+			return menu_chief_bitmap_read(bitmap, buffer);
+		}
 	}
-	/* (a file changed since it was read is read again by mods_reload: until
-	then its bitmaps are black) */
-	if (!port_mods_file_stamp(made->file, &size, stamp) || size != made->file_size ||
-		stamp[0] != made->stamp[0] || stamp[1] != made->stamp[1] ||
-		!port_mods_file_read(made->file, made->pixel_data_offset + (unsigned long)bitmap->pixels_offset, buffer,
+	/* (the file as it was when the bitmap was made, at the map's load: it is
+	not looked at again for a change at each read - a bitmap is read each time
+	the texture cache takes it back, and with a mod of 991 uncompressed
+	textures each look, a request to the Switch's file system in the middle
+	of a frame, was 1.8% of its game thread. A file changed since is read
+	again by mods_reload; one cut short meanwhile fails to read, and draws
+	black) */
+	if (!mod_bitmaps_pixels_read(made, made->pixel_data_offset + (unsigned long)bitmap->pixels_offset, buffer,
 			(unsigned long)bitmap->pixels_size))
 	{
 		if (!mod_bitmaps_globals.read_failure_reported)
@@ -1256,7 +1382,8 @@ boolean mod_bitmaps_read(
 	}
 	halo_custom_edition_texels_channels(
 		buffer,
-		mod_bitmaps_globals.orders_found || custom_edition_cache_tags_loaded() ?
+		!port_mods_file_xbox_channels(made->file) &&
+		(mod_bitmaps_globals.orders_found || custom_edition_cache_tags_loaded()) ?
 			(unsigned char)custom_edition_bitmap_channel_order(made->tag_index, (long)(bitmap - made->bitmaps)) :
 			_custom_edition_channels_xbox);
 	/* (on failure it logs, and the texture shows the pixels as read) */

@@ -218,11 +218,11 @@ struct network_game_message_packet_definitions
 	struct data_packet_definition server_pregame_keep_alive;
 	struct data_packet_field server_postgame_keep_alive_fields[2];
 	struct data_packet_definition server_postgame_keep_alive;
-	struct data_packet_field server_begin_game_fields[2];
+	struct data_packet_field server_begin_game_fields[3];
 	struct data_packet_definition server_begin_game;
 	struct data_packet_field server_graceful_game_exit_pregame_fields[2];
 	struct data_packet_definition server_graceful_game_exit_pregame;
-	struct data_packet_field client_join_game_request_fields[4];
+	struct data_packet_field client_join_game_request_fields[6]; /* port: shared agreement */
 	struct data_packet_definition client_join_game_request;
 	struct data_packet_field client_add_player_request_pregame_fields[4];
 	struct data_packet_definition client_add_player_request_pregame;
@@ -292,11 +292,14 @@ DEFINE_NETWORK_GAME_MESSAGE(message_server_game_settings_update, 8 + HALO_PORT_N
 DEFINE_NETWORK_GAME_MESSAGE(message_server_pregame_countdown, 0x02);
 DEFINE_NETWORK_GAME_MESSAGE(message_server_begin_game, 0x04);
 DEFINE_NETWORK_GAME_MESSAGE(message_server_graceful_game_exit_pregame, 0x04);
-DEFINE_NETWORK_GAME_MESSAGE(message_server_pregame_keep_alive, 0x02);
+/* port: a long on the wire, though the Xbox game sent a short (see
+server_pregame_keep_alive_fields) */
+DEFINE_NETWORK_GAME_MESSAGE(message_server_pregame_keep_alive, 0x04);
 DEFINE_NETWORK_GAME_MESSAGE(message_server_postgame_keep_alive, 0x02);
 /* (port: the joining machine's hardware id after the Xbox's, 0x20 bytes of
-hex: p2p.c's p2p_hardware_id) */
-DEFINE_NETWORK_GAME_MESSAGE(message_client_join_game_request, 0x70);
+hex: p2p.c's p2p_hardware_id; then a Discord account's pass, 170 bytes, and
+its proof, 64: port/linux/src/player_link.c) */
+DEFINE_NETWORK_GAME_MESSAGE(message_client_join_game_request, 0x70 + 170 + 64 + 2); /* port: shared agreement */
 DEFINE_NETWORK_GAME_MESSAGE(message_client_add_player_request_pregame, 0x20);
 DEFINE_NETWORK_GAME_MESSAGE(message_client_remove_player_request_pregame, 0x20);
 DEFINE_NETWORK_GAME_MESSAGE(message_client_settings_request, 0x44);
@@ -376,8 +379,16 @@ static struct network_game_message_packet_definitions data_0030aa68 =
 		DATA_PACKET_FIELD_END,
 	},
 	NETWORK_GAME_MESSAGE_DEFINITION(server_pregame_countdown, "message_server_pregame_countdown_packet", message_server_pregame_countdown),
+	/* port: the Xbox game's packet table had begin game, graceful exit and
+	keep-alive each on its neighbor's field list (table order keep-alive,
+	begin game, exit; type order begin game, exit, keep-alive): the wire, which
+	upstream and every earlier build share, carries begin game as a short
+	(16 bits of its long), exit and keep-alive as a long. The field lists
+	here are those of the wire under the right messages, and a keep-alive is
+	a long (a short read and written as a long overran it by 2 bytes, sending
+	2 bytes of stack and writing 2 bytes from the network past it) */
 	{
-		DATA_PACKET_FIELD(_data_packet_field_shorts, 1),
+		DATA_PACKET_FIELD(_data_packet_field_longs, 1),
 		DATA_PACKET_FIELD_END,
 	},
 	NETWORK_GAME_MESSAGE_DEFINITION(server_pregame_keep_alive, "message_server_pregame_keep_alive_packet", message_server_pregame_keep_alive),
@@ -387,7 +398,8 @@ static struct network_game_message_packet_definitions data_0030aa68 =
 	},
 	NETWORK_GAME_MESSAGE_DEFINITION(server_postgame_keep_alive, "message_server_postgame_keep_alive_packet", message_server_postgame_keep_alive),
 	{
-		DATA_PACKET_FIELD(_data_packet_field_longs, 1),
+		DATA_PACKET_FIELD(_data_packet_field_shorts, 1),
+		DATA_PACKET_FIELD(_data_packet_field_pad, 2),
 		DATA_PACKET_FIELD_END,
 	},
 	NETWORK_GAME_MESSAGE_DEFINITION(server_begin_game, "message_server_begin_game_packet", message_server_begin_game),
@@ -400,6 +412,9 @@ static struct network_game_message_packet_definitions data_0030aa68 =
 		DATA_PACKET_FIELD(_data_packet_field_shorts, 32),
 		DATA_PACKET_FIELD(_data_packet_field_bytes, 16),
 		DATA_PACKET_FIELD(_data_packet_field_bytes, 32),
+		/* (port: the Discord pass, 170 bytes, and its proof, 64) */
+		DATA_PACKET_FIELD(_data_packet_field_bytes, 234),
+		DATA_PACKET_FIELD(_data_packet_field_shorts, 1), /* port: shared agreement */
 		DATA_PACKET_FIELD_END,
 	},
 	NETWORK_GAME_MESSAGE_DEFINITION(client_join_game_request, "message_client_join_game_request_packet", message_client_join_game_request),
@@ -557,9 +572,9 @@ static struct network_game_message_packet_definitions data_0030aa68 =
 		{ 2, 0, &data_0030aa68.server_machine_rejected },
 		{ 2, 0, &data_0030aa68.server_game_settings_update },
 		{ 2, 0, &data_0030aa68.server_pregame_countdown },
-		{ 2, 0, &data_0030aa68.server_pregame_keep_alive },
 		{ 2, 0, &data_0030aa68.server_begin_game },
 		{ 2, 0, &data_0030aa68.server_graceful_game_exit_pregame },
+		{ 2, 0, &data_0030aa68.server_pregame_keep_alive },
 		{ 6, 0, &data_0030aa68.server_postgame_keep_alive },
 		{ 3, 0, &data_0030aa68.client_join_game_request },
 		{ 3, 0, &data_0030aa68.client_add_player_request_pregame },

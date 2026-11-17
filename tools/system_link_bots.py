@@ -40,6 +40,7 @@ CLIENT_PORT = 0x141F
 MESSAGE_TYPE_PACKET = 3
 PACKET_VERSION = 1
 JOIN_TOKEN = b"message in a bottle"[:16]  # network_game_generate_join_game_token (DEBUG builds)
+NETWORK_VERSION = 44
 SETTINGS_FRAGMENT_SIZE = 0xE00
 NONE = -1
 
@@ -191,7 +192,8 @@ class Machine:
         # then the machine's hardware id, 32 hex digits (p2p.c's p2p_hardware_id),
         # one of its own so bans and kick votes tell the machines apart
         hardware_id = b"%032x" % self.index
-        self.send(message(CLIENT_JOIN_GAME_REQUEST, wide(self.name, 32) + JOIN_TOKEN + hardware_id))
+        # (and no Discord account's pass and proof: 170 and 64 zero bytes, player_link.c)
+        self.send(message(CLIENT_JOIN_GAME_REQUEST, wide(self.name, 32) + JOIN_TOKEN + hardware_id + bytes(170 + 64) + struct.pack(">H", NETWORK_VERSION)))
         self.state = "joining"
 
     def receive(self):
@@ -345,7 +347,10 @@ def main():
                     machine.connect()
                     selector.register(machine.tcp, selectors.EVENT_READ | selectors.EVENT_WRITE, machine)
                     next_connect_time = now + 1.0 / options.join_rate
-            for key, events in selector.select(timeout=0.005):
+            # (Windows' select refuses an empty set: every machine closed or
+            # still waiting to connect)
+            ready = selector.select(timeout=0.005) if selector.get_map() else (time.sleep(0.005) or [])
+            for key, events in ready:
                 machine = key.data
                 if machine.state == "connecting" and events & selectors.EVENT_WRITE:
                     error = machine.tcp.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
@@ -360,7 +365,13 @@ def main():
                             machine.state = "closed"
                         continue
                     selector.modify(machine.tcp, selectors.EVENT_READ, machine)
-                    machine.joined()
+                    try:
+                        machine.joined()
+                    except OSError as error:
+                        # (a host that took the connection and then reset it)
+                        log("%s: %s" % (machine.name, error))
+                        machine.close(selector)
+                        continue
                 if events & selectors.EVENT_READ and machine.state != "closed":
                     try:
                         if not machine.receive() or machine.state == "closed":

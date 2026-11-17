@@ -27,6 +27,23 @@ names. A change to what the host compiles (UAM's commit) is the cache
 folder's name, not this. */
 #define DK_SHADER_GENERATOR_VERSION 6
 
+/* the program hash a vertex key of the fixed-function pipeline has
+(nv2a_dk_fixed_function_glsl), in place of a program's (FNV-1a 64 of its
+words, which no program's comes out at) */
+#define DK_FIXED_FUNCTION_PROGRAM_HASH 0x66697865642d6675ULL /* "fixed-fu" */
+
+/* The dynamic lighting's model variant, in a vertex key's packed mask, which
+uses only the attributes' 16 bits: XGPU_PLASMA_MODEL_* (xgpu.h) at this shift.
+0 for the stock shader, whose key and hash stay as they were. */
+#define DK_VERTEX_KEY_PLASMA_SHIFT 28
+
+/* the key files (dk_shaders.c), which the host's updater checks too before
+it puts a downloaded keys.dkk in place (host_update.c): three words - the
+magic, the format and a record's size - then the records */
+#define DK_KEY_MAGIC 0x314b4b44UL /* "DKK1" */
+#define DK_KEY_FORMAT 1
+#define DK_KEY_RECORD_SIZE 264
+
 /* The pixel key's texture_modes: four 5-bit modes, and above them this bit
 when texture coordinate 0 is clipped (halo_texture_clip, d3d8_dk.c): the
 shader lets a pixel go first if its u or v is outside the limits in its
@@ -112,9 +129,19 @@ void dk_shader_start(void);
 /* the startup pass, a few keys a frame: asks the host for each in turn and
 queues the ones it does not have, in the background */
 void dk_shader_frame(void);
-/* the map the game finished loading (d3d8_gl_map_loaded), as d3d8_gl.c's
-program_record_map_hash has it: that map's keys are sent again with the
-map's priority, which raises them in the queue */
+/* the map whose loading screen is up (d3d8_gl_map_loading), hashed as
+d3d8_gl.c's program_record_map_hash has it: its keys are sent again with the
+map's priority, which raises them in the queue, and its wait begins */
+void dk_shader_map_loading(uint32_t map_hash);
+/* whether the loading screen stays up a frame more for the map's keys to be
+compiled (d3d8_gl_map_waiting): DK_MAP_WAIT_MS at most, from the loading */
+int dk_shader_map_waiting(void);
+/* how far the shaders' part of the loading screen has come, 0 to 1, or below 0 when there is nothing to wait for
+(d3d8_gl_map_progress) */
+float dk_shader_map_progress(void);
+/* the map the game finished loading (d3d8_gl_map_loaded): raised as above if
+the loading screen did not, and waited for, from the card, for what is left
+of the map's wait */
 void dk_shader_map_loaded(uint32_t map_hash);
 /* for phase 6: the handle of the shader a draw needs (0: not ready, skip
 the draw), and, for a key nobody has met, the GLSL generated and queued at
@@ -122,6 +149,11 @@ the draw's priority and the key appended to console.dkk. key_data: a struct
 dk_vertex_key (DK_SHADER_STAGE_VERTEX) or an nv2a_pixel_shader_key
 (DK_SHADER_STAGE_PIXEL) */
 uint32_t dk_shader_for_draw(uint32_t stage, const void *key_data);
+/* the same, for a vertex key of the dynamic lighting's variant: the draw has
+the stock shader to fall back on, so it never waits for this one, nor spends
+the map's first seconds' time on it. *unknown: the host did not know the key,
+and it was sent (again, if it was sent before: its compile failed) */
+uint32_t dk_shader_variant_for_draw(const void *key_data, int *unknown);
 
 /* uniform block bindings, per stage */
 #define DK_BINDING_VERTEX_CONSTANTS 0
@@ -133,6 +165,10 @@ uint32_t dk_shader_for_draw(uint32_t stage, const void *key_data);
 #define DK_BINDING_TEXTURE1 1
 #define DK_BINDING_TEXTURE2 2
 #define DK_BINDING_TEXTURE3 3
+/* (the vertex stage's: the dynamic lighting's visibility fields, for its model
+variants with occlusion) */
+#define DK_BINDING_PLASMA_TEXTURE0 0
+#define DK_BINDING_PLASMA_TEXTURE1 1
 
 /* the locations the vertex and pixel stages meet at: every vertex shader
 writes all nine, and every pixel shader declares all nine, read or not, so
@@ -168,8 +204,14 @@ struct dk_vertex_parameters
 	/* x: the point size; y: the columns the menus shift by to center on a
 	wide screen (the OpenGL renderer's screen_offset) */
 	float point_and_screen[4];
+	/* the dynamic lighting's model variant, declared only by the shaders that
+	read it (zero otherwise). x, y: whether point light 0, 1 is selected; z, w:
+	whether its visibility field is bound */
+	float plasma_model[4];
+	/* a field's centre, and 1 over its side */
+	float plasma_occ_transform[2][4];
 };
-typedef char dk_vertex_parameters_size_check[sizeof(struct dk_vertex_parameters) == 48 ? 1 : -1];
+typedef char dk_vertex_parameters_size_check[sizeof(struct dk_vertex_parameters) == 96 ? 1 : -1];
 
 /* layout(std140, binding = 0) uniform pixel_parameters: the combiner
 registers that live outside the program, and the texture stages' constants
@@ -198,6 +240,10 @@ fed as NORMPACKED3 32-bit integers and unpacked in the shader. Returns a
 malloc'd string. */
 char *nv2a_dk_vertex_shader_to_glsl(const uint32_t *instructions, unsigned long instruction_count,
 	unsigned long packed_attribute_mask);
+/* the fixed-function pipeline's vertex shader (SetVertexShader with 0: the
+loading screen's immediate-mode draws, whose positions d3d8_dk.c's
+D3DDevice_End has put in clip space). Returns a malloc'd string. */
+char *nv2a_dk_fixed_function_glsl(void);
 
 struct nv2a_pixel_shader_key;
 

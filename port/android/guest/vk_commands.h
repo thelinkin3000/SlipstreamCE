@@ -24,6 +24,10 @@ header included; sizes are multiples of 4.
 
 #include "vk_shaders.h"
 
+/* the guest's command streams (d3d8_vk.c), written in turn: the host runs a stream on a thread of its own after
+host_vk_submit returns, which waits only until the stream the guest writes next is free (host_vk_render.c) */
+#define VK_COMMAND_STREAMS 3
+
 enum
 {
 	VK_COMMAND_TARGETS = 1,
@@ -40,6 +44,14 @@ enum
 	VK_COMMAND_VISIBILITY_BEGIN,
 	VK_COMMAND_VISIBILITY_END,
 	VK_COMMAND_ANTI_ALIAS,
+	VK_COMMAND_BLIT,
+	VK_COMMAND_MARKER,
+	VK_COMMAND_HUD_PREPARE,
+	VK_COMMAND_HUD_FORGET,
+	VK_COMMAND_HUD_IMAGE,
+	VK_COMMAND_STATIC_FREE,
+	VK_COMMAND_DATA_PATCH,
+	VK_COMMAND_PLASMA_OCCLUSION,
 };
 
 /* a surface's kind, as the host makes its image */
@@ -108,6 +120,67 @@ struct vk_command_clear
 	uint32_t rectangles[][4];
 };
 
+/* copies a rectangle of one colour target into a rectangle of another, scaled with a linear filter: the loading screen's
+front buffer, the frame before, which it blurs into its light's trails (d3d8_vk.c, front_buffer_take). Rectangles are x, y,
+width, height in each one's pixels, row 0 at the top */
+struct vk_command_blit
+{
+	struct vk_command_header header;
+	struct vk_surface source;
+	struct vk_surface destination;
+	uint32_t from[4];
+	uint32_t to[4];
+};
+
+/* the part of the frame the game draws from here on (halo_render_marker: "sky", "objects", "hud"...), for the GPU's time
+by part (host_vk_profile.c); sent only while a profile is recorded (debug.profile_run) */
+#define VK_MARKER_NAME_SIZE 32
+
+struct vk_command_marker
+{
+	struct vk_command_header header;
+	char name[VK_MARKER_NAME_SIZE];
+};
+
+/* the high-res HUD's sheets, decoded by the host (port/android/host/host_vk_hud.c) with their mip levels, into the host's
+memory: made on the game thread at the first frame to draw it, a sheet held that frame (248 ms, the PNG inflated), and
+the guest's heap has no room to hold a map's sheets ahead. A map's sheets to decode now, in this order (what was
+decoded and not drawn for the map before is let go first: VK_COMMAND_HUD_FORGET) */
+struct vk_hud_sheet
+{
+	uint32_t asset;
+	/* guest addresses: the PNG, and the bitmap's tag name (for the log) */
+	uint32_t png;
+	uint32_t png_size;
+	uint32_t tag;
+};
+
+struct vk_command_hud_prepare
+{
+	struct vk_command_header header;
+	uint32_t count;
+	struct vk_hud_sheet sheets[];
+};
+
+struct vk_command_hud_forget
+{
+	struct vk_command_header header;
+};
+
+/* image id made from the sheet's decoded levels (a 2D BGRA image with all of them), which the host lets go: sent once
+host_vk_hud_ready says they are */
+struct vk_command_hud_image
+{
+	struct vk_command_header header;
+	uint32_t id;
+	/* (the sheet again, should the host have let it go since: decoded then) */
+	struct vk_hud_sheet sheet;
+};
+
+/* the host's (host_imports_vk.list): 1 the sheet decoded, and an image of it may be asked for; 0 not yet (queued if it
+was not); -1 never. png and tag are the sheet's, as struct vk_hud_sheet's */
+int host_vk_hud_ready(unsigned int asset, unsigned int png, unsigned int png_size, unsigned int tag);
+
 /* shows the back buffer, letterboxed to the display */
 struct vk_command_present
 {
@@ -130,6 +203,18 @@ struct vk_data_ref
 	uint32_t offset;
 };
 
+/* a data ref whose id has this bit names a static buffer (host_vk_static_make), the rest of the id its own: the game's
+geometry written once as a map loads, copied to the host once, not put at each draw */
+#define VK_DATA_STATIC 0x80000000u
+
+/* a static buffer let go (its range released or unloaded): the host destroys it once the frames that may use it have
+passed */
+struct vk_command_static_free
+{
+	struct vk_command_header header;
+	uint32_t id;
+};
+
 /* part of the data of an id: parts of one id come in order (part_offset 0, then the
 next, until total_size), possibly in different hand-overs, and the host places all of
 an id's parts contiguously. Followed by part_size bytes, the record padded to a
@@ -142,6 +227,23 @@ struct vk_command_data
 	uint32_t total_size;
 	uint32_t part_size;
 	uint32_t payload[];
+};
+
+/* a new data id (the next, as a VK_COMMAND_DATA's is) whose bytes are those of an earlier one of the frame, base, with
+count 16-byte pieces replaced, each at its offset: the vertex constants, of which a draw changes a few registers of 192 */
+struct vk_data_patch
+{
+	uint32_t offset;
+	uint32_t value[4];
+};
+
+struct vk_command_data_patch
+{
+	struct vk_command_header header;
+	uint32_t id;
+	uint32_t base;
+	uint32_t count;
+	struct vk_data_patch patches[];
 };
 
 /* the self-test's vertex: a position and a colour */
@@ -235,8 +337,21 @@ struct vk_command_draw
 	struct vk_data_ref index_data;
 	int32_t vertex_offset;
 	uint32_t count;
-	/* (the visibility tests are VK_COMMAND_VISIBILITY_*: the host knows a draw is in one from them) */
-	uint32_t reserved;
+	/* (the visibility tests are VK_COMMAND_VISIBILITY_*: the host knows a draw is in one from them)
+	1: its shaders are a model variant with occlusion (XGPU_PLASMA_MODEL_OCCLUSION), which reads the images
+	VK_COMMAND_PLASMA_OCCLUSION named last; 0 for every other draw */
+	uint32_t plasma_occlusion;
+};
+
+/* ---------- the dynamic lighting's visibility fields
+
+The images the model variants with occlusion read (VK_PLASMA_SET), until they change. Sent only for such a draw, so that
+nothing else's stream or binding changes. */
+
+struct vk_command_plasma_occlusion
+{
+	struct vk_command_header header;
+	uint32_t images[2];
 };
 
 /* Vulkan's formats, the numbers the vertex input uses */
@@ -270,6 +385,8 @@ struct vk_command_visibility_end
 	struct vk_command_header header;
 	uint32_t index;
 	float area;
+	/* the test's number at its slot (the low 32 bits), which host_vk_visibility gives with its count */
+	uint32_t test;
 };
 
 /* ---------- the mip composite (phase 6, step 5)
@@ -308,14 +425,19 @@ enum
 	VK_IMAGE_FORMAT_BC1, /* BC1 to BC3 as the Xbox keeps them */
 	VK_IMAGE_FORMAT_BC2,
 	VK_IMAGE_FORMAT_BC3,
+	/* ASTC 4x4 (16 bytes a block of 4x4 texels): DXT1 with its bits moved, where the device samples ASTC and not BC
+	(host_vk_astc_supported; dxt1_astc.h) */
+	VK_IMAGE_FORMAT_ASTC_4X4,
 };
 
 /* makes image id (the same description again keeps the image it has; another replaces it), its texels undefined until the
-data comes */
+data comes. swizzle is where each channel the shaders sample (red, green, blue, alpha, a byte each from the lowest) is taken
+from in the image (0 to 3, the same four), or 0 for each from its own: Halo PC's multipurpose maps and HUD meters, in a Custom
+Edition map or a mod (xbox_textures_vk.c) */
 struct vk_command_texture
 {
 	struct vk_command_header header;
-	uint32_t id, kind, format, width, height, depth, levels;
+	uint32_t id, kind, format, width, height, depth, levels, swizzle;
 };
 
 /* the texels of one level of one face (face 0 unless a cube), all of it (rows 0: the host knows its size from the image's), or

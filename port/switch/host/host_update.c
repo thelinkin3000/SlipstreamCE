@@ -13,7 +13,9 @@ turns the look off.
 
 GitHub names the latest release by where /releases/latest redirects to
 (/releases/tag/build-<number>), so the check is one request and no JSON. The
-archive (halo-switch-release.zip, or -debug.zip for a debug build) is stored,
+archive (slipstreamce-switch-release.zip, or -debug.zip for a debug build, or
+halo-switch-release.zip or its -debug.zip if GitHub answers 404 for that one:
+the name the zips have until they take the new one) is stored,
 not compressed - the release is zipped with zip -0 - and each file's size and
 CRC come before its data, so it is unpacked as it downloads: the two files the
 port needs are written beside the old ones as .new, checked against their CRC,
@@ -27,6 +29,24 @@ old game image, which belong together. The new image waits beside the old one
 and the new program puts it in place when it starts (host_update_finish). A
 restart through the loader (envSetNextLoad) was tried first, and under
 Sphaira the new build stopped as soon as it had started.
+
+The shared shader keys come the same way, after the release's check: the
+repository's keys.dkk (the shaders known from the campaign and the
+multiplayer maps, port/switch/guest/dk_shaders.c), named by its SHA-1 in
+keys.sha1 beside it on main. When that is not the SHA-1 of the console's
+save/z/shader_keys/keys.dkk, the file is downloaded as keys.dkk.new, checked
+against the SHA-1 and the key files' header, and put in place - before the
+game starts, so its shader cache reads it at its first pass. The guest merges
+it with the console's own console.dkk as it reads them (a key both have is
+one). Without a network, or with neither file on main, the keys the console
+has are kept.
+
+GitHub's answers say the time (host_https_clock_offset), and a console whose
+clock is off by more than CLOCK_TOLERANCE is told to set it: internet play's
+server browser takes a game's listing only if its time is near this
+console's (port/linux/src/p2p_lobby.c), so on a wrong clock it lists no game.
+Builds without a number, which look for no release, still ask GitHub the
+time; update.auto off asks nothing.
 */
 
 #include "host.h"
@@ -35,12 +55,15 @@ Sphaira the new build stopped as soon as it had started.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <time.h>
 
 #include <switch.h>
 
 #include "tomlc17.h"
 
 #include "host_ui.h"
+#include "../guest/dk_shaders.h"
 
 /* (given for this file by the build: tools/switch_build.py) */
 #ifndef HALO_BUILD_NUMBER
@@ -50,8 +73,12 @@ Sphaira the new build stopped as soon as it had started.
 #define HALO_BUILD_FLAVOR "release"
 #endif
 
-#define UPDATE_REPOSITORY "thelinkin3000/halo-ce-universal"
-#define UPDATE_ASSET "halo-switch-" HALO_BUILD_FLAVOR ".zip"
+#define UPDATE_REPOSITORY "thelinkin3000/SlipstreamCE"
+/* the shared shader keys, and their SHA-1 (sha1sum's line, or just the hash) */
+#define KEYS_URL "https://raw.githubusercontent.com/" UPDATE_REPOSITORY "/main/keys.dkk"
+#define KEYS_SHA1_URL "https://raw.githubusercontent.com/" UPDATE_REPOSITORY "/main/keys.sha1"
+#define UPDATE_ASSET "slipstreamce-switch-" HALO_BUILD_FLAVOR ".zip"
+#define UPDATE_OLD_ASSET "halo-switch-" HALO_BUILD_FLAVOR ".zip"
 #define UPDATE_PROGRAM "halo.nro"
 #define UPDATE_IMAGE "halo_guest.elf"
 /* the deko3d renderer's image as releases before it became the game image
@@ -70,6 +97,9 @@ enum
 	WANTED_FILES = 3,
 	REQUIRED_FILES = 2,
 	PROGRESS_EVERY = 512 * 1024,
+	/* seconds: a clock off by more is wrong (p2p_lobby.c's RETAINED_WINDOW;
+	a live listing is taken within an hour, its retained copy within this) */
+	CLOCK_TOLERANCE = 600,
 };
 
 static PadState *menu_pad;
@@ -164,7 +194,7 @@ static long latest_build(void)
 	snprintf(url, sizeof(url), "https://github.com/" UPDATE_REPOSITORY "/releases/latest");
 	for (hop = 0; hop < 3; hop++)
 	{
-		status = host_https_get(url, 0, NULL, NULL, location, sizeof(location), error, sizeof(error));
+		status = host_https_fetch(url, 0, NULL, NULL, location, sizeof(location), error, sizeof(error));
 		if (status < 300 || status >= 400)
 		{
 			if (status >= 0)
@@ -501,18 +531,26 @@ static void remove_partial_files(void)
 
 static int download_and_install(long build, char *error, size_t error_size)
 {
+	static const char *const assets[] = { UPDATE_ASSET, UPDATE_OLD_ASSET };
 	char url[256];
 	struct unpack *unpack = calloc(1, sizeof(*unpack));
-	int status, which;
+	int status, which, asset = 0;
 
 	if (!unpack)
 		return fail(error, error_size, "Out of memory for the update.");
-	snprintf(url, sizeof(url), "https://github.com/" UPDATE_REPOSITORY "/releases/download/build-%ld/" UPDATE_ASSET,
-		build);
-	host_logf(HOST_LOG_INFO, "update: downloading %s", url);
 	unpack->build = build;
 	draw_progress(unpack);
-	status = host_https_get(url, 1, unpack_body, unpack, NULL, 0, error, error_size);
+	/* (a 404 has given unpack_body nothing, so the next asset starts clean) */
+	for (;;)
+	{
+		snprintf(url, sizeof(url), "https://github.com/" UPDATE_REPOSITORY "/releases/download/build-%ld/%s", build,
+			assets[asset]);
+		host_logf(HOST_LOG_INFO, "update: downloading %s", url);
+		status = host_https_fetch(url, 1, unpack_body, unpack, NULL, 0, error, error_size);
+		if (status != 404 || asset == 1)
+			break;
+		asset++;
+	}
 	if (unpack->file)
 		fclose(unpack->file);
 	if (unpack->error[0])
@@ -522,7 +560,7 @@ static int download_and_install(long build, char *error, size_t error_size)
 	}
 	else if (status >= 0 && status != 200)
 	{
-		fail(error, error_size, "GitHub answered %d for build %ld's %s.", status, build, UPDATE_ASSET);
+		fail(error, error_size, "GitHub answered %d for build %ld's %s.", status, build, assets[asset]);
 		status = -1;
 	}
 	for (which = 0; status == 200 && which < REQUIRED_FILES; which++)
@@ -542,23 +580,266 @@ static int download_and_install(long build, char *error, size_t error_size)
 	return install(error, error_size);
 }
 
-void host_update_offer(void *pad)
-{
-	char error[256];
-	char message[160];
-	long build;
+/* ---------- the shared shader keys */
 
-	menu_pad = pad;
-	if (HALO_BUILD_NUMBER <= 0)
+/* the SHA-1 file's first line, kept as it comes */
+struct keys_sha1_text
+{
+	char text[128];
+	size_t length;
+};
+
+static int keys_sha1_body(void *context, const void *data, size_t size, long long total)
+{
+	struct keys_sha1_text *sha1 = context;
+	size_t room = sizeof(sha1->text) - 1 - sha1->length;
+
+	(void)total;
+	if (size > room)
+		size = room;
+	memcpy(sha1->text + sha1->length, data, size);
+	sha1->length += size;
+	sha1->text[sha1->length] = 0;
+	return 1;
+}
+
+/* 40 hex digits at the start of text into a hash; 0 if there are not */
+static int sha1_parse(const char *text, unsigned char hash[SHA1_HASH_SIZE])
+{
+	int index;
+
+	for (index = 0; index < SHA1_HASH_SIZE * 2; index++)
 	{
-		host_logf(HOST_LOG_INFO, "update: this build has no number, so it does not look for updates");
+		char digit = text[index];
+		int value = digit >= '0' && digit <= '9' ? digit - '0' : (digit | 0x20) >= 'a' && (digit | 0x20) <= 'f' ?
+			(digit | 0x20) - 'a' + 10 : -1;
+
+		if (value < 0)
+			return 0;
+		if (index % 2)
+			hash[index / 2] |= (unsigned char)value;
+		else
+			hash[index / 2] = (unsigned char)(value << 4);
+	}
+	return 1;
+}
+
+/* the SHA-1 of a file; 0 if it cannot be read */
+static int sha1_of_file(const char *path, unsigned char hash[SHA1_HASH_SIZE])
+{
+	static unsigned char buffer[64 * 1024];
+	Sha1Context context;
+	FILE *file = fopen(path, "rb");
+	size_t got;
+
+	if (!file)
+		return 0;
+	sha1ContextCreate(&context);
+	while ((got = fread(buffer, 1, sizeof(buffer), file)) > 0)
+		sha1ContextUpdate(&context, buffer, got);
+	fclose(file);
+	sha1ContextGetHash(&context, hash);
+	return 1;
+}
+
+/* the download, written as it comes and hashed as it is written */
+struct keys_download
+{
+	FILE *file;
+	Sha1Context sha1;
+	unsigned char header[12];
+	long long received;
+	int failed;
+};
+
+static int keys_body(void *context, const void *data, size_t size, long long total)
+{
+	struct keys_download *download = context;
+
+	(void)total;
+	if (download->received < (long long)sizeof(download->header))
+	{
+		size_t take = sizeof(download->header) - (size_t)download->received;
+
+		memcpy(download->header + download->received, data, take < size ? take : size);
+	}
+	sha1ContextUpdate(&download->sha1, data, size);
+	if (fwrite(data, 1, size, download->file) != size)
+	{
+		download->failed = 1;
+		return 0;
+	}
+	download->received += (long long)size;
+	return 1;
+}
+
+/* whether a downloaded file is a key file of this build, whole */
+static int keys_valid(const struct keys_download *download)
+{
+	uint32_t words[3];
+
+	if (download->received < (long long)sizeof(download->header) ||
+		(download->received - (long long)sizeof(download->header)) % DK_KEY_RECORD_SIZE)
+		return 0;
+	memcpy(words, download->header, sizeof(words));
+	return words[0] == DK_KEY_MAGIC && words[1] == DK_KEY_FORMAT && words[2] == DK_KEY_RECORD_SIZE;
+}
+
+/* keys.dkk from main, when its SHA-1 there is not the console's file's */
+static void keys_refresh(void)
+{
+	struct keys_sha1_text sha1_text;
+	struct keys_download download;
+	unsigned char wanted[SHA1_HASH_SIZE], have[SHA1_HASH_SIZE], got[SHA1_HASH_SIZE];
+	char folder[512], path[560], temporary[568], error[256];
+	int status;
+
+	memset(&sha1_text, 0, sizeof(sha1_text));
+	status = host_https_fetch(KEYS_SHA1_URL, 1, keys_sha1_body, &sha1_text, NULL, 0, error, sizeof(error));
+	if (status != 200)
+	{
+		host_logf(HOST_LOG_INFO, "update: no shared shader keys to check (%s)", status < 0 ? error : "not on main");
 		return;
 	}
+	if (!sha1_parse(sha1_text.text, wanted))
+	{
+		host_logf(HOST_LOG_WARN, "update: keys.sha1 on main holds no SHA-1; the shader keys are left as they are");
+		return;
+	}
+	snprintf(folder, sizeof(folder), "%s/z", host_save_root());
+	mkdir(folder, 0755);
+	snprintf(folder, sizeof(folder), "%s/z/shader_keys", host_save_root());
+	mkdir(folder, 0755);
+	snprintf(path, sizeof(path), "%s/keys.dkk", folder);
+	snprintf(temporary, sizeof(temporary), "%s.new", path);
+	if (sha1_of_file(path, have) && !memcmp(have, wanted, sizeof(have)))
+	{
+		host_logf(HOST_LOG_INFO, "update: the shared shader keys are the latest");
+		return;
+	}
+	host_ui_message("HALO: COMBAT EVOLVED", "Downloading the shared shader keys...", NULL);
+	memset(&download, 0, sizeof(download));
+	download.file = fopen(temporary, "wb");
+	if (!download.file)
+	{
+		host_logf(HOST_LOG_ERROR, "update: %s cannot be written; the shader keys are left as they are", temporary);
+		return;
+	}
+	sha1ContextCreate(&download.sha1);
+	status = host_https_fetch(KEYS_URL, 1, keys_body, &download, NULL, 0, error, sizeof(error));
+	if (fclose(download.file) != 0)
+		download.failed = 1;
+	sha1ContextGetHash(&download.sha1, got);
+	if (status != 200 || download.failed || memcmp(got, wanted, sizeof(got)) || !keys_valid(&download))
+	{
+		host_logf(HOST_LOG_WARN, "update: the shared shader keys did not download whole (%s); left as they are",
+			status < 0 ? error : status != 200 ? "not on main" : download.failed ? "the card would not take them" :
+			memcmp(got, wanted, sizeof(got)) ? "not the SHA-1 in keys.sha1" : "not a key file of this build");
+		remove(temporary);
+		return;
+	}
+	if (!replace(temporary, path))
+	{
+		host_logf(HOST_LOG_ERROR, "update: %s could not be put in place", path);
+		remove(temporary);
+		return;
+	}
+	host_logf(HOST_LOG_INFO, "update: the shared shader keys are updated (%lld keys)",
+		(download.received - (long long)sizeof(download.header)) / DK_KEY_RECORD_SIZE);
+}
+
+/* the release's check, and its offer */
+static void release_offer(void);
+static void clock_check(void);
+
+void host_update_offer(void *pad)
+{
+	menu_pad = pad;
 	if (!automatic_updates())
 	{
 		host_logf(HOST_LOG_INFO, "update: update.auto is off in config.toml");
 		return;
 	}
+	if (HALO_BUILD_NUMBER <= 0)
+		host_logf(HOST_LOG_INFO, "update: this build has no number, so it does not look for updates");
+	else
+	{
+		release_offer();
+		keys_refresh();
+	}
+	clock_check();
+}
+
+/* "3 h 12 min", "25 min" */
+static void duration_text(long long seconds, char *text, size_t size)
+{
+	long long minutes = (seconds + 30) / 60;
+
+	if (minutes >= 48 * 60)
+		snprintf(text, size, "%lld days", (minutes + 12 * 60) / (24 * 60));
+	else if (minutes >= 60)
+		snprintf(text, size, "%lld h %lld min", minutes / 60, minutes % 60);
+	else
+		snprintf(text, size, "%lld min", minutes);
+}
+
+/* the console's clock against GitHub's: the player told to set it if it is
+wrong (GitHub asked here if the release's check did not) */
+static void clock_check(void)
+{
+	long long offset;
+	char error[256], location[HOST_HTTPS_MAXIMUM_URL];
+	char message[512], duration[32], console_text[32], real_text[32];
+	time_t now, real;
+	struct tm console_time, real_time;
+
+	if (!host_https_clock_offset(&offset))
+	{
+		host_https_fetch("https://github.com/" UPDATE_REPOSITORY "/releases/latest", 0, NULL, NULL, location,
+			sizeof(location), error, sizeof(error));
+		if (!host_https_clock_offset(&offset))
+		{
+			host_logf(HOST_LOG_INFO, "clock: GitHub's time could not be learned; the console's clock is not checked");
+			return;
+		}
+	}
+	duration_text(offset < 0 ? -offset : offset, duration, sizeof(duration));
+	if (offset <= CLOCK_TOLERANCE && offset >= -CLOCK_TOLERANCE)
+	{
+		host_logf(HOST_LOG_INFO, "clock: the console's clock is right (%lld s from GitHub's)", -offset);
+		return;
+	}
+	host_logf(HOST_LOG_WARN, "clock: the console's clock is %s %s GitHub's (%lld s)", duration,
+		offset < 0 ? "ahead of" : "behind", -offset);
+	now = time(NULL);
+	real = (time_t)(now + offset);
+	localtime_r(&now, &console_time);
+	localtime_r(&real, &real_time);
+	/* (the date too, if they are not the same day) */
+	if (console_time.tm_yday != real_time.tm_yday || console_time.tm_year != real_time.tm_year)
+	{
+		strftime(console_text, sizeof(console_text), "%H:%M on %d %b %Y", &console_time);
+		strftime(real_text, sizeof(real_text), "%H:%M on %d %b %Y", &real_time);
+	}
+	else
+	{
+		strftime(console_text, sizeof(console_text), "%H:%M", &console_time);
+		strftime(real_text, sizeof(real_text), "%H:%M", &real_time);
+	}
+	snprintf(message, sizeof(message),
+		"This console's clock says %s, but it is %s: the clock is %s %s. While the clock is wrong, the server browser "
+		"shows no internet games. Set the time in System Settings, System, Date and Time, or turn on "
+		"Synchronise Clock via Internet.", console_text, real_text, duration, offset < 0 ? "ahead" : "behind");
+	host_ui_message("THE CLOCK IS WRONG", message, (const char *const[]){ "A", "Continue", NULL });
+	wait_for(HidNpadButton_A);
+}
+
+static void release_offer(void)
+{
+	char error[256];
+	char message[160];
+	long build;
+
 	host_ui_message("HALO: COMBAT EVOLVED", "Looking for an update...", NULL);
 	build = latest_build();
 	if (build <= HALO_BUILD_NUMBER)

@@ -9,9 +9,14 @@ bad signatures, other keys and small-order keys turned away; and a listing
 from a host (this program, through stand-ins for p2p.c and p2p_signal.c) to
 a browser (this program again): taken, and a tampered one, one on another's
 slot, an older one, a retained one of long ago, a tombstone and a listing
-older than it each handled as they must be; and a game with a password,
+older than it each handled as they must be; a game with a password,
 listed locked (its token nowhere in the listing), opened by its password
-alone. Prints PASS or the failures.
+alone; and the hosts' pings: a game's host probed with its listing's token,
+its ping listed and kept, probed again on Refresh (marked as Refresh's
+until that probe ends, a probe of its own two minutes on not), and a game
+with a password never; and the probes started in the order the games are
+shown (p2p_lobby_shown), those not shown last, past one refused, none
+while listings wait to be checked. Prints PASS or the failures.
 */
 
 #include "p2p_internal.h"
@@ -19,12 +24,15 @@ alone. Prints PASS or the failures.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 /* ---------- stand-ins for the rest of internet play */
 
 pthread_mutex_t p2p_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static unsigned long clock_now = 1000;
+/* the clock's advance for each key hashed (a listing's check takes time) */
+static unsigned long check_cost;
 static unsigned char seed[P2P_SEED_SIZE] = { 42 };
 static unsigned char signing_key[P2P_KEY_SIZE], x25519_secret[P2P_KEY_SIZE], x25519_public[P2P_KEY_SIZE];
 static unsigned char published[512];
@@ -50,6 +58,7 @@ void p2p_key_hash(const unsigned char *key, unsigned char *hash)
 {
 	unsigned char digest[P2P_SHA256_SIZE];
 
+	clock_now += check_cost;
 	p2p_sha256(key, P2P_KEY_SIZE, digest);
 	memcpy(hash, digest, P2P_KEY_HASH_SIZE);
 }
@@ -77,11 +86,51 @@ void p2p_signal_lobby_publish(const unsigned char *listing, int size, int closin
 	publish_count++;
 }
 void p2p_signal_lobby_quit(void) {}
+/* (not a dedicated server, and no master servers: master_list.c) */
+int halo_server_mode(void) { return 0; }
+void master_list_browse(int on) { (void)on; }
+void master_list_refresh(void) {}
+/* (the token handed out with a listing, and the masters' prompt publish:
+p2p.c, server_master.c) */
+void p2p_token_listed(const unsigned char *token) { (void)token; }
+void server_master_changed(void) {}
+
+/* the probes asked for (p2p.c's), the last one's host and token, and the
+hosts in the order probed: each ends at once, its host not reached (as
+p2p.c's does when it needs no tunnel), but refused_host's is refused, and
+none ends while probes_held; more than 64 asked for in one pass stops the
+check */
+static const unsigned char *refused_host;
+static int probes_held;
+static int probe_count, probe_asked;
+static unsigned char probed_hash[P2P_KEY_HASH_SIZE], probed_token[P2P_TOKEN_SIZE];
+static unsigned char probed_hosts[16][P2P_IDENTIFIER_SIZE];
+int p2p_probe_start(const unsigned char *host_hash, const unsigned char *token)
+{
+	unsigned char host[P2P_IDENTIFIER_SIZE];
+
+	if (++probe_asked > 64)
+	{
+		printf("FAIL: a game is probed again and again\n");
+		exit(1);
+	}
+	memcpy(probed_hash, host_hash, P2P_KEY_HASH_SIZE);
+	memcpy(probed_token, token, P2P_TOKEN_SIZE);
+	p2p_identifier_from_hash(host_hash, host);
+	if (refused_host && !memcmp(host, refused_host, P2P_IDENTIFIER_SIZE))
+		return 0;
+	memcpy(probed_hosts[probe_count % 16], host, P2P_IDENTIFIER_SIZE);
+	probe_count++;
+	if (!probes_held)
+		p2p_lobby_probed(host, -1);
+	return 1;
+}
 
 /* the p2p thread's calls: under p2p_lock, as there (p2p_lobby_update lets
 go of it while it checks signatures) */
 static void lobby_update(const unsigned char *token, int player_count, int maximum_player_count)
 {
+	probe_asked = 0;
 	pthread_mutex_lock(&p2p_lock);
 	p2p_lobby_update(token, player_count, maximum_player_count);
 	pthread_mutex_unlock(&p2p_lock);
@@ -192,6 +241,25 @@ static int games(struct p2p_listing *listing)
 	return count;
 }
 
+/* a copy of a listing with another time, signed again (as its host would
+have, then) */
+static void restamp(const unsigned char *payload, int size, long offset, unsigned char *copy)
+{
+	static const char label[] = "hceu-lobby-1";
+	unsigned char data[sizeof(label) - 1 + 512];
+	unsigned long when = (unsigned long)time(NULL) + (unsigned long)offset;
+	int signed_size = size - P2P_SIGNATURE_SIZE;
+
+	memcpy(copy, payload, (size_t)size);
+	copy[10] = (unsigned char)(when >> 24);
+	copy[11] = (unsigned char)(when >> 16);
+	copy[12] = (unsigned char)(when >> 8);
+	copy[13] = (unsigned char)when;
+	memcpy(data, label, sizeof(label) - 1);
+	memcpy(data + sizeof(label) - 1, copy, (size_t)signed_size);
+	p2p_sign(data, (int)(sizeof(label) - 1) + signed_size, copy + signed_size);
+}
+
 /* a payload heard on the host's slot (or another), then the browser's pass */
 static void hear(const unsigned char *payload, int size, int retained, const char *slot)
 {
@@ -209,7 +277,7 @@ static void hear(const unsigned char *payload, int size, int retained, const cha
 static void lobby_checks(void)
 {
 	static const unsigned char token[P2P_TOKEN_SIZE] = { 7, 7, 7 };
-	unsigned char first[512], tampered[512];
+	unsigned char first[512], tampered[512], old[512];
 	int first_size, count;
 	struct p2p_listing listing;
 	char expected_invite[P2P_LINK_SIZE];
@@ -219,7 +287,7 @@ static void lobby_checks(void)
 	hosting_token = token;
 	/* hosting a public game: listed */
 	p2p_set_hosting_public(1);
-	p2p_set_game_listing("Test game", "bloodgulch", "Slayer", 2, 1, 0, 1);
+	p2p_set_game_listing("Test game", "bloodgulch", "Slayer", 2, 0x81, 1, 0, 1);
 	lobby_update(token, 3, 16);
 	check(publish_count == 1 && !published_closing && p2p_lobby_listed(), "the host publishes its listing");
 	memcpy(first, published, (size_t)published_size);
@@ -239,11 +307,28 @@ static void lobby_checks(void)
 		snprintf(expected_invite, sizeof(expected_invite), "halo://join/%s", text);
 	}
 	check(count == 1 && !strcmp(listing.invite, expected_invite), "the listing's invite is the host's");
+	{
+		unsigned char hash[P2P_KEY_HASH_SIZE];
+
+		p2p_key_hash(x25519_public, hash);
+		check(probe_count == 1 && !memcmp(probed_hash, hash, P2P_KEY_HASH_SIZE) &&
+			!memcmp(probed_token, token, P2P_TOKEN_SIZE), "the browser probes the host with the listing's token");
+	}
+	check(count == 1 && listing.ping == -1, "a host not reached has no ping");
+	pthread_mutex_lock(&p2p_lock);
+	p2p_lobby_probed(listing.identifier, 42);
+	pthread_mutex_unlock(&p2p_lock);
+	check(games(&listing) == 1 && listing.ping == 42, "the host's ping is listed");
 	check(count == 1 && !strcmp(listing.name, "Test game") && !strcmp(listing.map, "bloodgulch") &&
 		!strcmp(listing.gametype, "Slayer") && listing.player_count == 3 && listing.maximum_player_count == 16 &&
-		listing.engine_type == 2 && listing.open && listing.has_teams && !listing.in_progress, "the listing's details");
+		listing.engine_type == 2 && listing.kind == 0x81 && listing.open && listing.has_teams && !listing.in_progress,
+		"the listing's details");
+	/* the next pass in the same millisecond as the probe's end (an even one) */
+	count = probe_count;
+	lobby_update(token, 3, 16);
+	check(probe_count == count, "a host just timed is not probed again in the same millisecond");
 	/* a change: published again after TRIGGER_INTERVAL */
-	p2p_set_game_listing(NULL, NULL, NULL, 2, 1, 1, 1);
+	p2p_set_game_listing(NULL, NULL, NULL, 2, 0x81, 1, 1, 1);
 	clock_now += 1000;
 	lobby_update(token, 3, 16);
 	check(publish_count == 1, "no publish sooner than 5 s after the last");
@@ -252,6 +337,37 @@ static void lobby_checks(void)
 	check(publish_count == 2, "a change published within 5 s");
 	hear(published, published_size, 0, NULL);
 	check(games(&listing) == 1 && listing.in_progress, "the browser takes the newer listing");
+	check(listing.ping == 42 && probe_count == 1, "the ping is kept, and not timed again soon");
+	p2p_lobby_refresh();
+	lobby_update(token, 3, 16);
+	check(probe_count == 2 && games(&listing) == 1 && listing.ping == 42,
+		"Refresh times the ping again; one not reached keeps the last");
+	/* Refresh's probe held open: the game marked as Refresh's until it
+	ends; the next probe, past two minutes on (the host heard on its 30 s),
+	not */
+	probes_held = 1;
+	p2p_lobby_refresh();
+	check(games(&listing) == 1 && listing.refreshing, "Refresh marks the game it times again");
+	lobby_update(token, 3, 16);
+	check(probe_count == 3 && games(&listing) == 1 && listing.probing && listing.refreshing && listing.ping == 42,
+		"the game is marked while Refresh's probe is under way");
+	pthread_mutex_lock(&p2p_lock);
+	p2p_lobby_probed(listing.identifier, 40);
+	pthread_mutex_unlock(&p2p_lock);
+	check(games(&listing) == 1 && !listing.probing && !listing.refreshing && listing.ping == 40,
+		"the probe's end takes the mark off");
+	for (count = 0; count < 5; count++)
+	{
+		clock_now += 30000;
+		lobby_update(token, 3, 16);
+		hear(published, published_size, 0, NULL);
+	}
+	check(probe_count == 4 && games(&listing) == 1 && listing.probing && !listing.refreshing && listing.ping == 40,
+		"a probe two minutes on is not marked as Refresh's");
+	pthread_mutex_lock(&p2p_lock);
+	p2p_lobby_probed(listing.identifier, 42);
+	pthread_mutex_unlock(&p2p_lock);
+	probes_held = 0;
 	/* the older one again: no change */
 	hear(first, first_size, 0, NULL);
 	check(games(&listing) == 1 && listing.in_progress, "an older listing is ignored");
@@ -271,6 +387,19 @@ static void lobby_checks(void)
 	clock_now += 91000;
 	lobby_update(token, 3, 16);
 	check(games(NULL) == 0, "a listing unheard for 90 s expires");
+	/* signed long ago, published again by someone who kept it: ignored,
+	live or retained */
+	restamp(published, published_size, -2 * 3600, old);
+	hear(old, published_size, 0, NULL);
+	check(games(NULL) == 0, "a live listing of long ago is ignored");
+	hear(old, published_size, 1, NULL);
+	check(games(NULL) == 0, "a retained listing of long ago is ignored");
+	/* a host whose clock is half an hour off: still listed live */
+	restamp(published, published_size, -1800, old);
+	hear(old, published_size, 0, NULL);
+	check(games(NULL) == 1, "a live listing half an hour off is taken");
+	clock_now += 91000;
+	lobby_update(token, 3, 16);
 	/* the slot's retained copy, of about now: taken (the host published it
 	again on its 30 s) */
 	lobby_update(token, 3, 16);
@@ -297,6 +426,11 @@ static void lobby_checks(void)
 	lobby_update(token, 3, 16);
 	hear(published, published_size, 0, NULL);
 	check(games(&listing) == 1 && listing.locked && !listing.invite[0], "a game with a password is listed locked");
+	count = probe_count;
+	p2p_lobby_refresh();
+	lobby_update(token, 3, 16);
+	check(probe_count == count && games(&listing) == 1 && !listing.refreshing,
+		"a game with a password is not probed, nor marked by Refresh");
 	{
 		int offset, found = 0;
 
@@ -317,10 +451,145 @@ static void lobby_checks(void)
 		"a game whose password is taken off is listed open");
 }
 
+/* the server browser: the games shown in the order's (reverse: the other
+way), and of those the first count only */
+static void show(int order, int reverse, int count)
+{
+	struct p2p_listing all[8];
+	int found = p2p_lobby_games(all, 8);
+
+	p2p_lobby_sort(all, found, order, reverse);
+	p2p_lobby_shown(all, count < found ? count : found);
+}
+
+/* four games, heard as Alpha, Bravo, Charlie, Delta (Charlie's join failed),
+are shown as Bravo, Delta, Charlie, Alpha: their hosts are probed in the
+order shown, past Bravo's refused, none while listings wait to be checked
+(for a second at most after Refresh); then in another order, and one not
+shown last */
+static void probe_order_checks(void)
+{
+	static const unsigned char token[P2P_TOKEN_SIZE] = { 9, 9, 9 };
+	static const char *names[] = { "Alpha", "Bravo", "Charlie", "Delta" };
+	static const int player_counts[] = { 2, 9, 5, 5 }, first_wave[] = { 1, 2, 0, 3 };
+	unsigned char hash[P2P_KEY_HASH_SIZE], payloads[4][512], identifiers[4][P2P_IDENTIFIER_SIZE];
+	char slots[4][2 * P2P_KEY_HASH_SIZE + 1];
+	int sizes[4], index;
+
+	/* (the games before expire) */
+	clock_now += 91000;
+	lobby_update(token, 0, 16);
+	hosting_token = token;
+	for (index = 0; index < 4; index++)
+	{
+		seed[0] = (unsigned char)(index + 1);
+		p2p_ed25519_public(seed, signing_key, x25519_secret);
+		p2p_x25519(x25519_public, x25519_secret, NULL);
+		p2p_set_hosting_public(1);
+		p2p_set_game_listing(names[index], "bloodgulch", "Slayer", 2, 0, 1, 0, 0);
+		clock_now += 6000;
+		lobby_update(token, player_counts[index], 16);
+		memcpy(payloads[index], published, (size_t)published_size);
+		sizes[index] = published_size;
+		p2p_key_hash(x25519_public, hash);
+		p2p_hex(hash, P2P_KEY_HASH_SIZE, slots[index]);
+		p2p_identifier_from_hash(hash, identifiers[index]);
+		p2p_set_hosting_public(0);
+		lobby_update(token, 0, 16);
+	}
+	p2p_lobby_mark_failed(identifiers[2]);
+	/* heard in one pass, Bravo refused */
+	probe_count = 0;
+	refused_host = identifiers[1];
+	pthread_mutex_lock(&p2p_lock);
+	for (index = 0; index < 4; index++)
+		p2p_lobby_slot_heard(slots[index], payloads[index], sizes[index], 0);
+	pthread_mutex_unlock(&p2p_lock);
+	lobby_update(token, 0, 16);
+	refused_host = NULL;
+	check(probe_count == 3, "the games after one refused are probed");
+	/* gone, then heard again after Refresh in a burst that takes four passes
+	to check */
+	clock_now += 91000;
+	lobby_update(token, 0, 16);
+	p2p_lobby_refresh();
+	probe_count = 0;
+	check_cost = 5;
+	pthread_mutex_lock(&p2p_lock);
+	for (index = 0; index < 4; index++)
+		p2p_lobby_slot_heard(slots[index], payloads[index], sizes[index], 0);
+	pthread_mutex_unlock(&p2p_lock);
+	for (index = 0; index < 3; index++)
+	{
+		lobby_update(token, 0, 16);
+		check(probe_count == 0, "no probe starts while listings wait to be checked");
+		show(P2P_LOBBY_SORT_SERVERS, 0, 4);
+	}
+	lobby_update(token, 0, 16);
+	check_cost = 0;
+	check(probe_count == 4, "the four games are probed once checked");
+	/* (Delta, checked in the pass the probes start, is not shown yet) */
+	for (index = 0; index < 4; index++)
+		check(!memcmp(probed_hosts[index], identifiers[first_wave[index]], P2P_IDENTIFIER_SIZE),
+			"the games are probed in the order shown, one not shown yet last");
+	/* sorted by name, then Refresh: Alpha, Bravo, Charlie, Delta */
+	show(P2P_LOBBY_SORT_NAME, 0, 4);
+	probe_count = 0;
+	p2p_lobby_refresh();
+	lobby_update(token, 0, 16);
+	check(probe_count == 4, "the four games are probed again on Refresh");
+	for (index = 0; index < 4; index++)
+		check(!memcmp(probed_hosts[index], identifiers[index], P2P_IDENTIFIER_SIZE),
+			"the games are probed in the order the list is sorted by now");
+	/* by name the other way, Alpha filtered out: Delta, Charlie, Bravo, then
+	Alpha */
+	show(P2P_LOBBY_SORT_NAME, 1, 3);
+	probe_count = 0;
+	p2p_lobby_refresh();
+	lobby_update(token, 0, 16);
+	for (index = 0; index < 4; index++)
+		check(!memcmp(probed_hosts[index], identifiers[3 - index], P2P_IDENTIFIER_SIZE),
+			"a game not shown is probed after those shown");
+	/* Alpha listed by a master server too: neither marked by Refresh nor
+	timed */
+	check(p2p_lobby_take_master_listing(payloads[0], sizes[0], "", "EU", 0, 1, NULL), "a master server's listing is taken");
+	probe_count = 0;
+	p2p_lobby_refresh();
+	{
+		struct p2p_listing all[4];
+		int count = p2p_lobby_games(all, 4), marked = 0;
+
+		for (index = 0; index < count; index++)
+			marked += all[index].refreshing;
+		check(count == 4 && marked == 3, "Refresh marks the games it times, not a master server's");
+	}
+	lobby_update(token, 0, 16);
+	check(probe_count == 3, "a master server's game is not timed on Refresh");
+	/* gone, then heard again after Refresh with each check taking 600 ms:
+	the games checked are probed once a second has passed, though listings
+	still wait */
+	clock_now += 91000;
+	lobby_update(token, 0, 16);
+	p2p_lobby_refresh();
+	probe_count = 0;
+	pthread_mutex_lock(&p2p_lock);
+	for (index = 0; index < 4; index++)
+		p2p_lobby_slot_heard(slots[index], payloads[index], sizes[index], 0);
+	pthread_mutex_unlock(&p2p_lock);
+	check_cost = 600;
+	lobby_update(token, 0, 16);
+	check(probe_count == 0, "no probe starts in the first second while listings wait to be checked");
+	for (index = 0; index < 2 && !probe_count; index++)
+		lobby_update(token, 0, 16);
+	check_cost = 0;
+	check(probe_count > 0 && probe_count < 4, "listings still waiting hold the probes back for a second at most");
+}
+
 int main(void)
 {
 	crypto_checks();
 	lobby_checks();
+	probe_order_checks();
 	printf("%s (%d failures)\n", failures ? "FAIL" : "PASS", failures);
 	return failures != 0;
 }

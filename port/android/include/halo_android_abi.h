@@ -2,20 +2,23 @@
 HALO_ANDROID_ABI.H
 
 The contract between the two halves of the Android port (see
-port/android/README.md):
+port/android/README.md), and of the Linux builds made the same way (the
+64-bit ARM and x86 ones, port/linux/host):
 
 - the guest: the game, the platform layer shared with the Linux port and a
-  small C runtime, compiled as ILP32 AArch64 code (32-bit pointers) and
-  linked into a static image that runs in the low 4 GB of the process;
-- the host: an ordinary 64-bit Android library (libmain.so) that loads the
-  image, owns the process (SDL3, OpenGL ES, bionic) and serves the guest's
-  requests.
+  small C runtime, compiled as ILP32 code of the processor (32-bit pointers:
+  arm64_32 on AArch64, x32 on x86-64) and linked into a static image that
+  runs in the low 4 GB of the process;
+- the host: an ordinary 64-bit Android library (libmain.so), or Linux
+  executable, that loads the image, owns the process (SDL3, OpenGL, the C
+  library) and serves the guest's requests.
 
 The guest calls the host through import stubs that jump through a table of
 64-bit function pointers the host fills in at load time. Only types whose
 layout and register treatment agree between the two ABIs cross this
 boundary: 32-bit integers, 64-bit integers, floats, and pointers (which
-arm64_32 always passes zero-extended). Structures shared here are made of
+arm64_32 and x32 pass zero-extended; the host passes the guest its
+arguments as 64-bit values, port/android/host/host_thread.c). Structures shared here are made of
 fixed-width members only.
 
 This header is included by both halves.
@@ -26,21 +29,33 @@ This header is included by both halves.
 
 #include <stdint.h>
 
-/* the guest image is linked to run here. The host reserves the range before
-	it places the window or the guest's own pools take any of it. Where the
-	Java runtime already holds it, the Android host loads the image somewhere
-	free instead and moves its pointers (halo_guest.relocs, made by
-	tools/guest_relocations.py), and tells the guest how far
-	(halo_guest_boot.image_shift). The Switch's host loads it here always.
+/* the guest image is linked to run here (tools/guest_arch.py's image_base,
+which must agree). The host reserves the range before it places the window
+or the guest's own pools take any of it.
 
-	It is below the range Halo Custom Edition maps' tag data is linked to
-	(below), with room to spare for the largest image (the Vulkan one, 40
-	MB, ending by 0x3e820000): at 0x40000000, where it was linked before, it
-	covered that range, and Custom Edition maps could not run. Not above it:
-	at 0x42000000 the image reached 0x43a00000, where a Switch's loader
-	module sits, and the Switch's host cannot move the image */
+AArch64: below the range Halo Custom Edition maps' tag data is linked to
+(below), with room to spare for the largest image (the Vulkan one, 40 MB,
+ending by 0x3e820000): at 0x40000000, where it was linked before, it covered
+that range, and Custom Edition maps could not run. Not above it: at
+0x42000000 the image reached 0x43a00000, where a Switch's loader module
+sits, and the Switch's host cannot move the image. Where the Java runtime
+already holds it, the Android host loads the image somewhere free instead
+and moves its pointers (halo_guest.relocs, made by
+tools/guest_relocations.py), and tells the guest how far
+(halo_guest_boot.image_shift). The Switch's host loads it here always.
+
+x86-64 (x32): below 2 GB, where the 32-bit sign-extended addresses of x32's
+static code can reach it, and clear of Custom Edition's tag data; the window
+above it is reached through registers. Its hosts load it here always. */
+#if defined(__x86_64__)
+#define HALO_GUEST_IMAGE_BASE 0x70000000u
+#else
 #define HALO_GUEST_IMAGE_BASE 0x3c000000u
-#define HALO_GUEST_IMAGE_RESERVE 0x01000000u
+#endif
+/* the most the image may take from there (the loader refuses a larger one:
+host_image_validate); on AArch64 it ends at 0x40000000, below Custom
+Edition's tag data */
+#define HALO_GUEST_IMAGE_RESERVE 0x04000000u
 
 /* Custom Edition's tag cache (port/linux/game/cache_file_formats.h's
 	CUSTOM_EDITION_TAG_CACHE_ADDRESS and _BYTES), which the guest reserves at
@@ -55,19 +70,34 @@ space below 4 GB at start-up, prefers HALO_GUEST_WINDOW_BASE, hands the
 guest the address it found (halo_guest_boot.contiguous_base), and the port
 moves the data with it.
 
-The window is as large as the host can find room for: HALO_GUEST_WINDOW_MAXIMUM,
-else half that, down to HALO_GUEST_WINDOW_SIZE, the 128 MB of a development
-kit, which the game data is linked into and which is the least the game runs
-in. The guest is told which (halo_guest_boot.contiguous_size), and gives
-what is above the Xbox's own layout to the texture cache
-(halo_port_capacity.h). */
+AArch64 (Android, the Switch): the window is as large as the host can find
+room for: HALO_GUEST_WINDOW_MAXIMUM, else half that, down to
+HALO_GUEST_WINDOW_SIZE, the 128 MB of a development kit, which the game data
+is linked into and which is the least the game runs in. The guest is told
+which (halo_guest_boot.contiguous_size), and gives what is above the Xbox's
+own layout to the texture cache (halo_port_capacity.h).
+
+x86-64: the desktop builds' 512 MB, to 0xA0000000, always (platform.h's
+PLATFORM_CONTIGUOUS_SIZE, which must agree: tools/test_guest_layout.py). */
 #define HALO_GUEST_WINDOW_BASE 0x80000000u
+#if defined(__x86_64__)
+#define HALO_GUEST_WINDOW_SIZE 0x20000000u
+#else
 #define HALO_GUEST_WINDOW_SIZE 0x08000000u
+#endif
 #define HALO_GUEST_WINDOW_MAXIMUM 0x20000000u
 /* the window starts on a whole number of these, or of its own size where
 that is larger, so the game's arithmetic on physical addresses (an offset,
 or an address masked with ~base) still works wherever it lands */
 #define HALO_GUEST_WINDOW_ALIGNMENT 0x10000000u
+#if HALO_GUEST_IMAGE_BASE < HALO_GUEST_WINDOW_BASE + HALO_GUEST_WINDOW_MAXIMUM && \
+	HALO_GUEST_IMAGE_BASE + HALO_GUEST_IMAGE_RESERVE > HALO_GUEST_WINDOW_BASE
+#error the guest image's range overlaps the Xbox window
+#endif
+#if HALO_GUEST_IMAGE_BASE < HALO_GUEST_CUSTOM_EDITION_END && \
+	HALO_GUEST_IMAGE_BASE + HALO_GUEST_IMAGE_RESERVE > HALO_GUEST_CUSTOM_EDITION_BASE
+#error the guest image's range overlaps Custom Edition's tag cache
+#endif
 
 /* Where the Switch port puts the window when the console refuses the one
  * above. Not an ABI value - the Android port has no reason to care - and
@@ -93,7 +123,9 @@ or an address masked with ~base) still works wherever it lands */
 #define HALO_SWITCH_WINDOW_FALLBACK 0x20000000u
 
 #define HALO_GUEST_MAGIC 0x4f4c4148u /* 'HALO' */
-#define HALO_GUEST_ABI_VERSION 3
+/* 3: the system call interface of halo_guest_syscall.h (_llseek);
+4: with it, the boot structure's image_shift and contiguous_size */
+#define HALO_GUEST_ABI_VERSION 4
 
 /* at the image's start (HALO_GUEST_IMAGE_BASE, unless the host moved it) */
 struct halo_guest_header

@@ -2,8 +2,8 @@ name: Build
 
 # Debug and release builds of the native ports (Linux, Windows, Android) for
 # every pushed commit, uploaded as artifacts. tools/ci_build.py does each
-# build; see it for the options. This fork builds Android and the Switch
-# only: the Linux and Windows jobs are kept, upstream's, but do not run
+# build; see it for the options. This fork builds Android, the Switch and the
+# PS5 only: the Linux and Windows jobs are kept, upstream's, but do not run
 # (if: false), and the release and the notice go without them.
 #
 # Kept cheap:
@@ -19,21 +19,28 @@ name: Build
 #
 # A release is made by pushing a tag v<number> (git tag v94 && git push
 # origin v94) to a commit of main: the builds of that commit are published as
-# the GitHub release build-<number>, "Build <number>", its notes the commit's
-# message, marked latest, so that
+# the GitHub release build-<number>, "Build <number>" (or the commit's subject,
+# "Build <number>: <title>", for a release with a title), its notes the
+# commit's message, marked latest, so that
 # https://github.com/<repository>/releases/latest/download/<file> always
 # gives the latest build; the last five are kept. The release is named
 # build-<number>, not v<number>, because that is what the builds already
 # installed look for (their updaters: port/switch/host/host_update.c,
-# port/linux/src/updater.c, the Android app's Updater.java), and the number
+# port/ps5/host/host_update_ps5.c, port/linux/src/updater.c, the Android
+# app's Updater.java), and the number
 # has to be higher than the last release's, which they compare it with (and
-# Android's version code is). Pushes to branches build without a release.
+# Android's version code is). Pushes to other branches build without a
+# release; a push to main builds nothing, as its commits are built by their
+# tag's run (two runs at once, the branch's and the tag's, otherwise), or
+# by hand (workflow_dispatch).
 # Its web build is then the site on GitHub Pages
 # (https://halocombatevolved.com/, port/web/README.md).
 on:
   push:
     branches:
       - "**"
+      # (built by its tags: see the top)
+      - "!main"
     tags:
       - "v*"
     # (not checked for a tag's push, which always builds)
@@ -71,12 +78,12 @@ jobs:
     if: false
     runs-on: ubuntu-24.04
     container: archlinux:latest
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - name: Install the toolchain
         run: |
           printf '\n[multilib]\nInclude = /etc/pacman.d/mirrorlist\n' >> /etc/pacman.conf
-          pacman -Syu --noconfirm --needed git zstd python python-pytest ninja ccache \
+          pacman -Syu --noconfirm --needed git zstd python python-pytest python-pytest-xdist python-pillow python-numpy python-scipy ninja ccache \
             clang lld gcc lib32-glibc lib32-gcc-libs cmake pkgconf wayland
 
       - uses: actions/checkout@v4
@@ -108,8 +115,21 @@ jobs:
 
       - name: Test
         run: |
-          python -m pytest -q tools/test_linux_port.py tools/test_android_asm_convert.py tools/test_host_watch_hash.py tools/test_touch_menu.py tools/harness tools/test_profile.py
+          python -m pytest -q tools/test_linux_port.py tools/test_android_asm_convert.py tools/test_android_mirror_uploads.py tools/test_android_frame_fences.py tools/test_android_static_geometry.py tools/test_android_render_policy.py tools/test_android_ce_texture_cache.py tools/test_host_watch_hash.py tools/test_host_units.py tools/test_check_host_imports.py tools/test_host_syscall.py tools/test_touch_menu.py tools/test_network_extensions.py tools/test_profile.py tools/stagekit/tests tools/test_net_compare.py tools/test_server_sim.py tools/test_egg.py tools/test_deploy_gametypes.py
+          # the harness's cases are independent (each builds in its own folder): across the runner's cores
+          python -m pytest -q -n auto tools/harness
+          # the dedicated server: --version, and --server without maps refused (exit code 2); its cases with
+          # clients need the retail maps, and are skipped
+          python -m pytest -q tools/test_dedicated_server.py
           python tools/test_light_storage.py
+          python -m pytest -q \
+            tools/test_mcc_local_package.py tools/test_mcc_server.py tools/test_mcc_share_menu.py tools/test_mcc_resource_selection.py tools/test_mcc_identity_candidates.py \
+            tools/test_mcc_cache_format.py tools/test_mcc_projectiles.py tools/test_mcc_tag_validation.py \
+            tools/test_mcc_share.py tools/test_mcc_share_rules.py tools/test_mcc_share_stage.py \
+            tools/test_mcc_share_storage.py tools/test_mcc_share_metadata.py tools/test_mcc_load_network.py \
+            tools/test_checkpoint_epoch.py tools/test_coop_checkpoint.py tools/test_coop_checkpoint_recovery.py \
+            tools/test_mcc_checkpoint.py tools/test_mcc_import.py tools/test_mcc_publish_across.py tools/test_steam_client.py tools/test_host_mcc_hash.py
+          python -m pytest -q tools/test_hud_corrections.py
 
       - name: Compile cache
         run: ccache --show-stats
@@ -126,6 +146,136 @@ jobs:
           path: dist/halo-linux-release
           retention-days: 3
 
+  linux-arm64:
+    # Ubuntu 22.04 (glibc 2.35, so the build starts on older distributions
+    # too) on GitHub's 64-bit ARM runner, with clang 22 from apt.llvm.org (the
+    # guest's arm64_32 target) and the development files SDL3 builds with.
+    # (not built by this fork: see the top)
+    if: false
+    runs-on: ubuntu-24.04-arm
+    container: ubuntu:22.04
+    timeout-minutes: 40
+    steps:
+      - name: Install the toolchain
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl gnupg lsb-release \
+            software-properties-common git python3 ninja-build cmake make pkg-config ccache zip \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxss-dev libxfixes-dev \
+            libxtst-dev libxkbcommon-dev libwayland-dev wayland-protocols libegl-dev libgles-dev \
+            libgl-dev libdrm-dev libgbm-dev libpulse-dev libpipewire-0.3-dev libasound2-dev \
+            libudev-dev libdbus-1-dev libdecor-0-dev
+          curl -fsSL https://apt.llvm.org/llvm.sh -o llvm.sh
+          bash llvm.sh 22 && rm llvm.sh
+          apt-get install -y --no-install-recommends lld-22 llvm-22
+          for tool in clang ld.lld llvm-ar llvm-objdump; do ln -sf "/usr/bin/$tool-22" "/usr/local/bin/$tool"; done
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-linux-arm64-${{ github.sha }}
+          restore-keys: ccache-linux-arm64-
+
+      # musl and SDL, which configure.py fetches
+      - uses: actions/cache@v4
+        with:
+          path: build/linux_arm64/third_party
+          key: linux-arm64-third-party-${{ hashFiles('tools/android_build.py', 'port/android/patches/**') }}
+
+      - name: Debug
+        run: python3 tools/ci_build.py linux_arm64 debug
+
+      - name: Release
+        run: python3 tools/ci_build.py linux_arm64 release
+
+      - name: Compile cache
+        run: ccache --show-stats
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: halo-linux-arm64-debug
+          path: dist/halo-linux-arm64-debug
+          retention-days: 3
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: halo-linux-arm64-release
+          path: dist/halo-linux-arm64-release
+          retention-days: 3
+
+  linux-x86_64:
+    # The 64-bit x86 guest build (ninja linux_x86_64: the game as x32 code in
+    # a 64-bit host), made as the 64-bit ARM one is: Ubuntu 22.04 (glibc 2.35,
+    # so the build starts on older distributions too) with clang 22 from
+    # apt.llvm.org (the guest's x32 target) and the development files SDL3
+    # builds with; and the tests of the guest's call boundary and image
+    # checks, which need this processor.
+    # (not built by this fork: see the top)
+    if: false
+    runs-on: ubuntu-24.04
+    container: ubuntu:22.04
+    timeout-minutes: 40
+    steps:
+      - name: Install the toolchain
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl gnupg lsb-release \
+            software-properties-common git python3 python3-pytest ninja-build cmake make pkg-config ccache zip \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxss-dev libxfixes-dev \
+            libxtst-dev libxkbcommon-dev libwayland-dev wayland-protocols libegl-dev libgles-dev \
+            libgl-dev libdrm-dev libgbm-dev libpulse-dev libpipewire-0.3-dev libasound2-dev \
+            libudev-dev libdbus-1-dev libdecor-0-dev
+          curl -fsSL https://apt.llvm.org/llvm.sh -o llvm.sh
+          bash llvm.sh 22 && rm llvm.sh
+          apt-get install -y --no-install-recommends lld-22 llvm-22
+          for tool in clang ld.lld llvm-ar llvm-objdump llvm-objcopy llvm-nm; do
+            ln -sf "/usr/bin/$tool-22" "/usr/local/bin/$tool"
+          done
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-linux-x86_64-${{ github.sha }}
+          restore-keys: ccache-linux-x86_64-
+
+      # musl and SDL, which configure.py fetches
+      - uses: actions/cache@v4
+        with:
+          path: build/linux_x86_64/third_party
+          key: linux-x86_64-third-party-${{ hashFiles('tools/android_build.py', 'port/android/patches/**') }}
+
+      - name: Debug
+        run: python3 tools/ci_build.py linux_x86_64 debug
+
+      - name: Release
+        run: python3 tools/ci_build.py linux_x86_64 release
+
+      - name: Test
+        run: python3 -m pytest -q tools/test_host_units.py tools/test_guest_image_check.py tools/test_check_host_imports.py tools/test_host_syscall.py tools/test_guest_layout.py tools/test_linux_guest_build.py tools/test_shader_keys.py
+
+      - name: Compile cache
+        run: ccache --show-stats
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: halo-linux-x86_64-debug
+          path: dist/halo-linux-x86_64-debug
+          retention-days: 3
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: halo-linux-x86_64-release
+          path: dist/halo-linux-x86_64-release
+          retention-days: 3
+
   android:
     # The runner image has the Android SDK and NDK, a JDK and CMake.
     runs-on: ubuntu-24.04
@@ -134,10 +284,15 @@ jobs:
       - name: Install the toolchain
         run: |
           mkdir -p "$RUNNER_TEMP/tools"
+          # (each download checked against the hash it had when it was pinned)
           curl -fsSL -o ninja.zip https://github.com/ninja-build/ninja/releases/download/v1.12.1/ninja-linux.zip
+          curl -fsSL -o ccache.tar.xz https://github.com/ccache/ccache/releases/download/v4.10.2/ccache-4.10.2-linux-x86_64.tar.xz
+          sha256sum -c - <<'EOF'
+          6f98805688d19672bd699fbbfa2c2cf0fc054ac3df1f0e6a47664d963d530255  ninja.zip
+          80cab87bd510eca796467aee8e663c398239e0df1c4800a0b5dff11dca0b4f18  ccache.tar.xz
+          EOF
           unzip -q ninja.zip -d "$RUNNER_TEMP/tools" && rm ninja.zip
-          curl -fsSL https://github.com/ccache/ccache/releases/download/v4.10.2/ccache-4.10.2-linux-x86_64.tar.xz \
-            | tar -xJ -C "$RUNNER_TEMP/tools" --strip-components=1 ccache-4.10.2-linux-x86_64/ccache
+          tar -xJf ccache.tar.xz -C "$RUNNER_TEMP/tools" --strip-components=1 ccache-4.10.2-linux-x86_64/ccache && rm ccache.tar.xz
           echo "$RUNNER_TEMP/tools" >> "$GITHUB_PATH"
 
       - uses: actions/checkout@v4
@@ -194,10 +349,23 @@ jobs:
       - name: Compile cache
         run: ccache --show-stats
 
+      # (the bridge from the old package name, the file every installed build's updater asks for: Migration.java)
       - uses: actions/upload-artifact@v4
         with:
           name: halo-android-debug
           path: dist/halo-android-debug
+          retention-days: 3
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: slipstreamce-android-debug
+          path: dist/slipstreamce-android-debug
+          retention-days: 3
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: slipstreamce-android-release
+          path: dist/slipstreamce-android-release
           retention-days: 3
 
       - uses: actions/upload-artifact@v4
@@ -221,8 +389,11 @@ jobs:
         shell: pwsh
         run: |
           Invoke-WebRequest -OutFile ninja.zip https://github.com/ninja-build/ninja/releases/download/v1.12.1/ninja-win.zip
-          Expand-Archive ninja.zip -DestinationPath "$env:RUNNER_TEMP\tools"
           Invoke-WebRequest -OutFile ccache.zip https://github.com/ccache/ccache/releases/download/v4.10.2/ccache-4.10.2-windows-x86_64.zip
+          # (each download checked against the hash it had when it was pinned)
+          if ((Get-FileHash ninja.zip -Algorithm SHA256).Hash -ne "F550FEC705B6D6FF58F2DB3C374C2277A37691678D6ABA463ADCBB129108467A") { throw "ninja.zip: unexpected SHA-256" }
+          if ((Get-FileHash ccache.zip -Algorithm SHA256).Hash -ne "6252F081876A9A9F700FAE13A5AEC5D0D486B28261D7F1F72AC11C7AD9DF4DA9") { throw "ccache.zip: unexpected SHA-256" }
+          Expand-Archive ninja.zip -DestinationPath "$env:RUNNER_TEMP\tools"
           Expand-Archive ccache.zip -DestinationPath $env:RUNNER_TEMP
           Copy-Item "$env:RUNNER_TEMP\ccache-4.10.2-windows-x86_64\ccache.exe" "$env:RUNNER_TEMP\tools"
           Remove-Item ninja.zip, ccache.zip
@@ -247,6 +418,13 @@ jobs:
 
       - name: Release
         run: python tools/ci_build.py windows release
+
+      - name: Test MCC model geometry
+        shell: pwsh
+        run: |
+          python -m pip install pytest
+          python -m pytest -q tools/test_mcc_geometry.py tools/test_mcc_projectiles.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Test light storage
         run: python tools/test_light_storage.py
@@ -358,6 +536,13 @@ jobs:
 
       - uses: actions/checkout@v4
 
+      # The checkout is the runner's user's and the container runs as root,
+      # so git refuses it after checkout's own step ("dubious ownership"):
+      # the main menu's news (tools/embed_assets.py, the Build N commit's
+      # message) came out empty
+      - name: Let git read the checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
       - uses: actions/cache@v4
         with:
           path: .ccache
@@ -391,14 +576,195 @@ jobs:
           path: dist/halo-switch-release
           retention-days: 3
 
+  ps5:
+    # The PS5 title (ninja ps5, port/ps5/README.md): the x32 guest and a host
+    # built with PS5_Vulkan's toolchain, which is not this repository's and is
+    # not copied into it. PS5_Vulkan, its payload SDK fork and PS5_Mesa are
+    # cloned at the commits tools/ps5_build.py pins (read from it, so a pin
+    # changes in one place) and set up by PS5_Vulkan's own scripts: the SDK
+    # fork exported over the public SDK release, zlib, and RADV's release
+    # archive built from PS5_Mesa (meson, LLVM 18 with libclc and the SPIR-V
+    # translator for its OpenCL kernels, clang 22 for the console's code). The
+    # set-up's results (.deps/native, 300 MB) and pacbrew's SDL2 (.deps/pacbrew,
+    # 346 MB) are cached by their pins, so the Mesa build and the downloads are
+    # paid once per pin. Clang 22 builds the guest and the host, clang 18 the
+    # SDK's own parts (glslang, the platform layer), as on the build machine.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      # (beside the checkout, as on the build machine; outside the
+      # workspace, which the checkout cleans)
+      PS5_DEPS: /home/runner/ps5-deps
+    steps:
+      - name: Install the toolchain
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends git python3 python3-pip python3-pytest python3-mako python3-yaml \
+            python3-packaging ninja-build cmake make pkg-config rsync wget unzip zip util-linux bison flex ccache \
+            glslang-tools spirv-tools clang-18 lld-18 llvm-18-dev libclang-18-dev libclc-18 libclc-18-dev \
+            libllvmspirvlib-18-dev llvm-spirv-18 libgl-dev libgles-dev zlib1g-dev libzstd-dev
+          curl -fsSL https://apt.llvm.org/llvm.sh -o llvm.sh
+          sudo bash llvm.sh 22 && rm llvm.sh
+          sudo apt-get install -y --no-install-recommends lld-22 llvm-22 libclang-rt-22-dev
+          # (meson 1.4 or newer for Mesa; the distribution's is 1.3)
+          sudo pip3 install --break-system-packages meson==1.12.1
+
+      # Prove each tool the build calls is there, and name the missing one,
+      # before an hour of building fails on it.
+      - name: Check the toolchain
+        run: |
+          missing=0
+          for tool in clang-22 llvm-config-22 ld.lld-22 llvm-ar-22 clang-18 clang++-18 ccache \
+            /usr/lib/llvm-18/bin/llvm-config llvm-spirv-18 glslangValidator meson ninja cmake rsync wget unzip \
+            flock bison flex; do
+            if command -v "$tool" > /dev/null; then
+              echo "found $tool: $(command -v "$tool")"
+            else
+              echo "::error::$tool is not installed; the PS5 build needs it"
+              missing=1
+            fi
+          done
+          for file in /usr/lib/llvm-22/lib/clang/22/lib/linux/libclang_rt.builtins-x86_64.a \
+            /usr/include/GL/glcorearb.h /usr/include/GLES3/gl32.h; do
+            if [ -f "$file" ]; then echo "found $file"; else echo "::error::$file is missing"; missing=1; fi
+          done
+          if ! ls /usr/lib/clc/*.bc > /dev/null 2>&1 && ! ls /usr/lib/llvm-18/lib/clc/*.bc > /dev/null 2>&1 \
+            && ! ls /usr/share/clc/*.bc > /dev/null 2>&1; then
+            echo "::error::libclc's bitcode is not installed (libclc-18)"
+            missing=1
+          fi
+          meson --version
+          clang-22 --version | head -1
+          exit "$missing"
+
+      - uses: actions/checkout@v4
+
+      - name: Read the pins
+        id: pins
+        run: |
+          python3 - >> "$GITHUB_OUTPUT" <<'EOF'
+          from tools import ps5_build as pins
+          print(f"vulkan={pins.PS5_VULKAN_COMMIT}")
+          print(f"vulkan_url={pins.PS5_VULKAN_URL}")
+          print(f"sdk={pins.PS5_PAYLOAD_SDK_REVISION}")
+          print(f"sdk_url={pins.PS5_PAYLOAD_SDK_URL}")
+          print(f"mesa={pins.PS5_MESA_COMMIT}")
+          print(f"mesa_url={pins.PS5_MESA_URL}")
+          print(f"pacbrew={pins.PACBREW_VERSION}-{pins.PACBREW_SHA256[:16]}")
+          EOF
+          cat "$GITHUB_OUTPUT"
+
+      # (each fetched at its pin alone: the set-up exports that commit with
+      # git archive, which a shallow fetch of it answers)
+      - name: Clone the toolchain at its pins
+        env:
+          VULKAN: ${{ steps.pins.outputs.vulkan }}
+          VULKAN_URL: ${{ steps.pins.outputs.vulkan_url }}
+          SDK: ${{ steps.pins.outputs.sdk }}
+          SDK_URL: ${{ steps.pins.outputs.sdk_url }}
+          MESA: ${{ steps.pins.outputs.mesa }}
+          MESA_URL: ${{ steps.pins.outputs.mesa_url }}
+        run: |
+          fetch() {
+            git init -q "$PS5_DEPS/$1"
+            git -C "$PS5_DEPS/$1" fetch -q --depth 1 "$2" "$3"
+            git -C "$PS5_DEPS/$1" -c advice.detachedHead=false checkout -q FETCH_HEAD
+            echo "$1 at $(git -C "$PS5_DEPS/$1" rev-parse HEAD)"
+          }
+          fetch PS5_Vulkan "$VULKAN_URL" "$VULKAN"
+          fetch PS5_PayloadSDK "$SDK_URL" "$SDK"
+          fetch PS5_Mesa "$MESA_URL" "$MESA"
+
+      - uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-ps5-${{ github.sha }}
+          restore-keys: ccache-ps5-
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.PS5_DEPS }}/PS5_Vulkan/.deps/native
+          key: ps5-native-${{ steps.pins.outputs.vulkan }}-${{ steps.pins.outputs.sdk }}-${{ steps.pins.outputs.mesa }}
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.PS5_DEPS }}/PS5_Vulkan/.deps/pacbrew
+          key: ps5-pacbrew-${{ steps.pins.outputs.pacbrew }}
+
+      # musl, SDL3's headers and glslang, which configure.py fetches
+      - uses: actions/cache@v4
+        with:
+          path: build/ps5/third_party
+          key: ps5-third-party-${{ hashFiles('tools/android_build.py', 'tools/ps5_build.py', 'port/android/patches/**') }}
+
+      # The tools on the path the way the build machine's hostdeps script puts
+      # them (configure.py --ps5-hostdeps, PS5_HOSTDEPS): LLVM 18's first,
+      # whose clang and libclc the native half of the Mesa build (mesa_clc and
+      # vtn_bindgen2, PS5_Vulkan's tools/build-radv.sh) compiles OpenCL with,
+      # against its SPIR-V translator. The console's half is clang 22's, which
+      # the SDK's compiler wrapper takes from LLVM_CONFIG; but meson reads
+      # LLVM_CONFIG too, as its llvm-config, so the native half would be
+      # configured for LLVM 22, which has no SPIR-V translator here. The
+      # script calls meson through MESON: a wrapper gives that one set-up
+      # (the radv-clc-build folder) LLVM 18's llvm-config, as the build
+      # machine's was set up, and passes everything else on as it is.
+      - name: Set up the SDK fork and RADV
+        run: |
+          cat > "$PS5_DEPS/meson" <<EOF
+          #!/bin/sh
+          case " \$* " in
+            *radv-clc-build*) export LLVM_CONFIG=/usr/lib/llvm-18/bin/llvm-config ;;
+          esac
+          exec $(command -v meson) "\$@"
+          EOF
+          cat "$PS5_DEPS/meson"
+          chmod +x "$PS5_DEPS/meson"
+          cat > "$PS5_DEPS/hostdeps.sh" <<EOF
+          export PATH=/usr/lib/llvm-18/bin:\$PATH
+          export MESON=$PS5_DEPS/meson
+          EOF
+          cat "$PS5_DEPS/hostdeps.sh"
+          echo "PS5_HOSTDEPS=$PS5_DEPS/hostdeps.sh" >> "$GITHUB_ENV"
+          echo "PS5_VULKAN=$PS5_DEPS/PS5_Vulkan" >> "$GITHUB_ENV"
+          . "$PS5_DEPS/hostdeps.sh"
+          bash "$PS5_DEPS/PS5_Vulkan/tools/setup-native-dependencies.sh"
+          time env LLVM_CONFIG=/usr/bin/llvm-config-22 bash "$PS5_DEPS/PS5_Vulkan/tools/build-radv.sh" release
+          cat "$PS5_DEPS/PS5_Vulkan/.deps/native/radv-release/PROVENANCE.txt"
+
+      - name: Debug
+        run: python3 tools/ci_build.py ps5 debug
+
+      - name: Release
+        run: python3 tools/ci_build.py ps5 release
+
+      - name: Test
+        run: python3 -m pytest -q tools/test_ps5_build.py tools/test_ps5_host.py
+
+      - name: Compile cache
+        run: ccache --show-stats
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: halo-ps5-debug
+          path: dist/halo-ps5-debug
+          retention-days: 3
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: halo-ps5-release
+          path: dist/halo-ps5-release
+          retention-days: 3
+
   release:
-    # The four builds (Android's and the Switch's) as a release, tagged
+    # The six builds (Android's, the Switch's and the PS5's) as a release, tagged
     # build-<number> for a pushed tag v<number>, and marked latest
     # (every file keeps its name from release to release, for the README's
     # latest/download links); then all but the newest five build-* releases
     # go, tags and all. Only for a v<number> tag on a commit of main, newer
     # than the last release, and only when every platform built.
-    needs: [android, switch]
+    needs: [android, switch, ps5]
     if: ${{ startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -444,7 +810,9 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          pattern: halo-*
+          # (slipstreamce-android-* is the game itself, which the bridge in
+          # halo-android-* downloads: without it, Android players are stuck)
+          pattern: "{halo,slipstreamce}-*"
           path: artifacts
 
       - name: Package
@@ -452,15 +820,44 @@ jobs:
           mkdir release
           for build in artifacts/*/; do
             name="$(basename "$build")"
-            # the Switch's stored, not deflated: its updater (host_update.c,
-            # in every build installed so far) unpacks stored entries only
+            # the Switch's and the PS5's stored, not deflated: their updaters
+            # (port/switch/host/host_update.c, in every build installed so
+            # far, and port/ps5/host/host_update_ps5.c) unpack stored entries
+            # only (the slipstreamce- names are the ones their updaters look
+            # for first, for when the zips take them)
             case "$name" in
-              halo-switch*) level=-0 ;;
+              halo-switch*|halo-ps5*|slipstreamce-switch*|slipstreamce-ps5*) level=-0 ;;
               *) level= ;;
             esac
             (cd "$build" && zip $level -qr "$GITHUB_WORKSPACE/release/$name.zip" .)
           done
+          # (what the updaters ask for: a release without one strands its
+          # players, so it is not published)
+          for required in halo-android slipstreamce-android; do
+            for flavor in release debug; do
+              if [ ! -f "release/$required-$flavor.zip" ]; then
+                echo "::error::the release has no $required-$flavor.zip"
+                exit 1
+              fi
+            done
+          done
+          python3 tools/ci_build.py sums release
           ls -l release
+
+      # SHA256SUMS signed with the release key's seed (the RELEASE_SIGNING_KEY
+      # secret, 64 hex digits), and the signature checked against
+      # deploy/release-key.pub before anything is published: a secret that is
+      # not the key of the public key in the repository stops the release
+      - name: Sign the sums
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          if [ -z "$RELEASE_SIGNING_KEY" ]; then
+            echo "::warning::no RELEASE_SIGNING_KEY secret: the release's SHA256SUMS is not signed"
+            exit 0
+          fi
+          sh tools/release_sign.sh sign release/SHA256SUMS
+          sh tools/release_sign.sh verify release/SHA256SUMS
 
       - name: Publish
         id: publish
@@ -470,12 +867,19 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           tag="build-$NUMBER"
+          # the title: the commit's subject where it is "Build <number>: <title>"
+          # (a release with a title of its own), else "Build <number>"
+          subject="$(git log -1 --format=%s "$GITHUB_SHA")"
+          case "$subject" in
+            "Build $NUMBER: "*) title="$subject" ;;
+            *) title="Build $NUMBER" ;;
+          esac
           # the notes: the tagged commit's whole message, then where it came from
           git log -1 --format=%B "$GITHUB_SHA" > notes.md
           printf '\nCommit: %s\nBuild: %s\n\nThe release builds are for playing; the debug builds stop at the first failed assertion and log it.\n' \
             "$COMMIT_URL" "$RUN_URL" >> notes.md
           gh release create "$tag" release/*.zip --target "$GITHUB_SHA" --latest \
-            --title "Build $NUMBER (${GITHUB_SHA:0:7})" --notes-file notes.md
+            --title "$title (${GITHUB_SHA:0:7})" --notes-file notes.md
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       # The Windows builds' executables and PDBs to Sentry, which turns the
@@ -530,6 +934,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
+      contents: write
       pages: write
       id-token: write
     concurrency:
@@ -543,6 +948,45 @@ jobs:
         with:
           name: halo-web-release
           path: site
+
+      # The game's wasm, most of a build, from jsDelivr rather than GitHub
+      # Pages, which serves 100 GB a month: the wasm alone in a commit of the
+      # web-wasm branch (pushed over the last, so the repository keeps one),
+      # which jsDelivr serves by its hash (with CORS; GitHub's release
+      # downloads have none, so a page cannot fetch them), and version.json
+      # names that copy and its SHA-256. The site's service worker takes the
+      # wasm from there, checked, and from the site only when it cannot
+      # (port/web/site/sw.js). A failure here leaves the site serving it.
+      - name: The wasm on jsDelivr
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha256="$(sha256sum site/halo.wasm | cut -d' ' -f1)"
+          mkdir wasm
+          cp site/halo.wasm wasm/
+          cd wasm
+          git init -q -b web-wasm
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            add halo.wasm
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -q -m "The web build's wasm (build $GITHUB_RUN_NUMBER, $GITHUB_SHA)"
+          git push -q --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:refs/heads/web-wasm
+          url="https://cdn.jsdelivr.net/gh/${GITHUB_REPOSITORY}@$(git rev-parse HEAD)/halo.wasm"
+          # (jsDelivr fetches it now, and it must be the same file: it serves
+          # files of at most 20 MB from GitHub)
+          curl -fsSL --retry 6 --retry-delay 10 --retry-all-errors -o served.wasm "$url"
+          echo "$sha256  served.wasm" | sha256sum -c -
+          cd ..
+          python3 - "$url" "$sha256" <<'EOF'
+          import json, sys
+          with open("site/version.json") as file:
+              stamp = json.load(file)
+          stamp["wasm"] = {"url": sys.argv[1], "sha256": sys.argv[2]}
+          with open("site/version.json", "w") as file:
+              json.dump(stamp, file, indent=1)
+          EOF
+          echo "the wasm from $url"
 
       - uses: actions/configure-pages@v5
 
@@ -558,7 +1002,7 @@ jobs:
     # without it): green when every platform built, red when one did not,
     # with each platform's result, this run's release (main only), and links
     # to the latest release's builds.
-    needs: [android, switch, release]
+    needs: [android, switch, ps5, release]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -568,6 +1012,7 @@ jobs:
           WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           ANDROID: ${{ needs.android.result }}
           SWITCH: ${{ needs.switch.result }}
+          PS5: ${{ needs.ps5.result }}
           RELEASE_TAG: ${{ needs.release.outputs.tag }}
           SERVER: ${{ github.server_url }}
           REPOSITORY: ${{ github.repository }}
@@ -590,13 +1035,13 @@ jobs:
               *) echo "➖ Skipped" ;;
             esac
           }
-          if [ "$ANDROID" = success ] && [ "$SWITCH" = success ]; then
+          if [ "$ANDROID" = success ] && [ "$SWITCH" = success ] && [ "$PS5" = success ]; then
             title="Build succeeded"; color=5763719
           else
             title="Build failed"; color=15548997
           fi
           latest="$SERVER/$REPOSITORY/releases/latest"
-          downloads="[Android]($latest/download/halo-android-release.zip) · [Switch]($latest/download/halo-switch-release.zip) ([all builds]($latest))"
+          downloads="[Android]($latest/download/slipstreamce-android-release.zip) · [Switch]($latest/download/halo-switch-release.zip) · [PS5]($latest/download/halo-ps5-release.zip) ([all builds]($latest))"
           if [ -n "$RELEASE_TAG" ]; then
             release="[$RELEASE_TAG]($SERVER/$REPOSITORY/releases/tag/$RELEASE_TAG)"
             if [ "$PAGES" = success ]; then
@@ -612,12 +1057,14 @@ jobs:
             --arg release "$release" --arg downloads "$downloads" \
             --arg android "$(status "$ANDROID")" \
             --arg switch "$(status "$SWITCH")" \
+            --arg ps5 "$(status "$PS5")" \
             --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             '{embeds: [{
               title: $title, url: $url, color: $color, description: $description, timestamp: $timestamp,
               fields: [
                 {name: "Android", value: $android, inline: true},
                 {name: "Switch", value: $switch, inline: true},
+                {name: "PS5", value: $ps5, inline: true},
                 {name: "Release", value: $release},
                 {name: "Latest release builds", value: $downloads}
               ]

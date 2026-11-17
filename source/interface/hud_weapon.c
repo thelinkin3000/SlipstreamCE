@@ -53,6 +53,7 @@ symbols in this file:
 /* ---------- headers */
 
 #include "cseries/cseries.h"
+#include "passenger_camera.h" /* port: port/linux/game/passenger_camera.c */
 #include "cseries/errors.h"
 #include "bitmaps/bitmap_group.h"
 #include "cache/texture_cache.h"
@@ -65,6 +66,7 @@ symbols in this file:
 #include "interface/hud_weapon.h"
 #include "interface/unit_hud_interface_definition.h"
 #include "interface/weapon_hud_interface_definition.h"
+#include "mcc_grenades.h" /* port: port/linux/game/mcc_grenades.h */
 #include "items/weapon_definitions.h"
 #include "items/weapons.h"
 #include "objects/objects.h"
@@ -76,6 +78,9 @@ symbols in this file:
 #include "tag_files/tag_groups.h"
 #include "units/unit_definitions.h"
 #include "units/units.h"
+#include "mcc_hud_draw.h" /* port: port/linux/game/mcc_hud_draw.c */
+#include "custom_edition_hud.h" /* port: CE warning placement and reticle classification */
+#include "hud_hires_crosshairs.h" /* port: port/linux/game/hud_hires_tags.c */
 
 #include <math.h>
 #include <string.h>
@@ -567,6 +572,12 @@ static void render_grenade_hud(
 	struct grenade_hud_interface_definition *definition;
 	short draw_flags;
 
+	/* port: MCC's expanded grenade types have their own HUD (mcc_grenades.c) */
+	if (mcc_grenades_active())
+	{
+		mcc_grenades_hud(local_player_index, unit_index);
+		return;
+	}
 	csmemset(
 		stack_buffer,
 		0x62,
@@ -727,6 +738,11 @@ static void hud_update_weapon_local_player(
 		long render_flags = 0;
 		short definition_count = 1;
 		short crosshair_index;
+		/* port: a weapon of one magazine has no secondary ammunition to warn
+		of. Its second magazine (empty) set the secondary states off: "fired
+		secondary with no ammo" at every pull of the trigger, coldsnap's
+		master HUD's NO FUEL beside the weapon's own NO AMMO */
+		boolean const secondary_magazine = weapon_state->magazine_count > 1;
 
 		if (weapon_index != get_hud_state(local_player_index)->last_weapon_index &&
 			weapon_index == NONE)
@@ -769,8 +785,9 @@ static void hud_update_weapon_local_player(
 					result = weapon_state->magazines[0].can_fire;
 					break;
 
+				/* port: (secondary_magazine) */
 				case _crosshair_state_secondary_trigger_ready:
-					result = weapon_state->magazines[1].can_fire;
+					result = secondary_magazine && weapon_state->magazines[1].can_fire;
 					break;
 
 				case _crosshair_state_aim:
@@ -841,6 +858,8 @@ static void hud_update_weapon_local_player(
 					{
 						no_grenades = no_grenades && !unit->unit.grenade_counts[grenade_type];
 					}
+					/* port: and MCC's expanded grenade types */
+					if (mcc_grenades_active() && mcc_grenades_total(unit_index)) no_grenades = FALSE;
 					result = (no_grenades &&
 							!unit->unit.grenade_throw_state &&
 							TEST_FLAG(unit->unit.control_flags, _unit_control_throw_grenade_bit)) ||
@@ -854,8 +873,10 @@ static void hud_update_weapon_local_player(
 						weapon_state->magazines[0].rounds_loaded <= root_definition->flash_cutoffs.loaded_ammo;
 					break;
 
+				/* port: (secondary_magazine) */
 				case _crosshair_state_flash_secondary_ammo:
-					result = (weapon_state->magazines[1].rounds_remaining || weapon_state->magazines[1].rounds_loaded) &&
+					result = secondary_magazine &&
+						(weapon_state->magazines[1].rounds_remaining || weapon_state->magazines[1].rounds_loaded) &&
 						weapon_state->magazines[1].rounds_remaining &&
 						weapon_state->magazines[1].rounds_loaded <= root_definition->flash_cutoffs.loaded_ammo;
 					break;
@@ -869,8 +890,9 @@ static void hud_update_weapon_local_player(
 						!weapon_state->magazines[1].reloading;
 					break;
 
+				/* port: (secondary_magazine) */
 				case _crosshair_state_secondary_reload:
-					result = weapon_state->magazines[1].reloading;
+					result = secondary_magazine && weapon_state->magazines[1].reloading;
 					break;
 
 				case _crosshair_state_fired_secondary_with_no_ammo:
@@ -883,8 +905,10 @@ static void hud_update_weapon_local_player(
 						state->value.reference_data != NONE);
 					break;
 
+				/* port: (secondary_magazine) */
 				case _crosshair_state_flash_secondary_ammo_none_for_reload:
-					result = (weapon_state->magazines[1].rounds_remaining || weapon_state->magazines[1].rounds_loaded) &&
+					result = secondary_magazine &&
+						(weapon_state->magazines[1].rounds_remaining || weapon_state->magazines[1].rounds_loaded) &&
 						!weapon_state->magazines[1].rounds_remaining &&
 						weapon_state->magazines[1].rounds_loaded <= root_definition->flash_cutoffs.loaded_ammo;
 					break;
@@ -967,6 +991,9 @@ static void crosshairs_draw(
 	long stack_buffer[STACK_BUFFER_LENGTH];
 	boolean firing_active = FALSE;
 
+	/* port: project the passenger's shot once for all pieces of its reticle */
+	if (!passenger_camera_reticle_begin(player->local_player_index, weapon_index))
+		return;
 	csmemset(
 		stack_buffer,
 		0x62,
@@ -1137,6 +1164,8 @@ static void crosshairs_draw(
 										{
 											no_grenades = no_grenades && !unit->unit.grenade_counts[grenade_type];
 										}
+										/* port: and MCC's expanded grenade types */
+										if (mcc_grenades_active() && mcc_grenades_total(unit_index)) no_grenades = FALSE;
 										firing_active = no_grenades &&
 											!unit->unit.grenade_throw_state &&
 											TEST_FLAG(unit->unit.control_flags, _unit_control_throw_grenade_bit);
@@ -1234,7 +1263,7 @@ static void crosshairs_draw(
 										item->sequence_index;
 									/* port: the bitmap (the sprite's, or the item's own) must be
 									one the group has, or the item isn't drawn */
-									struct bitmap_data *bitmap = bitmap_index >= 0 && bitmap_index < bitmap_group->bitmaps.count ?
+									struct bitmap_data const *bitmap = bitmap_index >= 0 && bitmap_index < bitmap_group->bitmaps.count ? /* port: replacement is read-only */
 										TAG_BLOCK_GET_ELEMENT(
 											&bitmap_group->bitmaps,
 											bitmap_index,
@@ -1249,6 +1278,8 @@ static void crosshairs_draw(
 									}
 									if (bitmap && _texture_cache_bitmap_get_hardware_format(bitmap, FALSE, TRUE))
 									{
+										/* port: replace only supplied CE scope sprites, preserving its original 8x. */
+										bitmap = hud_hires_crosshair_bitmap(bitmap, item->sequence_index, frame_index);
 										if (TEST_FLAG(item->flags, _hud_crosshair_hide_outside_area_bit))
 										{
 											real texel_scale_u = 1.0f;
@@ -1297,10 +1328,17 @@ static void crosshairs_draw(
 										}
 										else
 										{
+											/* port: CE warnings retain HUD coordinates, independent
+											of the aiming reticle's FOV and passenger projection. */
+											struct hud_placement_definition placement = item->placement;
+											custom_edition_hud_warning_placement(state_index,
+												(short)(render.camera.window_bounds.x1 - render.camera.window_bounds.x0),
+												(short)(render.camera.window_bounds.y1 - render.camera.window_bounds.y0),
+												&placement);
 											hud_draw_bitmap(
 												bitmap,
 												&absolute_placement,
-												&item->placement,
+												&placement,
 												sequence ?
 													&TAG_BLOCK_GET_ELEMENT(&sequence->sprites, frame_index, struct bitmap_group_sprite)->bounds :
 													NULL,
@@ -1312,7 +1350,8 @@ static void crosshairs_draw(
 												/* port: a reticle, scaled with display.fov
 												(view_fov.c); a scope's picture keeps its
 												place */
-												state_index != _crosshair_state_zoom);
+												state_index != _crosshair_state_zoom &&
+												!custom_edition_hud_warning(state_index));
 										}
 									}
 								}
@@ -1324,6 +1363,8 @@ static void crosshairs_draw(
 		}
 	}
 
+	/* port: other HUD elements keep their ordinary anchors */
+	passenger_camera_reticle_end();
 	match_assert_stack_frame("c:\\halo\\SOURCE\\interface\\hud_weapon.c", 0x4E2);
 	return;
 }
@@ -1466,33 +1507,43 @@ static void render_weapon_hud(
 			local_player_count() > 1);
 		state_flags[3] = flags;
 
-		flags = state_flags[4];
-		SET_FLAG(
-			flags,
-			_hud_draw_flashing_bit,
-			weapon_state->magazines[1].rounds_remaining <= cutoffs->total_ammo);
-		SET_FLAG(
-			flags,
-			_hud_draw_disabled_bit,
-			weapon_state->magazines[1].rounds_remaining == 0);
-		SET_FLAG(
-			flags,
-			_hud_draw_in_multiplayer_bit,
-			local_player_count() > 1);
-		state_flags[4] = flags;
+		/* port: a weapon of one magazine has no secondary ammunition, so
+		nothing of it flashes or shows empty (the overlays below likewise) */
+		if (weapon_state->magazine_count > 1)
+		{
+			flags = state_flags[4];
+			SET_FLAG(
+				flags,
+				_hud_draw_flashing_bit,
+				weapon_state->magazines[1].rounds_remaining <= cutoffs->total_ammo);
+			SET_FLAG(
+				flags,
+				_hud_draw_disabled_bit,
+				weapon_state->magazines[1].rounds_remaining == 0);
+			SET_FLAG(
+				flags,
+				_hud_draw_in_multiplayer_bit,
+				local_player_count() > 1);
+			state_flags[4] = flags;
 
-		flags = state_flags[5];
-		SET_FLAG(
-			flags,
-			_hud_draw_flashing_bit,
-			weapon_state->magazines[1].rounds_loaded <= cutoffs->loaded_ammo &&
-				!weapon_state->magazines[1].reloading);
-		SET_FLAG(flags, _hud_draw_disabled_bit, FALSE);
-		SET_FLAG(
-			flags,
-			_hud_draw_in_multiplayer_bit,
-			local_player_count() > 1);
-		state_flags[5] = flags;
+			flags = state_flags[5];
+			SET_FLAG(
+				flags,
+				_hud_draw_flashing_bit,
+				weapon_state->magazines[1].rounds_loaded <= cutoffs->loaded_ammo &&
+					!weapon_state->magazines[1].reloading);
+			SET_FLAG(flags, _hud_draw_disabled_bit, FALSE);
+			SET_FLAG(
+				flags,
+				_hud_draw_in_multiplayer_bit,
+				local_player_count() > 1);
+			state_flags[5] = flags;
+		}
+		else
+		{
+			state_flags[4] = local_player_count() > 1 ? FLAG(_hud_draw_in_multiplayer_bit) : 0;
+			state_flags[5] = state_flags[4];
+		}
 
 		for (state_index = 0;
 			state_index < NUMBER_OF_WEAPON_HUD_FLASH_REFERENCES;
@@ -1643,8 +1694,7 @@ static void render_weapon_hud(
 		SET_FLAG(flags, _weapon_overlay_on_always_bit, TRUE);
 		overlay_flags[5] = flags;
 		/* port: a weapon without a second magazine draws none of its overlays,
-		as the Xbox never set these; its states above read an empty one, whose
-		total ammunition is drawn disabled */
+		as the Xbox never set these (its states above none either) */
 		if (weapon_state->magazine_count < 2)
 			overlay_flags[4] = overlay_flags[5] = 0;
 
@@ -1723,6 +1773,10 @@ static void render_weapon_hud(
 			&definition->statics,
 			element_index,
 			struct weapon_hud_static_element);
+		/* port: MCC child anchors; other formats retain their parent pointer. */
+		struct hud_absolute_placement_definition mcc_placement;
+		struct hud_absolute_placement_definition const *placement = mcc_hud_child_placement(
+			&definition->absolute_placement, element, &mcc_placement);
 
 		if (!TEST_FLAG(element->header.runtime_flags, _hud_element_runtime_invalid_bit) &&
 			TEST_FLAG(map_type_flags, element->header.use_on_map_type) &&
@@ -1737,7 +1791,7 @@ static void render_weapon_hud(
 			state_index = element->header.state_type;
 			hud_draw_static_element(
 				local_player_index,
-				&definition->absolute_placement,
+				placement, /* port: honor the resolved MCC child anchor */
 				&element->static_element,
 				state_flags[state_index],
 				hud_state->last_weapon_flash_time[state_index]);
@@ -1754,6 +1808,10 @@ static void render_weapon_hud(
 			&definition->meters,
 			element_index,
 			struct weapon_hud_meter_element);
+		/* port: MCC child anchors; other formats retain their parent pointer. */
+		struct hud_absolute_placement_definition mcc_placement;
+		struct hud_absolute_placement_definition const *placement = mcc_hud_child_placement(
+			&definition->absolute_placement, element, &mcc_placement);
 
 		if (!TEST_FLAG(element->header.runtime_flags, _hud_element_runtime_invalid_bit) &&
 			TEST_FLAG(map_type_flags, element->header.use_on_map_type) &&
@@ -1770,7 +1828,7 @@ static void render_weapon_hud(
 			value = (byte)number_values[state_index];
 			hud_draw_meter(
 				local_player_index,
-				&definition->absolute_placement,
+				placement, /* port: honor the resolved MCC child anchor */
 				&element->meter_element,
 				value,
 				value,
@@ -1790,6 +1848,10 @@ static void render_weapon_hud(
 			&definition->numbers,
 			element_index,
 			struct weapon_hud_number_element);
+		/* port: MCC child anchors; other formats retain their parent pointer. */
+		struct hud_absolute_placement_definition mcc_placement;
+		struct hud_absolute_placement_definition const *placement = mcc_hud_child_placement(
+			&definition->absolute_placement, element, &mcc_placement);
 
 		if (!TEST_FLAG(element->header.runtime_flags, _hud_element_runtime_invalid_bit) &&
 			TEST_FLAG(map_type_flags, element->header.use_on_map_type) &&
@@ -1848,7 +1910,7 @@ static void render_weapon_hud(
 				hud_zoomed_layout_begin(&window_bounds);
 			hud_draw_numbers(
 				local_player_index,
-				&definition->absolute_placement,
+				placement, /* port: honor the resolved MCC child anchor */
 				&element->number_element,
 				value,
 				decimal_value,
@@ -1868,6 +1930,10 @@ static void render_weapon_hud(
 			&definition->overlays,
 			element_index,
 			struct weapon_hud_overlays_element);
+		/* port: MCC child anchors; other formats retain their parent pointer. */
+		struct hud_absolute_placement_definition mcc_placement;
+		struct hud_absolute_placement_definition const *placement = mcc_hud_child_placement(
+			&definition->absolute_placement, element, &mcc_placement);
 
 		if (!TEST_FLAG(element->runtime_flags, _hud_element_runtime_invalid_bit) &&
 			TEST_FLAG(map_type_flags, element->use_on_map_type) &&
@@ -1876,7 +1942,7 @@ static void render_weapon_hud(
 			state_index = element->state_type;
 			hud_draw_weapon_overlays(
 				local_player_index,
-				&definition->absolute_placement,
+				placement, /* port: honor the resolved MCC child anchor */
 				&element->overlays,
 				overlay_flags[state_index],
 				hud_state->last_weapon_flash_time[state_index],
@@ -2064,6 +2130,8 @@ void hud_render_weapon_interface(
 				weapon_index,
 				hud_index,
 				&weapon_state);
+			/* port: keep MCC child and inherited HUD components in one safe frame. */
+			mcc_hud_weapon_frame_begin(hud_index);
 			render_weapon_hud(
 				hud_index,
 				player->local_player_index,
@@ -2072,6 +2140,7 @@ void hud_render_weapon_interface(
 				NULL,
 				NULL,
 				NULL);
+			mcc_hud_weapon_frame_end(); /* port: do not affect later HUD draws. */
 			play_weapon_hud_sounds(
 				player->local_player_index,
 				hud_index,

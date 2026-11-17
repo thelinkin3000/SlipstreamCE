@@ -63,6 +63,9 @@ boolean cache_file_header_verify(
 	boolean fatal);
 boolean cache_files_give_time_to_precache(
 	char const *map_name);
+/* port: the name the map loaded was loaded by (cache_files.c) */
+char const *cache_file_loaded_map_name(
+	void);
 char const *cache_files_build_region(
 	char const *build);
 char const *cache_files_multiplayer_region(
@@ -154,6 +157,10 @@ boolean cache_files_precache_is_copying_map(
 	char const *map_name);
 boolean cache_files_precache_map_loaded(
 	char const *map_name);
+/* port: every map the cache files hold forgotten, to be copied again from
+its file (the maps changed under their names: cache_files_windows.c) */
+void cache_files_forget_cached_maps(
+	void);
 
 short cache_files_precache_map_status(
 	real *progress);

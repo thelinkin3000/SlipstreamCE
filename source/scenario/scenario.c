@@ -167,6 +167,7 @@ symbols in this file:
 #include "ai/ai.h"
 #include "bink/bink_playback.h"
 #include "cache/cache_files.h"
+#include "mcc_cache.h" /* port: port/linux/game/mcc_cache.h */
 #include "cseries/errors.h"
 #include "effects/contrails.h"
 #include "effects/decals.h"
@@ -194,6 +195,7 @@ symbols in this file:
 #include "sound/sound_manager.h"
 #include "structures/structure_bsp_definitions.h"
 #include "units/units.h"
+#include "structure_culling.h" /* port: port/linux/game/structure_culling.c */
 
 /* ---------- constants */
 
@@ -366,6 +368,8 @@ void scenario_unload(
 		0xA4,
 		!bink_playback_active());
 
+	/* port: release pointers into the bsp before its tags go away */
+	structure_culling_dispose();
 	scenario_tags_unload();
 	global_scenario_index = NONE;
 	global_structure_bsp_index = NONE;
@@ -1111,6 +1115,18 @@ boolean scenario_switch_structure_bsp(
 		checked. (A map's first bsp refused refuses the map: scenario_load) */
 		if (!loaded)
 		{
+			/* port: an MCC map's first bsp that is refused goes back to
+			scenario_load, and the menus, without the error's modal loop */
+			if (mcc_cache_tags_loaded() && old_structure_bsp_index == NONE)
+			{
+				error(_error_silent, "mcc: failed to load initial structure bsp #%d", structure_bsp_index);
+				global_structure_bsp = NULL;
+				global_collision_bsp = NULL;
+				global_bsp3d = NULL;
+				collision_log_enable(TRUE);
+				main_start_time();
+				return FALSE;
+			}
 			error(_error_immediate, "failed to load structure bsp #%d", structure_bsp_index);
 			global_structure_bsp = NULL;
 			global_collision_bsp = NULL;
@@ -1147,6 +1163,8 @@ boolean scenario_switch_structure_bsp(
 				struct collision_bsp);
 			scenario_globals->structure_bsp_index = structure_bsp_index;
 			global_structure_bsp_index = structure_bsp_index;
+			/* port: cache buckets while the newly current bsp's tags are loaded */
+			structure_culling_structure_bsp_loaded();
 
 			if (had_old_structure_bsp)
 			{
@@ -1249,6 +1267,11 @@ missing_tag_loop:
 		if (missing_tag)
 			goto missing_tag_loop;
 	}
+
+	/* port: an MCC map whose first bsp was refused is never loaded: its tags
+	are let go here, for the menus or the next map */
+	if (!result && mcc_cache_tags_loaded())
+		scenario_unload();
 
 	return result;
 }

@@ -42,6 +42,13 @@ enum
 	DK_COMMAND_VISIBILITY_BEGIN,
 	DK_COMMAND_VISIBILITY_END,
 	DK_COMMAND_MARKER,
+	DK_COMMAND_HUD_PREPARE,
+	DK_COMMAND_HUD_IMAGE,
+	DK_COMMAND_HUD_FORGET,
+	DK_COMMAND_BLIT,
+	DK_COMMAND_STATIC_MAKE,
+	DK_COMMAND_STATIC_FREE,
+	DK_COMMAND_PLASMA_OCCLUSION,
 };
 
 /* a surface's kind, as the host makes its image */
@@ -102,6 +109,19 @@ struct dk_command_clear
 	uint32_t stencil;
 	uint32_t rectangle_count;
 	uint32_t rectangles[][4];
+};
+
+/* copies a rectangle of one color target into a rectangle of another,
+scaled with a linear filter: the loading screen's front buffer, the frame
+before, which it blurs into its light's trails (d3d8_dk.c, front_buffer_take).
+Rectangles are x, y, width, height in each one's pixels. */
+struct dk_command_blit
+{
+	struct dk_command_header header;
+	struct dk_surface source;
+	struct dk_surface destination;
+	uint32_t from[4];
+	uint32_t to[4];
 };
 
 /* shows the back buffer, letterboxed to the display. A screenshot is asked
@@ -277,7 +297,11 @@ level of a compressed format is its 4x4 blocks, of BGRA its texels, depth
 slices after one another - the next face face_bytes on from the last. The
 host reads source_bytes from source when it runs the command. With
 source_bytes 0 the image is only made (its texels undefined), for
-DK_COMMAND_TEXTURE_ROWS to fill. */
+DK_COMMAND_TEXTURE_ROWS to fill. swizzle is where each channel the shaders
+sample (red, green, blue, alpha, a byte each from the lowest) is taken from
+in the image (0 to 3, the same four), or 0 for each from its own: Halo PC's
+multipurpose maps and HUD meters in a mod (xbox_textures_dk.c). A texture
+whose swizzle changes is made again. */
 struct dk_command_texture
 {
 	struct dk_command_header header;
@@ -291,6 +315,53 @@ struct dk_command_texture
 	uint32_t source;
 	uint32_t face_bytes;
 	uint32_t source_bytes;
+	uint32_t swizzle;
+};
+
+/* The high-res HUD's PNGs (port/linux/src/hud_hires.c's embedded ones, in
+the guest image) are decoded by the host, on a thread of its own, with
+their mip levels, into the host's memory: made on the game thread, at the
+first frame to draw it, a 2048 by 2048 sheet held that frame 135 to 180 ms,
+and the guest's heap has no room to hold a map's sheets ahead. */
+
+/* a map's sheets, to decode now, in this order (what was decoded and not
+drawn for the map before is let go first: DK_COMMAND_HUD_FORGET) */
+struct dk_hud_sheet
+{
+	uint32_t asset;
+	/* guest addresses: the PNG, and the bitmap's tag name (for the log) */
+	uint32_t png;
+	uint32_t png_size;
+	uint32_t tag;
+};
+
+struct dk_command_hud_prepare
+{
+	struct dk_command_header header;
+	uint32_t count;
+	struct dk_hud_sheet sheets[];
+};
+
+/* image id made from the sheet's decoded levels, which the host lets go:
+sent once host_dk_hud_ready says they are */
+struct dk_command_hud_image
+{
+	struct dk_command_header header;
+	uint32_t id;
+	/* (the sheet again, should the host have let it go since: decoded then) */
+	struct dk_hud_sheet sheet;
+};
+
+/* the host's (host_imports.list): 1 the sheet decoded, and an image of it
+may be asked for; 0 not yet (queued if it was not); -1 never. png and tag
+are the sheet's, as struct dk_hud_sheet's */
+int host_dk_hud_ready(unsigned int asset, unsigned int png, unsigned int png_size, unsigned int tag);
+
+/* the sheets decoded and not drawn let go, those still to decode dropped
+(the map is unloaded) */
+struct dk_command_hud_forget
+{
+	struct dk_command_header header;
 };
 
 /* writes rows [top, top + rows) of one level of 2D BGRA image id (made by
@@ -381,9 +452,10 @@ struct dk_command_composite
 
 The pixels the draws between a begin and an end pass go to result slot
 index (1 to DK_VISIBILITY_SLOTS - 1), which the GPU writes when it gets
-there; host_dk_visibility reads a slot's latest count. */
+there; host_dk_visibility reads a slot's latest count. Slot 0 is none, and
+the game's 4096 slots (d3d8_gl.c's VISIBILITY_TEST_SLOTS) are 1 to 4096. */
 
-#define DK_VISIBILITY_SLOTS 4096
+#define DK_VISIBILITY_SLOTS 4097
 
 struct dk_command_visibility_end
 {
@@ -407,6 +479,16 @@ struct dk_command_textures
 {
 	struct dk_command_header header;
 	struct dk_stage_texture stages[4];
+};
+
+/* the images the dynamic lighting's model variants with occlusion read in the
+vertex stage (DK_BINDING_PLASMA_TEXTURE0), until they change: sent only for
+such a draw, so that nothing else's stream or binding changes */
+struct dk_command_plasma_occlusion
+{
+	struct dk_command_header header;
+	uint32_t images[2];
+	struct dk_sampler sampler;
 };
 
 /* how an input register of the vertex shader is fed */
@@ -487,6 +569,18 @@ were - so indices the game may write again are read when the draw is made,
 not when the host or the GPU get to it */
 #define DK_INDEX_INLINE 1u
 
+/* geometry written once and kept outside the window (a model past the mods'
+budget, an index buffer of the game's own): the host copies [address, address +
+size) into GPU memory of its own, before the first draw that reads it, and draws
+reading there read the copy, until the free. In the stream, so a freed address
+made again means the new bytes for the draws after it */
+struct dk_command_static
+{
+	struct dk_command_header header;
+	uint32_t address;
+	uint32_t size;
+};
+
 struct dk_command_draw
 {
 	struct dk_command_header header;
@@ -504,5 +598,26 @@ struct dk_command_draw
 	uint32_t stream_count;
 	uint32_t streams[][2];
 };
+
+/* mod textures' bytes kept in the host's memory, outside the Xbox window
+(port/switch/host/host_texture_cache.c; port/linux/game/mod_bitmaps.c
+declares them too): by a key, 1 and the bytes copied if kept */
+int host_texture_cache_get(uint64_t key, uint32_t buffer, uint32_t size);
+void host_texture_cache_put(uint64_t key, uint32_t buffer, uint32_t size);
+void host_texture_cache_clear(void);
+/* a texture to read into the cache before the game asks for it (host_texture_cache_prefetch): its key, and where its
+bytes are in a file (path, a guest address of the path's string) */
+struct host_texture_prefetch
+{
+	uint64_t key;
+	uint32_t offset;
+	uint32_t size;
+	uint32_t path;
+	uint32_t reserved;
+};
+/* reads the count textures of items (a guest address) into the cache on a thread of the host's, the map's mod
+bitmaps, so that the game's texture cache finds them there rather than reading the card in the middle of a frame;
+returns at once (the list is copied). host_texture_cache_clear stops it */
+void host_texture_cache_prefetch(uint32_t items, uint32_t count);
 
 #endif

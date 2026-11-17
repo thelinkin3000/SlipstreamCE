@@ -22,9 +22,14 @@ other UAM versions' - are removed, and nothing else is touched. The
 generators' version is in the guest's hash, so a generator change makes new
 names, not a new folder; a stale file is just never asked for.
 
-One compile thread (step 1 measured more to be slower), which moves itself
-off the game thread's core (host_thread.c's place_thread) and never touches
-deko3d: it takes the queue's most urgent entry, compiles it with
+Two compile threads (DKSH_COMPILE_THREADS), each moving itself off the game
+thread's core onto a helper core of its own (host_thread.c's place_thread),
+and never touching deko3d. Step 1 measured two threads slower than one; step
+4 found why - newlib's malloc, one lock for the whole process, which Mesa
+takes some 57,000 times a shader - and UAM's allocations are now
+host_uam_alloc.c's, each thread's own: the corpus of 744 shaders compiled in
+24.5 s on one thread before, 16.3 s on one thread after, and 8.8 s on two.
+Each takes the queue's most urgent entry, compiles it with
 host_dk_compile_glsl into memory, and adds its hash to the set; a load takes
 it from memory until the writer has put it on the card. Loading is
 the game thread's (the only thread that touches deko3d), about 2 ms a
@@ -57,12 +62,12 @@ command stream) is an index into the table of loaded shaders, plus one.
 #define HOST_DK_UAM_COMMIT "unknown"
 #endif
 
-/* (16384 shaders of the 0.85 KB they average, with room: the preload loads
-every shader on the card, and a card that has met many maps had more than
-the 4096 the table held, 16 MB of code memory with them) */
+/* (32768 shaders of the 0.85 KB they average, with room: a card that has met many maps had more than the 4096 the
+table held, 16 MB of code memory with them, and the shared keys of every map are 17939 shaders, 9.6 MB: at 16384 the
+table filled with them and the menus' own could not be loaded, their draws left out) */
 #define DKSH_CODE_SIZE (32 * 1024 * 1024)
 #define DKSH_CODE_FLAGS (DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached | DkMemBlockFlags_Code)
-#define DKSH_TABLE_LIMIT 16384
+#define DKSH_TABLE_LIMIT 32768
 #define DKSH_SET_SLOTS 65536 /* a power of two, for the mask */
 /* the most the set holds: seven eighths of its slots, so linear probing
 always finds an empty slot (a full set would probe for ever) */
@@ -83,6 +88,9 @@ than a quarter of it. */
 /* the compile thread's stack: Mesa's compiler recurses, and 2 MB is what
 the probe's workers ran with (phase 5, step 1) */
 #define DKSH_THREAD_STACK (2 * 1024 * 1024)
+/* the compile threads: one for each helper core (the console gives a title
+three, and the game thread keeps one to itself) */
+#define DKSH_COMPILE_THREADS 2
 
 /* the DKSH file's header, as the probe's shader_load reads it */
 struct dksh_header
@@ -196,6 +204,8 @@ static struct
 	/* the pack was pruned at start (pack_prune): what it held, what is left */
 	int pack_pruned;
 	unsigned long pruned_from, pruned_to;
+	/* how long the pruning took, in milliseconds */
+	unsigned long pruned_ms;
 	/* shaders marked live (asked for) in this run, and how many the live
 	list on the card has */
 	uint32_t live_count, live_written;
@@ -212,16 +222,20 @@ static struct
 	(minimum priority), first queued among equals */
 	struct dksh_request *queue;
 	uint32_t queue_count, queue_capacity;
-	pthread_t compile_thread;
+	int compile_threads;
 
-	/* the shader the compile thread has taken off the queue and not yet
+	/* the shader each compile thread has taken off the queue and not yet
 	finished: neither queued nor on the card, it is still being made, and a
 	find says so rather than "unknown" (which would have it queued again) */
-	int compiling;
-	uint64_t compiling_hash;
-	uint32_t compiling_stage;
+	struct
+	{
+		int active;
+		uint64_t hash;
+		uint32_t stage;
+		uint32_t priority;
+	} compiling[DKSH_COMPILE_THREADS];
 
-	/* the compile thread's progress, for the log */
+	/* the compile threads' progress, for the log */
 	unsigned long compiled, failed;
 	unsigned long logged;
 
@@ -292,6 +306,31 @@ static uint32_t set_slot(uint64_t hash)
 			break;
 	}
 	return slot;
+}
+
+/* whether a compile thread is making this shader now (under the lock) */
+static int compiling_has(uint64_t hash, uint32_t stage)
+{
+	int index;
+
+	for (index = 0; index < DKSH_COMPILE_THREADS; index++)
+	{
+		if (dksh.compiling[index].active && dksh.compiling[index].hash == hash && dksh.compiling[index].stage == stage)
+			return 1;
+	}
+	return 0;
+}
+
+/* how many shaders the compile threads are making now, of priority
+`priority` or more urgent (UINT32_MAX: all of them); under the lock */
+static uint32_t compiling_count(uint32_t priority)
+{
+	uint32_t count = 0;
+	int index;
+
+	for (index = 0; index < DKSH_COMPILE_THREADS; index++)
+		count += dksh.compiling[index].active && dksh.compiling[index].priority <= priority ? 1 : 0;
+	return count;
 }
 
 static struct dksh_slot *set_find(uint64_t hash)
@@ -381,14 +420,14 @@ static uint64_t live_key(uint64_t hash, uint32_t stage)
 the last run's live list does not have, if they are enough to be worth it;
 TRUE if it was, with dksh.pack the new one and *length its length. The
 card's lock is held; nothing else has the pack yet. */
-static int pack_prune(long *length)
+static int pack_prune(long *length, const unsigned char *whole)
 {
 	char path[1024], live[1024], temporary[1040];
 	FILE *list, *pruned;
 	uint32_t list_header[2];
 	uint64_t *keys = NULL;
 	unsigned long key_count = 0, records = 0, kept = 0;
-	uint32_t offset;
+	uint32_t offset, kept_bytes = 0;
 	int ok = 1;
 
 	live_path(live, sizeof(live));
@@ -409,15 +448,19 @@ static int pack_prune(long *length)
 		return 0;
 	}
 	qsort(keys, key_count, sizeof(*keys), hash_compare);
-	/* counted first: what would be kept */
+	/* counted first: what would be kept (from the pack read whole if it could be, pack_read_whole: a seek and a
+	read for each record were 17952 small reads of the card, 2.4 s at the start) */
 	offset = sizeof(struct dksh_pack_header);
 	for (;;)
 	{
 		struct dksh_pack_record record;
 		uint64_t key;
 
-		if ((long)offset + (long)sizeof(record) > *length || fseek(dksh.pack, offset, SEEK_SET) != 0 ||
-			fread(&record, sizeof(record), 1, dksh.pack) != 1 || record.magic != DKSH_RECORD_MAGIC ||
+		if (whole && (long)offset + (long)sizeof(record) <= *length)
+			memcpy(&record, whole + offset, sizeof(record));
+		if ((long)offset + (long)sizeof(record) > *length ||
+			(!whole && (fseek(dksh.pack, offset, SEEK_SET) != 0 || fread(&record, sizeof(record), 1, dksh.pack) != 1)) ||
+			record.magic != DKSH_RECORD_MAGIC ||
 			record.stage > 1 || !record.size || record.size > DKSH_RECORD_LIMIT ||
 			(long)offset + (long)sizeof(record) + (long)record.size > *length)
 		{
@@ -426,7 +469,10 @@ static int pack_prune(long *length)
 		records++;
 		key = live_key(record.hash, record.stage);
 		if (bsearch(&key, keys, key_count, sizeof(*keys), hash_compare))
+		{
 			kept++;
+			kept_bytes += (uint32_t)sizeof(record) + record.size;
+		}
 		offset += (uint32_t)sizeof(record) + record.size;
 	}
 	if (records - kept <= DKSH_PRUNE_LEAST || (records - kept) * 4 <= records)
@@ -443,6 +489,44 @@ static int pack_prune(long *length)
 		free(keys);
 		return 0;
 	}
+	/* From the pack read whole, the new one is made in memory and written at once: copying it a record at a time,
+	a seek and two reads of the card for each, made pruning a pack of 19528 take 30 s (the first loading screen
+	gave up waiting for it) */
+	{
+		struct dksh_pack_header header = { DKSH_PACK_MAGIC, DKSH_PACK_VERSION };
+		unsigned char *made = whole ? malloc(sizeof(header) + kept_bytes) : NULL;
+
+		if (made)
+		{
+			uint32_t written = sizeof(header);
+
+			memcpy(made, &header, sizeof(header));
+			offset = sizeof(header);
+			while ((long)offset + (long)sizeof(struct dksh_pack_record) <= *length)
+			{
+				struct dksh_pack_record record;
+				uint64_t key;
+
+				memcpy(&record, whole + offset, sizeof(record));
+				if (record.magic != DKSH_RECORD_MAGIC || record.stage > 1 || !record.size ||
+					record.size > DKSH_RECORD_LIMIT || (long)offset + (long)sizeof(record) + (long)record.size > *length)
+				{
+					break;
+				}
+				key = live_key(record.hash, record.stage);
+				if (bsearch(&key, keys, key_count, sizeof(*keys), hash_compare) &&
+					written + sizeof(record) + record.size <= sizeof(header) + kept_bytes)
+				{
+					memcpy(made + written, whole + offset, sizeof(record) + record.size);
+					written += (uint32_t)sizeof(record) + record.size;
+				}
+				offset += (uint32_t)sizeof(record) + record.size;
+			}
+			ok = fwrite(made, 1, written, pruned) == written;
+			free(made);
+		}
+	}
+	if (!whole || ftell(pruned) == 0)
 	{
 		struct dksh_pack_header header = { DKSH_PACK_MAGIC, DKSH_PACK_VERSION };
 		unsigned char *data = malloc(DKSH_RECORD_LIMIT);
@@ -559,6 +643,19 @@ static void slot_live(struct dksh_slot *slot)
 	}
 }
 
+/* the pack read whole, in one read (malloc'd), or NULL if there is no memory for it */
+static unsigned char *pack_read_whole(long length)
+{
+	unsigned char *whole = length > 0 ? malloc((size_t)length) : NULL;
+
+	if (whole && (fseek(dksh.pack, 0, SEEK_SET) != 0 || fread(whole, 1, (size_t)length, dksh.pack) != (size_t)length))
+	{
+		free(whole);
+		whole = NULL;
+	}
+	return whole;
+}
+
 /* opens this compiler's pack (made if there is none, or if it is not one)
 and reads its records into the set; the card's lock is held */
 static void pack_open_locked(unsigned long *packed)
@@ -567,6 +664,8 @@ static void pack_open_locked(unsigned long *packed)
 	struct dksh_pack_header header;
 	long length;
 	uint32_t offset;
+	unsigned char *whole;
+	u64 started_ns;
 
 	pack_path(path, sizeof(path));
 	dksh.pack = fopen(path, "r+b");
@@ -592,13 +691,53 @@ static void pack_open_locked(unsigned long *packed)
 	}
 	fseek(dksh.pack, 0, SEEK_END);
 	length = ftell(dksh.pack);
+	whole = pack_read_whole(length);
 	/* (the shaders the last run did not ask for left out: pack_prune) */
-	if (pack_prune(&length))
+	started_ns = armTicksToNs(armGetSystemTick());
+	if (pack_prune(&length, whole))
+	{
 		dksh.pack_pruned = 1;
+		dksh.pruned_ms = (unsigned long)((armTicksToNs(armGetSystemTick()) - started_ns) / 1000000);
+		free(whole);
+		whole = dksh.pack ? pack_read_whole(length) : NULL;
+	}
 	/* (a pruned pack that would not open again: as if there were none) */
 	if (!dksh.pack)
+	{
+		free(whole);
 		return;
+	}
 	offset = sizeof(header);
+	/* The records read from the pack read whole, at once: a seek and a read for each record's header cost the
+	card one small read each (a seek drops stdio's buffer), 17952 of them for 5 s at the start, the game thread
+	waiting and the map being unpacked meanwhile reading at 3 MB/s; the record-at-a-time loop below is for a
+	pack there is no memory to read whole */
+	if (whole)
+	{
+		for (;;)
+		{
+			struct dksh_pack_record record;
+			struct dksh_slot *slot;
+
+			if ((long)offset + (long)sizeof(record) > length)
+				break;
+			memcpy(&record, whole + offset, sizeof(record));
+			if (record.magic != DKSH_RECORD_MAGIC || record.stage > 1 || !record.size ||
+				record.size > DKSH_RECORD_LIMIT || (long)offset + (long)sizeof(record) + (long)record.size > length)
+				break;
+			slot = set_insert(record.hash, record.stage);
+			if (slot)
+			{
+				slot->pack_offset = offset + (uint32_t)sizeof(record);
+				slot->pack_size = record.size;
+				(*packed)++;
+			}
+			offset += (uint32_t)sizeof(record) + record.size;
+		}
+		free(whole);
+		dksh.pack_end = offset;
+		return;
+	}
 	for (;;)
 	{
 		struct dksh_pack_record record;
@@ -727,7 +866,8 @@ static void cache_scan(void)
 	host_logf(HOST_LOG_INFO, "dk shader: %lu shaders on the card in %s", listed, folder);
 	if (dksh.pack_pruned)
 		host_logf(HOST_LOG_INFO, "dk shader: the pack held %lu shaders, %lu of them asked for by the last run; the "
-			"rest (earlier versions of the generators) are left out", dksh.pruned_from, dksh.pruned_to);
+			"rest (earlier versions of the generators) are left out (%lu ms)", dksh.pruned_from, dksh.pruned_to,
+			dksh.pruned_ms);
 	if (dksh.said_set_full)
 		host_logf(HOST_LOG_ERROR, "dk shader: more than %u shaders on the card; the rest are not listed, and no more "
 			"are kept (delete %s to start the cache again)", (unsigned)DKSH_SET_FILL, folder);
@@ -772,11 +912,12 @@ static int pending_add_locked(uint64_t hash, uint32_t stage, void *data, size_t 
 
 /* ---------- the compile thread */
 
-static void *compile_thread(void *unused)
+static void *compile_thread(void *context)
 {
+	/* this thread's place in dksh.compiling */
+	int mine = (int)(intptr_t)context;
 	unsigned long since_logged = 0;
 
-	(void)unused;
 	/* off the game thread's core (host_thread.c), as libnx would otherwise
 	leave this on the core the process starts threads on */
 	host_thread_place_on_helper_core();
@@ -810,9 +951,10 @@ static void *compile_thread(void *unused)
 		}
 		request = dksh.queue[pick];
 		dksh.queue[pick] = dksh.queue[--dksh.queue_count];
-		dksh.compiling = 1;
-		dksh.compiling_hash = request.hash;
-		dksh.compiling_stage = request.stage;
+		dksh.compiling[mine].active = 1;
+		dksh.compiling[mine].hash = request.hash;
+		dksh.compiling[mine].stage = request.stage;
+		dksh.compiling[mine].priority = request.priority;
 		pthread_mutex_unlock(&dksh.lock);
 
 		/* compiled into memory: the card is the writer's, every
@@ -824,7 +966,7 @@ static void *compile_thread(void *unused)
 		free(request.glsl);
 
 		pthread_mutex_lock(&dksh.lock);
-		dksh.compiling = 0;
+		dksh.compiling[mine].active = 0;
 		if (ok && pending_add_locked(request.hash, request.stage, dksh_data, dksh_size, 0))
 		{
 			dksh_data = NULL;
@@ -1113,16 +1255,26 @@ static void service_start(void)
 	cache_scan();
 	pthread_attr_init(&attributes);
 	pthread_attr_setstacksize(&attributes, DKSH_THREAD_STACK);
-	if (pthread_create(&dksh.compile_thread, &attributes, compile_thread, NULL) != 0)
 	{
-		host_logf(HOST_LOG_ERROR, "dk shader: the compile thread could not be made; shaders are only loaded, never "
-			"compiled");
-		dksh.compile_thread = 0;
-	}
-	else
-	{
-		pthread_detach(dksh.compile_thread);
-		host_logf(HOST_LOG_INFO, "dk shader: one compile thread (UAM %s)", HOST_DK_UAM_COMMIT);
+		int index;
+
+		/* (one after the other, so that each is placed on the next helper
+		core: host_thread.c) */
+		for (index = 0; index < DKSH_COMPILE_THREADS; index++)
+		{
+			pthread_t thread;
+
+			if (pthread_create(&thread, &attributes, compile_thread, (void *)(intptr_t)index) != 0)
+				break;
+			pthread_detach(thread);
+			dksh.compile_threads++;
+		}
+		if (!dksh.compile_threads)
+			host_logf(HOST_LOG_ERROR, "dk shader: no compile thread could be made; shaders are only loaded, never "
+				"compiled");
+		else
+			host_logf(HOST_LOG_INFO, "dk shader: %d compile threads (UAM %s)", dksh.compile_threads,
+				HOST_DK_UAM_COMMIT);
 	}
 	{
 		pthread_t writer;
@@ -1514,7 +1666,7 @@ uint32_t host_dk_shader_find(uint32_t stage, uint64_t hash, uint32_t state_out)
 		/* not on the card: being compiled, or queued? */
 		uint32_t index;
 
-		if (dksh.compiling && dksh.compiling_hash == hash && dksh.compiling_stage == stage)
+		if (compiling_has(hash, stage))
 			state = 1;
 		for (index = 0; !state && index < dksh.queue_count; index++)
 		{
@@ -1570,7 +1722,7 @@ uint32_t host_dk_shader_known(uint32_t stage, uint64_t hash)
 		slot_live(slot);
 	if (slot && slot->stage == stage && !slot->broken)
 		known = slot->handle ? 3 : 2;
-	else if (dksh.compiling && dksh.compiling_hash == hash && dksh.compiling_stage == stage)
+	else if (compiling_has(hash, stage))
 		known = 1;
 	for (index = 0; !known && index < dksh.queue_count; index++)
 	{
@@ -1600,6 +1752,49 @@ void host_dk_shader_preload_done(void)
 	dksh.preload_done = 1;
 }
 
+uint32_t host_dk_shader_load_first(uint32_t stage, uint64_t hash)
+{
+	struct dksh_slot *slot;
+	uint32_t index, first = 0;
+
+	if (!dksh.started || !dksh.loader_started)
+		return 0;
+	pthread_mutex_lock(&dksh.lock);
+	slot = set_find(hash);
+	if (slot && slot->stage == stage && !slot->broken && !slot->handle && !slot->unloadable)
+	{
+		for (index = 0; index < dksh.load_count; index++)
+		{
+			if (dksh.load_queue[index].hash == hash && dksh.load_queue[index].stage == stage)
+				break;
+		}
+		if (index < dksh.load_count)
+		{
+			/* queued: to the front */
+			if (index)
+			{
+				memmove(&dksh.load_queue[1], &dksh.load_queue[0], index * sizeof(dksh.load_queue[0]));
+				dksh.load_queue[0].hash = hash;
+				dksh.load_queue[0].stage = stage;
+			}
+			first = 1;
+		}
+		else if (!slot->loading && dksh.load_count < DKSH_LOAD_QUEUE)
+		{
+			/* not queued (nor being read now): put at the front */
+			memmove(&dksh.load_queue[1], &dksh.load_queue[0], dksh.load_count * sizeof(dksh.load_queue[0]));
+			dksh.load_queue[0].hash = hash;
+			dksh.load_queue[0].stage = stage;
+			dksh.load_count++;
+			slot->loading = 1;
+			pthread_cond_signal(&dksh.load_condition);
+			first = 1;
+		}
+	}
+	pthread_mutex_unlock(&dksh.lock);
+	return first;
+}
+
 uint32_t host_dk_shader_loading(void)
 {
 	uint32_t loading;
@@ -1620,7 +1815,36 @@ uint32_t host_dk_shader_pending(void)
 	if (!dksh.started)
 		return 0;
 	pthread_mutex_lock(&dksh.lock);
-	pending = dksh.queue_count + (dksh.compiling ? 1 : 0);
+	pending = dksh.queue_count + compiling_count(UINT32_MAX);
+	pthread_mutex_unlock(&dksh.lock);
+	return pending;
+}
+
+void host_dk_shader_priority_lower(uint32_t from, uint32_t to)
+{
+	uint32_t index;
+
+	if (!dksh.started)
+		return;
+	pthread_mutex_lock(&dksh.lock);
+	for (index = 0; index < dksh.queue_count; index++)
+	{
+		if (dksh.queue[index].priority == from)
+			dksh.queue[index].priority = to;
+	}
+	pthread_mutex_unlock(&dksh.lock);
+}
+
+uint32_t host_dk_shader_pending_urgent(uint32_t priority)
+{
+	uint32_t pending, index;
+
+	if (!dksh.started)
+		return 0;
+	pthread_mutex_lock(&dksh.lock);
+	pending = compiling_count(priority);
+	for (index = 0; index < dksh.queue_count; index++)
+		pending += dksh.queue[index].priority <= priority ? 1 : 0;
 	pthread_mutex_unlock(&dksh.lock);
 	return pending;
 }
@@ -1637,8 +1861,7 @@ void host_dk_shader_compile(uint32_t stage, uint64_t hash, uint32_t glsl, uint32
 
 		/* already on the card (and its file good), or being compiled:
 		nothing to ask for */
-		if ((slot && !slot->broken) ||
-			(dksh.compiling && dksh.compiling_hash == hash && dksh.compiling_stage == stage))
+		if ((slot && !slot->broken) || compiling_has(hash, stage))
 		{
 			pthread_mutex_unlock(&dksh.lock);
 			return;

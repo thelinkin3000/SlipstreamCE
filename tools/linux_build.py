@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from .embed_assets import hud_assets_build, hud_configure_inputs
+from .embed_assets import hud_assets_build, hud_configure_inputs, server_ui_build
 from .ninja_syntax import Writer
 
 PORT_DIR = Path("port/linux")
@@ -145,15 +145,34 @@ def miniupnpc_sources() -> List[Path]:
     return sorted((MINIUPNPC_DIR / "src").glob("*.c"))
 
 
+def build_repository() -> str:
+    """the GitHub repository a build is made from, owner/name, which a client
+    tells the servers it joins (network_distributed.c): CI's
+    GITHUB_REPOSITORY, else the checkout's origin remote's (its credentials
+    left out: only the owner and the name are kept), else none"""
+    repository = os.environ.get("GITHUB_REPOSITORY", "")
+    if not repository:
+        try:
+            url = subprocess.run(["git", "remote", "get-url", "origin"], capture_output=True, text=True,
+                                 timeout=10, check=False).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            url = ""
+        found = re.search(r"github\.com[:/]+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?/*$", url)
+        repository = found.group(1) if found else ""
+    return repository if re.fullmatch(r"[A-Za-z0-9_.-]{1,39}/[A-Za-z0-9_.-]{1,100}", repository) else ""
+
+
 def updater_defines(release: bool) -> str:
     """the self-updater's build (port/linux/src/updater.c): its number, from
     HALO_BUILD_NUMBER (tools/ci_build.py gives it for a release tag's builds; none
-    elsewhere, which never look for updates), and its configuration"""
+    elsewhere, which never look for updates), its configuration, and the
+    repository it is made from (build_repository)"""
     number = os.environ.get("HALO_BUILD_NUMBER", "0")
     if not number.isdigit():
         number = "0"
     flavor = "release" if release else "debug"
-    return f'-DHALO_BUILD_NUMBER={number} -DHALO_BUILD_FLAVOR=\\"{flavor}\\"'
+    return (f'-DHALO_BUILD_NUMBER={number} -DHALO_BUILD_FLAVOR=\\"{flavor}\\" '
+            f'-DHALO_BUILD_REPOSITORY=\\"{build_repository()}\\"')
 
 def configuration_defines(sln: Any) -> List[str]:
     """what configure.py's options define for every unit of a native build:
@@ -274,6 +293,39 @@ SDL_OPTIONS = [
     "-DSDL_WAYLAND_LIBDECOR_SHARED=ON", "-DSDL_IBUS=OFF", "-DSDL_HIDAPI_LIBUSB=OFF", "-DSDL_JACK=OFF",
     "-DSDL_SNDIO=OFF", "-DSDL_LIBURING=OFF", "-DSDL_FRIBIDI=OFF", "-DSDL_LIBTHAI=OFF", "-DSDL_X11_XTEST=OFF",
 ]
+# (the linker's options for the executable that loads the SDL beside it:
+# DT_RPATH rather than DT_RUNPATH, as it comes before LD_LIBRARY_PATH, which
+# Steam sets for the games it starts, so that the SDL beside the executable
+# is the one loaded, whatever other SDL that path holds)
+SDL_RPATH_LDFLAGS = ["'-Wl,-rpath,$$ORIGIN'", "-Wl,--disable-new-dtags"]
+
+
+def sdl3_rule(n: Writer, sln: Any, *, name: str, description: str, source: Path, sdl_build: Path, log_dir: Path,
+              cc: str, cmake_args: Sequence[str] = (), check: str = "") -> None:
+    """The rule that builds SDL3 from source into sdl_build, as the builds
+    that bring their own libSDL3.so.0 do (the portable build, and the
+    desktop guest builds of tools/linux_guest_build.py): with SDL_OPTIONS
+    and the --compiler-launcher, CMake's cmake_args (a toolchain file, say),
+    its logs in log_dir, and then check, a command that stops the build if
+    SDL lacks what it needs."""
+    launcher = getattr(sln, "compiler_launcher", None)
+    options = SDL_OPTIONS + ([f"-DCMAKE_C_COMPILER_LAUNCHER={launcher}"] if launcher else [])
+    n.rule(
+        name=name,
+        # (SDL's build takes the system root's include folders from
+        # pkg-config, which splits a path at its spaces: a checkout in a folder
+        # with a space in its name is said, rather than failing deep in SDL)
+        command=(f"case \"$$PWD\" in *\" \"*) echo \"SDL3: the portable build cannot be made in a folder "
+                 f"whose path has a space ($$PWD): move the checkout\" >&2; exit 1;; esac && "
+                 f"cmake -S {source} -B {sdl_build} -G Ninja --fresh "
+                 + "".join(f"{argument} " for argument in cmake_args)
+                 + f"-DCMAKE_C_COMPILER={cc} {' '.join(options)} > {log_dir}/sdl3-configure.log && "
+                 f"ninja -C {sdl_build} > {log_dir}/sdl3-build.log"
+                 + (f" && {check}" if check else "")),
+        description=description,
+        pool="console",
+        restat=True,
+    )
 
 
 def portable_sdl(n: Writer, sln: Any, build_dir: Path, cc: str) -> Tuple[List[str], List[str], Path, Path, Path]:
@@ -296,27 +348,14 @@ def portable_sdl(n: Writer, sln: Any, build_dir: Path, cc: str) -> Tuple[List[st
     # (and SDL's license, which the release carries)
     sdl_license_source = sdl_source / "LICENSE.txt"
     n.build(outputs=stamp, rule="linux_sysroot", implicit=[SYSROOT_SCRIPT], implicit_outputs=[sdl_license_source])
-    launcher = getattr(sln, "compiler_launcher", None)
-    options = SDL_OPTIONS + ([f"-DCMAKE_C_COMPILER_LAUNCHER={launcher}"] if launcher else [])
-    n.rule(
-        name="linux_sdl3",
-        command=(f"cmake -S {sdl_source} -B {sdl_build} -G Ninja --fresh "
-                 f"-DCMAKE_TOOLCHAIN_FILE=$$PWD/{SYSROOT_TOOLCHAIN} -DHALO_SYSROOT=$$PWD/{sysroot} "
-                 f"-DCMAKE_C_COMPILER={cc} {' '.join(options)} > {build_dir}/sdl3-configure.log && "
-                 f"ninja -C {sdl_build} > {build_dir}/sdl3-build.log && "
-                 f"$python {SYSROOT_SCRIPT} --check-sdl "
-                 f"{sdl_build}/include-config-release/build_config/SDL_build_config.h"),
-        description="LINUX SDL3",
-        pool="console",
-        restat=True,
-    )
+    sdl3_rule(n, sln, name="linux_sdl3", description="LINUX SDL3", source=sdl_source, sdl_build=sdl_build,
+              log_dir=build_dir, cc=cc,
+              cmake_args=[f"\"-DCMAKE_TOOLCHAIN_FILE=$$PWD/{SYSROOT_TOOLCHAIN}\"", f"\"-DHALO_SYSROOT=$$PWD/{sysroot}\""],
+              check=(f"$python {SYSROOT_SCRIPT} --check-sdl "
+                     f"{sdl_build}/include-config-release/build_config/SDL_build_config.h"))
     n.build(outputs=libsdl, rule="linux_sdl3", implicit=[stamp, SYSROOT_TOOLCHAIN])
     cflags = [f"--sysroot={_quote(sysroot)}", f"-isystem {_quote(sdl_source / 'include')}"]
-    # (DT_RPATH rather than DT_RUNPATH: it comes before LD_LIBRARY_PATH,
-    # which Steam sets for the games it starts, so that the SDL beside the
-    # executable is the one loaded, whatever other SDL that path holds)
-    ldflags = [f"--sysroot={_quote(sysroot)}", f"-L{_quote(sdl_build)}", "'-Wl,-rpath,$$ORIGIN'",
-               "-Wl,--disable-new-dtags"]
+    ldflags = [f"--sysroot={_quote(sysroot)}", f"-L{_quote(sdl_build)}", *SDL_RPATH_LDFLAGS]
     sdl_license = build_dir / "SDL3-LICENSE.txt"
     n.build(outputs=sdl_license, rule="linux_copy", inputs=sdl_license_source)
     return cflags, ldflags, stamp, libsdl, sdl_license
@@ -494,6 +533,8 @@ def generate_linux_build(n: Writer, sln: Any) -> None:
 
     # the high-res HUD's textures (port/assets/hud; port/linux/src/hud_hires.c)
     embedded_assets = hud_assets_build(n, "linux", build_dir / "generated" / "hud_hires_assets.c")
+    # a dedicated server's admin page (port/assets/server_ui; port/linux/src/server_http.c)
+    embedded_assets += server_ui_build(n, "linux", build_dir / "generated" / "server_ui_assets.c")
 
     # the portable build's system root and SDL3, or the build machine's
     if getattr(sln, "port_portable", False):
@@ -579,7 +620,12 @@ def generate_linux_build(n: Writer, sln: Any) -> None:
             sdk_flags,
         ])
         posix_cflags = " ".join(POSIX_FLAGS + target + [f"-I{platform_dir}"])
-        mbedtls_include = f"-I{MBEDTLS_DIR / 'include'}"
+        # (with Mbed TLS's own locks, as built from its unchanged config by
+        # these defines: on Linux the self-updater's thread (posix_update.c)
+        # and internet play's (posix_dtls.c) both use it, and two threads
+        # setting up its PSA crypto or drawing on its random generator at
+        # once crashed it; the other builds use it on one thread)
+        mbedtls_include = f"-I{MBEDTLS_DIR / 'include'} -DMBEDTLS_THREADING_C -DMBEDTLS_THREADING_PTHREAD"
         for source in sorted(platform_dir.glob("*.c")):
             if source.name in ("posix_update.c", "posix_dtls.c"):
                 add_object(source, f"{posix_cflags} {mbedtls_include}", posix=True)
@@ -587,7 +633,7 @@ def generate_linux_build(n: Writer, sln: Any) -> None:
                 add_object(source, f"{posix_cflags} -I{MINIUPNPC_DIR / 'include'} -DMINIUPNP_STATICLIB", posix=True)
             elif source.name.startswith("posix_"):
                 add_object(source, posix_cflags, posix=True)
-            elif source.name == "updater.c":
+            elif source.name in ("updater.c", "server_mode.c"):
                 add_object(source, f"{platform_cflags} {updater_defines(getattr(sln, 'port_release', False))}")
             else:
                 add_object(source, platform_cflags)
@@ -702,6 +748,10 @@ def generate_linux_build(n: Writer, sln: Any) -> None:
     # internet play's MQTT brokers, a file beside the game (network.brokers_file)
     brokers = build_dir / "brokers.txt"
     n.build(outputs=brokers, rule="linux_copy", inputs=Path("port/assets/network/brokers.txt"))
+    # the master servers of dedicated servers, a file beside the game too
+    # (network.masters_file, server.masters_file)
+    masters = build_dir / "masters.txt"
+    n.build(outputs=masters, rule="linux_copy", inputs=Path("port/assets/network/masters.txt"))
     n.build(outputs="linux", rule="phony",
-            inputs=[output, brokers, validator, *sdl_outputs])
+            inputs=[output, brokers, masters, validator, *sdl_outputs])
     n.newline()

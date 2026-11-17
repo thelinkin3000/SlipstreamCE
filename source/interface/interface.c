@@ -85,10 +85,12 @@ symbols in this file:
 #include "game/players.h"
 #include "interface/first_person_weapons.h"
 #include "interface/hud.h"
+#include "mcc_hud_draw.h" /* port: port/linux/game/mcc_hud_draw.c */
 #include "interface/hud_definitions.h"
 #include "interface/interface.h"
 #include "interface/hud_messaging.h"
 #include "interface/terminal.h"
+#include "interface/virtual_keyboard.h"
 #include "interface/weapon_hud_interface_definition.h"
 #include "main/main.h"
 #include "math/real_math.h"
@@ -105,6 +107,11 @@ symbols in this file:
 #include "units/unit_definitions.h"
 #include "units/units.h"
 #include "map_share.h" /* port: port/linux/game/map_share.c */
+#include "latency_meter.h" /* port: port/linux/game/latency_meter.c */
+#include "network_replay.h" /* port: port/linux/game/network_replay_playback.c */
+#include "stats_log.h" /* port: port/linux/game/stats_log.c */
+#include "frame_rate_display.h" /* port: port/linux/game/frame_rate_display.c */
+#include "touch_cinematic.h" /* port: port/linux/game/touch_cinematic.c */
 
 /* ---------- constants */
 
@@ -286,6 +293,10 @@ void interface_dispose_from_old_map(
 	draw_string_dispose_from_old_map();
 	hud_dispose_from_old_map();
 	first_person_weapons_dispose_from_old_map();
+	/* port: and the virtual keyboard, whose keyboard tag was the old map's
+	(ui.map's: main_screen_shell_load sets it up again); a game map has none,
+	so it cannot open there (the PC menus' Settings, from the pause menu) */
+	virtual_keyboard_dispose();
 
 	return;
 }
@@ -380,13 +391,30 @@ void interface_draw_fullscreen_overlays(
 	void)
 {
 	cinematic_render();
+	/* port: the touchscreen's skip button, in the letterbox's bar
+	(port/linux/game/touch_cinematic.c) */
+	touch_cinematic_draw();
 	interface_splitscreen_render();
 	hud_render_timer();
 	/* port: a map's download (port/linux/game/map_share.c) */
 	map_share_render();
+	/* port: a network game's round trip to the host (display.latency_meter) */
+	latency_meter_draw();
+	/* port: a replay's playback: who is watched */
+	network_replay_playback_draw();
+	/* port: display.stats_log, a line a second in the log (stats_log.c) */
+	stats_log_tick();
+	/* port: the frame rate counter as display.show_fps says
+	(port/linux/game/frame_rate_display.c) */
+	frame_rate_display_update();
 	terminal_draw();
 	main_framerate_render();
 	render_debug_profile();
+	/* port: the host's screen, hosting from the menus, in place of the game
+	(port/linux/game/host_dashboard.c) */
+	host_dashboard_draw();
+	/* port: the overlay menu, over everything (port/linux/game/overlay_menu.c) */
+	overlay_menu_draw();
 
 	return;
 }
@@ -572,6 +600,11 @@ void interface_draw_screen(
 
 	if (render.local_player_index == NONE)
 		return;
+	/* port: a replay's playback's window is local player 0's, who has no
+	player: no HUD, nor the game type's view of a player (its line is drawn
+	over the screen, network_replay_playback_draw) */
+	if (network_replay_viewing())
+		return;
 
 	weapon_hud_index = interface_get_weapon_hud_index(&flashlight_power);
 	if (weapon_hud_index != NONE)
@@ -705,7 +738,9 @@ void interface_draw_screen(
 				}
 			}
 
+			mcc_hud_mask_begin(parameters.convolution_mask); /* port: MCC screen-effect bitmap units */
 			rasterizer_screen_effect(&parameters);
+			mcc_hud_mask_end(); /* port: release the current view's borrowed mask */
 		}
 		else
 		{

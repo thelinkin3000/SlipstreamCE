@@ -537,6 +537,8 @@ symbols in this file:
 /* ---------- headers */
 
 #include "cseries.h"
+#include "game_modes.h" /* port: port/linux/game/game_modes.c */
+#include "infection.h" /* port: port/linux/game/infection.c */
 #include "cseries_windows.h"
 #include "errors.h"
 #include "aim_assist.h"
@@ -571,6 +573,7 @@ symbols in this file:
 #include "network_coop.h" /* port: port/linux/game/network_coop.c */
 #include "network_votekick.h" /* port: port/linux/game/network_votekick.c */
 #include "network_voice.h" /* port: port/linux/game/network_voice.c */
+#include "network_chat.h" /* port: port/linux/game/network_chat.c */
 /* (network_server_manager_internal.h's: the host's game record) */
 struct network_game *network_game_server_get_game(struct network_game_server *server);
 #include "objects.h"
@@ -593,6 +596,14 @@ struct network_game *network_game_server_get_game(struct network_game_server *se
 #include "units/bipeds.h"
 #include "units/units.h"
 #include "custom_edition_cache.h" /* port: port/linux/game/custom_edition_cache.c */
+#include "mcc_cache.h" /* port: port/linux/game/mcc_cache.h */
+#include "mcc_objects.h" /* port: port/linux/game/mcc_objects.h */
+#include "mcc_player.h" /* port: port/linux/game/mcc_player.h */
+#include "mcc_ui_teams.h" /* port: port/linux/game/mcc_ui_teams.c */
+#include "server_team_switch.h" /* port: port/linux/game/server_team_switch.c */
+#include "latency_meter.h" /* port: port/linux/game/latency_meter.c */
+#include "network_replay.h" /* port: port/linux/game/network_replay_playback.c */
+#include "touch_postgame.h" /* port: port/linux/game/touch_postgame.c */
 
 /* network_game_globals.c's */
 boolean network_game_distributed_client(void);
@@ -1164,7 +1175,9 @@ static void game_engine_generate_title_string(
 	if (game_variant_options_get()->time_limit > 0 &&
 		game_engine_globals.postgame_state == game_engine_mode_active)
 	{
-		long left = game_variant_options_get()->time_limit * 60L * TICKS_PER_SECOND - game_time_get();
+		/* port: Infection's round's time starts after its countdown */
+		long left = infection_enabled() ? infection_remaining_ticks() :
+			game_variant_options_get()->time_limit * 60L * TICKS_PER_SECOND - game_time_get();
 		wchar_t time_string[32];
 
 		ticks_to_unicode_time_string(MAX(left, 0), NUMBEROF(time_string), time_string);
@@ -1867,12 +1880,14 @@ static boolean scoreboard_team_columns(
 /* a network game's scoreboard picks players with the mouse
 (halo_scoreboard_pointer_update: a right click frees it): a player's name
 picked opens a menu of what may be done to them, the players' vote to kick
-them (network_votekick.c), muting their voice (network_voice.c), and the
-host's Kick and Ban, Ban picked twice */
+them (network_votekick.c), muting their voice and text chat on this
+machine (network_voice.c, network_chat.c), and the host's Mute for everyone
+(network_chat.c), Kick and Ban, Ban picked twice */
 enum
 {
 	_scoreboard_item_vote,
 	_scoreboard_item_mute,
+	_scoreboard_item_host_mute,
 	_scoreboard_item_kick,
 	_scoreboard_item_ban,
 	_scoreboard_item_cancel,
@@ -1944,30 +1959,37 @@ static void scoreboard_menu_items(
 		labels[item][0] = 0;
 	}
 	offered[_scoreboard_item_vote] = TRUE;
-	if (network_votekick_get_status(&status) &&
+	if (network_votekick_get_status(&status) && status.kind == _network_vote_kick &&
 		status.player_index == DATUM_INDEX_TO_ABSOLUTE_INDEX(scoreboard_menu.player_index))
 	{
 		usprintf(labels[_scoreboard_item_vote], status.voted ? L"Voted to kick (%d of %d)" :
-			L"Vote to kick (%d of %d)", status.votes, status.needed);
+			status.voted_no ? L"Voted not to kick (%d of %d)" : L"Vote to kick (%d of %d)", status.votes,
+			status.needed);
 	}
 	else
 	{
 		usprintf(labels[_scoreboard_item_vote], L"Start a vote to kick");
 	}
-	/* (its machine's voice: this machine's own choice) */
+	/* (its machine's voice and text chat lines: this machine's own choice) */
 	{
 		struct player_datum *player = player_try_and_get(scoreboard_menu.player_index);
 
-		if (player && network_voice_available())
+		if (player)
 		{
 			offered[_scoreboard_item_mute] = TRUE;
 			usprintf(labels[_scoreboard_item_mute],
-				network_voice_machine_muted(player->network_player_data.machine_index) ? L"Unmute voice" :
-					L"Mute voice");
+				network_voice_machine_muted(player->network_player_data.machine_index) ? L"Unmute voice and chat" :
+					L"Mute voice and chat");
 		}
 	}
 	if (network_votekick_host())
 	{
+		/* (the host's mute of their voice and lines, for every machine:
+		network_chat.c) */
+		offered[_scoreboard_item_host_mute] = TRUE;
+		usprintf(labels[_scoreboard_item_host_mute],
+			network_chat_host_mute_minutes((short)DATUM_INDEX_TO_ABSOLUTE_INDEX(scoreboard_menu.player_index)) ?
+				L"Unmute for everyone" : L"Mute for everyone");
 		offered[_scoreboard_item_kick] = TRUE;
 		offered[_scoreboard_item_ban] = TRUE;
 		usprintf(labels[_scoreboard_item_kick], L"Kick");
@@ -2038,6 +2060,9 @@ static void scoreboard_menu_pick(
 		}
 		break;
 	}
+	case _scoreboard_item_host_mute:
+		network_chat_host_mute(player_index, !network_chat_host_mute_minutes(player_index));
+		break;
 	case _scoreboard_item_kick:
 		network_votekick_host_kick(player_index, FALSE);
 		break;
@@ -2446,6 +2471,8 @@ static void game_engine_rasterize_scoreboard(
 		struct player_datum *player;
 		wchar_t *status_string;
 		real_argb_color *row_color;
+		long ping = NONE;
+		boolean ping_colored;
 
 		if (row >= rows || position >= list_counts[list])
 			continue;
@@ -2468,7 +2495,9 @@ static void game_engine_rasterize_scoreboard(
 		ping_string[0] = 0;
 		if (network)
 		{
-			long ping = distributed_player_ping((short)DATUM_INDEX_TO_ABSOLUTE_INDEX(entry->player_index));
+			/* port: as this machine times it, with the latency meter on
+			(latency_meter.c); else the host's measure, as before */
+			ping = latency_meter_player_ping((short)DATUM_INDEX_TO_ABSOLUTE_INDEX(entry->player_index));
 
 			/* (three digits at most: its column's width) */
 			if (ping == NONE)
@@ -2478,6 +2507,9 @@ static void game_engine_rasterize_scoreboard(
 			else
 				usprintf(ping_string, L"%ld", ping);
 		}
+		/* port: with the latency meter on, a known ping is drawn on its own,
+		in the meter's colour for it (display.latency_meter) */
+		ping_colored = ping != NONE && latency_meter_shown();
 		usnprintf(
 			row_string,
 			NUMBEROF(row_string),
@@ -2485,7 +2517,7 @@ static void game_engine_rasterize_scoreboard(
 			campaign ? L"" : get_place_string(entry),
 			player->name,
 			status_string,
-			ping_string);
+			ping_colored ? L"" : ping_string);
 		row_string[NUMBEROF(row_string) - 1] = 0;
 		row_color = has_teams ? &team_colors[PIN(player->team_index, 0, 1)] : &color;
 		/* port: a player talking (or muted) in voice chat, its speaker just
@@ -2568,6 +2600,23 @@ static void game_engine_rasterize_scoreboard(
 			top,
 			(short)(left + column * (SCOREBOARD_COLUMN_WIDTH + SCOREBOARD_COLUMN_GAP)),
 			TRUE);
+		if (ping_colored)
+		{
+			real_argb_color ping_color;
+
+			latency_meter_color(ping, &ping_color);
+			ping_color.alpha = alpha;
+			usnprintf(row_string, NUMBEROF(row_string), L"\t\t\t\t%s", ping_string);
+			row_string[NUMBEROF(row_string) - 1] = 0;
+			scoreboard_draw_row(
+				row_string,
+				FALSE,
+				&ping_color,
+				2 + row,
+				top,
+				(short)(left + column * (SCOREBOARD_COLUMN_WIDTH + SCOREBOARD_COLUMN_GAP)),
+				TRUE);
+		}
 	}
 	/* (where the scroll is, and how to move it) */
 	if (total > page)
@@ -2587,10 +2636,12 @@ static void game_engine_rasterize_scoreboard(
 		struct data_iterator iterator;
 		struct player_datum *target;
 		wchar_t const *name = L"?";
-		wchar_t const *note = vote.voted ? L" (you voted)" : vote.may_vote ? L"" : L" (too new to vote)";
+		wchar_t const *note = vote.voted ? L" (you voted yes)" : vote.voted_no ? L" (you voted no)" :
+			vote.may_vote ? L"  F1 yes, F2 no" : L" (too new to vote)";
 
 		data_iterator_new(&iterator, player_data);
-		while ((target = (struct player_datum *)data_iterator_next(&iterator)) != NULL)
+		while (vote.kind == _network_vote_kick &&
+			(target = (struct player_datum *)data_iterator_next(&iterator)) != NULL)
 		{
 			if (DATUM_INDEX_TO_ABSOLUTE_INDEX(iterator.datum_index) == vote.player_index)
 			{
@@ -2603,8 +2654,16 @@ static void game_engine_rasterize_scoreboard(
 		color.red = 1.0f;
 		color.green = 0.75f;
 		color.blue = 0.3f;
-		usprintf(row_string, L"Vote to kick %s: %d of %d, %d s left%s", name, vote.votes, vote.needed,
-			vote.seconds_left, note);
+		if (vote.kind == _network_vote_end_game)
+		{
+			usprintf(row_string, L"Vote to end the game: %d yes, %d no, %d needed, %d s left%s", vote.votes,
+				vote.no_votes, vote.needed, vote.seconds_left, note);
+		}
+		else
+		{
+			usprintf(row_string, L"Vote to kick %s: %d yes, %d no, %d needed, %d s left%s", name, vote.votes,
+				vote.no_votes, vote.needed, vote.seconds_left, note);
+		}
 		scoreboard_draw_row(row_string, FALSE, &color, next_row++, top, left, FALSE);
 	}
 	if (network && (pointer_state >= 0 || picking))
@@ -3075,6 +3134,10 @@ void game_engine_post_rasterize_post_game(
 		draw_string_set_color(&prompt_color);
 
 		server = global_network_game_server_get();
+		/* port: on the touchscreen, buttons for the prompt's A and B
+		(port/linux/game/touch_postgame.c) */
+		if (touch_postgame_draw(font_index, server != NULL, &prompt_color))
+			return;
 		if (server)
 		{
 			bounds.x0 = 380;
@@ -3376,6 +3439,17 @@ static boolean multiplayer_message_internal(
 }
 
 
+/* port: whether the player's messages and the announcer's lines for them
+are this machine's: one of its local players, or in a replay's playback the
+player watched (port/linux/game/network_replay_playback.c) */
+static boolean game_engine_player_heard(
+	long player_index,
+	struct player_datum const *player)
+{
+	return player->local_player_index != NONE ||
+		(player_index != NONE && player_index == network_replay_watched_player());
+}
+
 static void multiplayer_message(
 	long player_index,
 	long message,
@@ -3383,7 +3457,7 @@ static void multiplayer_message(
 {
 	struct player_datum *player = player_get(player_index);
 
-	if (player->local_player_index != NONE)
+	if (game_engine_player_heard(player_index, player))
 	{
 		wchar_t buffer[1024];
 
@@ -3395,7 +3469,8 @@ static void multiplayer_message(
 			NUMBEROF(buffer)))
 		{
 			buffer[NUMBEROF(buffer) - 1] = 0;
-			hud_print_message(player->local_player_index, buffer);
+			/* (a replay's: the playback's view is local player 0's) */
+			hud_print_message(player->local_player_index != NONE ? player->local_player_index : 0, buffer);
 		}
 	}
 
@@ -3657,6 +3732,50 @@ static real game_engine_get_friendly_bonus(
 	return rating * 3.0f + 1.0f;
 }
 
+/* port: Teamplay Options' FORCE TEAM SPAWNS (game_variant_options): a team
+game other than CTF spawns a red or blue player as CTF does, only at the
+map's CTF starting locations, and only at his own team's. Not on a map with
+no CTF starting location for one of the teams, where his team would have
+nowhere to spawn */
+static long game_engine_get_type(
+	void);
+
+static boolean game_engine_force_team_spawns(
+	long player_index)
+{
+	struct player_datum *player = player_get(player_index);
+	boolean team_has_spawn[2] = { FALSE, FALSE };
+	short starting_location_count;
+	short starting_location_index;
+
+	if (!game_engine_running() ||
+		!game_engine_has_teams() ||
+		game_engine_get_type() == game_engine_ctf ||
+		!game_variant_options_get()->force_team_spawns ||
+		(player->team_index != _team_red && player->team_index != _team_blue))
+	{
+		return FALSE;
+	}
+
+	starting_location_count = player_get_starting_location_count();
+	for (starting_location_index = 0;
+		starting_location_index < starting_location_count;
+		starting_location_index++)
+	{
+		struct player_starting_location const *starting_location =
+			player_get_starting_location(starting_location_index);
+
+		if ((starting_location->team_index == _team_red ||
+				starting_location->team_index == _team_blue) &&
+			match_game_type(game_engine_ctf, 4, starting_location->game_types))
+		{
+			team_has_spawn[starting_location->team_index] = TRUE;
+		}
+	}
+
+	return team_has_spawn[_team_red] && team_has_spawn[_team_blue];
+}
+
 static real default_starting_location_rate_function(
 	long player_index,
 	struct player_starting_location const *starting_location)
@@ -3665,7 +3784,7 @@ static real default_starting_location_rate_function(
 	real rating = 1.0f;
 
 	if (game_engine_running() &&
-		game_engine_test_flag(0) &&
+		(game_engine_test_flag(0) || game_engine_force_team_spawns(player_index)) &&
 		player->team_index != starting_location->team_index)
 	{
 		rating = 0.0f;
@@ -4190,6 +4309,16 @@ static void game_engine_post_rasterize_in_game(
 	return;
 }
 
+/* port: a replay's playback's scores, with Back held: the full-screen
+scoreboard, the watched player's row as a player's own
+(port/linux/game/network_replay_playback.c) */
+void game_engine_port_rasterize_scores(
+	long player_index)
+{
+	if (game_engine || network_coop_active())
+		game_engine_rasterize_in_game_score(player_index, 1.0f);
+}
+
 long game_engine_player_get_team_index(
 	long player_index)
 {
@@ -4295,6 +4424,14 @@ boolean game_engine_showing_postgame(
 	return game_engine != NULL && game_engine_globals.postgame_state == game_engine_mode_postgame_rasterize;
 }
 
+/* port: whether a game is being played: one of no game engine's (the
+campaign, co-op), or its game not over (port/linux/game/latency_meter.c) */
+boolean game_engine_in_play(
+	void)
+{
+	return game_engine == NULL || game_engine_globals.postgame_state == game_engine_mode_active;
+}
+
 void game_variant_options_default(
 	struct game_variant const *variant,
 	struct game_variant_options *options)
@@ -4309,6 +4446,8 @@ void game_variant_options_default(
 		_radar_players_none : _radar_players_all;
 	options->vehicle_set[0] = options->vehicle_set[1] =
 		variant ? (byte)variant->universal_variant.vehicle_set : 0;
+	/* port: OpenCE's gametypes' options at their defaults, with no mode */
+	game_modes_options_default(options);
 
 	return;
 }
@@ -5145,6 +5284,12 @@ void game_engine_player_killed(
 	if (!game_engine)
 		return;
 
+	/* port: the death of an MCC team change is no one's kill (mcc_ui_teams.c) */
+	mcc_ui_team_respawn_death(&killing_player_index, &killing_object_index, dead_player_index, &friendly_fire);
+	/* port: and a dedicated server's !switch's (server_team_switch.c) */
+	server_team_switch_player_killed(&killing_player_index, &killing_object_index, dead_player_index,
+		&friendly_fire);
+
 	/* the distributed netcode: a client's copy of a death has the host's
 	killer (port/linux/game/network_distributed.c) */
 	network_distributed_player_killed(&killing_player_index, &killing_object_index, dead_player_index,
@@ -5168,6 +5313,8 @@ void game_engine_player_killed(
 			dead_player_index,
 			friendly_fire);
 	}
+	/* port: OpenCE's gametypes' (Hardcore's restore of the killer) */
+	game_modes_player_killed(killing_player_index, dead_player_index, friendly_fire);
 
 	same_player = killing_player_index == dead_player_index;
 	if (killing_player_index != NONE && dead_player_index != NONE)
@@ -5198,11 +5345,17 @@ void game_engine_player_killed(
 	if (!player_kill)
 		dead_player->respawn_timer += global_variant.universal_variant.suicide_penalty;
 
+	/* port: a dedicated server's !switch moves the dead here, as the auto
+	team balance below does, once their unit has dropped what it carried
+	(server_team_switch.c) */
+	server_team_switch_player_dead(dead_player_index);
+
 	/* port: the gametype's auto team balance (game_variant_options): the host
 	moves the dead to the other team when his is two or more bigger (his
 	next unit is the other team's, which the clients take it from:
 	network_player_attach_unit) */
-	if (global_variant.universal_variant.teams && game_variant_options_get()->auto_team_balance &&
+	/* port: (not Infection's teams, which are its roles: infection.c) */
+	if (global_variant.universal_variant.teams && game_variant_options_get()->auto_team_balance && !infection_enabled() &&
 		!network_game_distributed_client() && VALID_INDEX(dead_player->team_index, 2) && !dead_player->quit_out_of_game)
 	{
 		struct data_iterator iterator;
@@ -5230,6 +5383,11 @@ void game_engine_player_killed(
 		}
 	}
 
+	/* port: Infection's respawn time (infection.c), the betrayal penalty's
+	after it */
+	if (infection_enabled())
+		dead_player->respawn_timer = game_variant_options_get()->infection_respawn_time * TICKS_PER_SECOND;
+
 	/* port: the gametype's friendly fire penalty: the team killer's next
 	respawn later (the dead's own, if he has one waiting) */
 	{
@@ -5248,7 +5406,9 @@ void game_engine_player_killed(
 		}
 	}
 
-	dead_player->respawn_timer = MAX(dead_player->respawn_timer, 90);
+	/* port: (Infection's respawn time may be shorter) */
+	if (!infection_enabled())
+		dead_player->respawn_timer = MAX(dead_player->respawn_timer, 90);
 	dead_player = player_get(dead_player_index);
 
 	if (!dead_player->quit_out_of_game)
@@ -5339,6 +5499,12 @@ void game_engine_player_killed(
 			message = _game_engine_message_double_kill;
 		else if (killing_player->statistics.kills_in_a_row == 5)
 			message = _game_engine_message_five_kills_in_row;
+		/* port: none in a row is no spree. A network client's copy of the
+		killer's statistics can have this kill credited to no one, or to
+		someone else, before the host's statistics come (the Xbox's credited
+		the killer here, so never had none): Running Riot was announced */
+		else if (killing_player->statistics.kills_in_a_row <= 0)
+			message = _game_engine_message_killed_enemy;
 		else
 		{
 			message = (killing_player->statistics.kills_in_a_row % 5)
@@ -5375,13 +5541,17 @@ void game_engine_update_non_deterministic(
 			if (game_engine_globals.postgame_progress > 1.0f)
 				game_engine_globals.postgame_progress = 1.0f;
 
-			if (test_any_gamepad_button(0) || test_any_gamepad_button(12))
+			/* port: or the touchscreen's buttons for A and B
+			(port/linux/game/touch_postgame.c) */
+			if (test_any_gamepad_button(0) || test_any_gamepad_button(12) ||
+				touch_postgame_pressed(_gamepad_analog_button_a))
 			{
 				if (global_network_game_server_get())
 				network_game_server_reset_to_pregame(
 					global_network_game_server_get());
 			}
-			else if (test_any_gamepad_button(1) || test_any_gamepad_button(13))
+			else if (test_any_gamepad_button(1) || test_any_gamepad_button(13) ||
+				touch_postgame_pressed(_gamepad_analog_button_b))
 			{
 				network_game_abort();
 			}
@@ -5484,6 +5654,9 @@ boolean game_engine_hud_draw_motion_sensor(
 			default_draw_motion_sensor = FALSE;
 
 		draw_motion_sensor |= default_draw_motion_sensor;
+		/* port: Hardcore has none (port/linux/game/game_modes.c) */
+		if (game_modes_motion_sensor_hidden())
+			draw_motion_sensor = FALSE;
 	}
 
 	return draw_motion_sensor;
@@ -5704,6 +5877,13 @@ void game_engine_playlist_next(
 	struct game_variant variant;
 
 	csstrcpy(global_stage.map_name, "levels\\test\\carousel\\carousel");
+	/* port: a dedicated server's rotation's next map, not carousel, which it
+	may not have (port/linux/game/server_director.c) */
+	if (halo_server_mode() && server_director_first_level())
+	{
+		csstrncpy(global_stage.map_name, server_director_first_level(), sizeof(global_stage.map_name) - 1);
+		global_stage.map_name[sizeof(global_stage.map_name) - 1] = 0;
+	}
 	map_name = main_get_multiplayer_map_name();
 	if (map_name && map_name[0])
 	{
@@ -5722,6 +5902,9 @@ boolean game_engine_should_end_game(
 {
 	boolean should_end_game = FALSE;
 
+	/* port: Infection's round ends by its own rules (infection.c) */
+	if (infection_enabled())
+		return FALSE;
 	if (game_engine && !multiple_teams_alive())
 		should_end_game = TRUE;
 	/* port: the gametype's time limit (game_variant_options) */
@@ -5741,6 +5924,30 @@ void game_engine_clear_goal_position(
 	if (!VALID_INDEX(goal_index, NUMBEROF(global_goal)))
 		return;
 	csmemset(&global_goal[goal_index], 0, sizeof(struct netgame_goal));
+
+	return;
+}
+
+/* port: a flag or ball deleted on a client of the distributed netcode, on
+the host's word (port/linux/game/network_objects.c): the goals its game
+type's objective_weapon_update set at it each tick, which nothing else
+clears (ctf: its team's, and its carrier's goal; oddball: its team's) */
+void game_engine_objective_weapon_deleted(
+	long weapon_index)
+{
+	short team_index = weapon_get(weapon_index)->object.owner_team_index;
+
+	if (!game_engine || team_index == NONE)
+		return;
+	if (global_variant.game_engine_index == game_engine_ctf)
+	{
+		game_engine_clear_goal_position(team_index);
+		game_engine_clear_goal_position(team_index + 2);
+	}
+	else if (global_variant.game_engine_index == game_engine_oddball)
+	{
+		game_engine_clear_goal_position(team_index);
+	}
 
 	return;
 }
@@ -6464,7 +6671,9 @@ struct game_variant *build_game_variant_oddball(
 struct game_variant *build_game_variant_team_oddball(
 	struct game_variant *variant)
 {
-	struct game_variant result;
+	/* port: cleared, as every other builder's is: only some of its fields
+	are set below, and the rest were the stack's */
+	struct game_variant result = { 0 };
 
 	SET_FLAG(result.universal_variant.flags, _game_variant_draw_object_in_motion_sensor_bit, TRUE);
 	SET_FLAG(result.universal_variant.flags, _game_variant_allow_friendly_navpoints_bit, TRUE);
@@ -7370,6 +7579,13 @@ void game_engine_variant_cleanup(
 	struct game_variant original = *variant;
 
 	variant->human_readable_game_description[NUMBEROF(variant->human_readable_game_description) - 1] = 0;
+	/* port: the CTF/Slayer game type of an earlier build (10) is capture the
+	flag with Kills Score on (game_engine_ctf.c) */
+	if (variant->game_engine_index == 10)
+	{
+		variant->game_engine_index = game_engine_ctf;
+		variant->game_engine_variant.ctf.kills_score = TRUE;
+	}
 	variant->game_engine_index = PIN(variant->game_engine_index, 1, 5);
 	variant->universal_variant.teams = !!variant->universal_variant.teams;
 	variant->universal_variant.odd_man_out = !!variant->universal_variant.odd_man_out;
@@ -7393,12 +7609,25 @@ void game_engine_variant_cleanup(
 		variant->universal_variant.teams = TRUE;
 		variant->game_engine_variant.ctf.flag_at_home_to_score = !!variant->game_engine_variant.ctf.flag_at_home_to_score;
 		variant->game_engine_variant.ctf.single_flag_time = FLOOR(variant->game_engine_variant.ctf.single_flag_time, 0);
+		/* port: Kills Score, and a capture's points (25 where none are kept:
+		a gametype of a build without them) */
+		variant->game_engine_variant.ctf.kills_score = !!variant->game_engine_variant.ctf.kills_score;
+		if (variant->game_engine_variant.ctf.points_per_capture <= 0)
+			variant->game_engine_variant.ctf.points_per_capture = 25;
+		variant->game_engine_variant.ctf.points_per_capture =
+			PIN(variant->game_engine_variant.ctf.points_per_capture, 1, 100);
 		break;
 
 	case game_engine_slayer:
 		variant->game_engine_variant.slayer.no_death_bonus = !!variant->game_engine_variant.slayer.no_death_bonus;
 		variant->game_engine_variant.slayer.no_kill_penalty = !!variant->game_engine_variant.slayer.no_kill_penalty;
 		variant->game_engine_variant.slayer.kill_in_order = !!variant->game_engine_variant.slayer.kill_in_order;
+		break;
+
+	case game_engine_king:
+		/* port: Multi-Hill's hills at once: 2 to 5, else none */
+		if (variant->game_engine_variant.king.multi_hill < 2 || variant->game_engine_variant.king.multi_hill > 5)
+			variant->game_engine_variant.king.multi_hill = 0;
 		break;
 
 	case game_engine_oddball:
@@ -7481,8 +7710,12 @@ static void game_engine_predict_resources(
 	object_definition_predict(list_index_to_weapon_definition_index(_weapon_list_frag_grenade));
 	object_definition_predict(list_index_to_weapon_definition_index(_weapon_list_plasma_grenade));
 
-	if (global_variant.game_engine_index == game_engine_oddball)
+	/* port: (and Infection's zombies' skull) */
+	if (global_variant.game_engine_index == game_engine_oddball ||
+		game_modes_variant_mode(&global_variant, game_variant_options_get()) == _game_mode_infection)
+	{
 		object_definition_predict(list_index_to_weapon_definition_index(_weapon_list_ball));
+	}
 
 	if (global_variant.game_engine_index == game_engine_ctf)
 		object_definition_predict(list_index_to_weapon_definition_index(_weapon_list_flag));
@@ -7519,6 +7752,8 @@ void game_engine_initialize(
 		game_engine_variant_cleanup(&global_variant);
 		/* port: the cleaned variant's (the one given may be any number) */
 		game_engine = game_engines[global_variant.game_engine_index];
+		/* port: an OpenCE gametype's mode's (port/linux/game/game_modes.c) */
+		game_engine = game_modes_engine(game_engine);
 	}
 
 	return;
@@ -7675,8 +7910,14 @@ real game_engine_get_starting_location_rating(
 	long player_index,
 	struct player_starting_location const *starting_location)
 {
-	if (!match_game_type(game_engine_get_type(), 4, starting_location->game_types))
+	/* port: (or CTF's: game_engine_force_team_spawns) */
+	if (!match_game_type(
+		game_engine_force_team_spawns(player_index) ? game_engine_ctf : game_engine_get_type(),
+		4,
+		starting_location->game_types))
+	{
 		return 0.0f;
+	}
 
 	if (nearby_vehicle(player_index, starting_location))
 		return 0.0f;
@@ -7812,15 +8053,26 @@ short game_engine_friendly_damage(
 
 	/* port: network co-op's friendly fire is Server Setup's FRIENDLY FIRE,
 	in the host's game settings (only the host deals damage), between its
-	players: their AI allies they always hurt, as in the campaign */
+	players. Each player also has a choice of their own
+	(network_coop_players_friendly_fire). Their AI allies they hurt as in the
+	campaign, or not at all with Server Setup's ALLY FRIENDLY FIRE off
+	(network_coop_ally_friendly_fire), so that no player can kill the allies
+	a level needs; the AI's own hits of its allies are the game's own */
 	if (network_coop_active())
 	{
 		struct network_game *game = network_game_get_game();
 		struct unit_datum *unit = (struct unit_datum *)object_try_and_get_and_verify_type(object_index,
 			_object_mask_unit);
 
-		if (!game || !unit || unit->unit.player_index == NONE)
+		if (!game || !unit)
 			return _friendly_damage_all;
+		if (unit->unit.player_index == NONE)
+		{
+			return attacker_player_index != NONE && !network_coop_ally_friendly_fire() ?
+				_friendly_damage_none : _friendly_damage_all;
+		}
+		if (!network_coop_players_friendly_fire(attacker_player_index, unit->unit.player_index))
+			return _friendly_damage_none;
 		friendly_fire = game->variant_options.friendly_fire;
 	}
 	else if (!game_engine || !global_variant.universal_variant.teams)
@@ -7871,6 +8123,9 @@ long game_engine_remap_vehicle(
 	long vehicle_definition_index)
 {
 	long result = vehicle_definition_index;
+
+	if (mcc_vehicle_placement_rules())
+		return result;
 
 	/* port: a Halo Custom Edition map's vehicles are chosen by their
 	placements, and its scripts may create any
@@ -7946,9 +8201,13 @@ long game_engine_remap_weapon(
 	}
 
 	/* (port: and the gravity rifle, a cut weapon, as the flamethrower,
-	which the Xbox's maps have unfinished: neither is a multiplayer weapon) */
-	if (weapon_list_index == _weapon_list_flamethrower || weapon_list_index == _weapon_list_gravity_rifle)
+	which the Xbox's maps have unfinished: neither is a multiplayer weapon.
+	A Halo Custom Edition map's flamethrower is finished, and stays) */
+	if (weapon_list_index == _weapon_list_gravity_rifle ||
+		(weapon_list_index == _weapon_list_flamethrower && !custom_edition_cache_tags_loaded()))
+	{
 		weapon_list_index = _weapon_list_rocket_launcher;
+	}
 
 	/* port: a custom loadout (game_variant_options) has no weapon set */
 	if (game_variant_options_get()->loadout == _loadout_custom)
@@ -8067,14 +8326,16 @@ long game_engine_remap_weapon(
 			weapon_list_index = _weapon_list_needler;
 			break;
 
+		case _weapon_list_flamethrower:
 		case _weapon_list_rocket_launcher:
 			weapon_list_index = _weapon_list_needler;
 			break;
 		}
 		break;
 
-	/* classic: the Xbox game's weapons (the flamethrower and the gravity
-	rifle are already rocket launchers) */
+	/* classic: the Xbox game's weapons (the gravity rifle, and an Xbox map's
+	flamethrower, are already rocket launchers), and a Halo Custom Edition
+	map's flamethrower and fuel rod, among Gearbox's own maps' classic weapons */
 	case _game_engine_weapons_classic:
 		break;
 
@@ -8226,8 +8487,10 @@ static void game_engine_update_weapons(
 			match_assert(
 				"c:\\halo\\SOURCE\\game\\game_engine.c",
 				0x83E,
-				(item->object.scale >= 0.5f) &&
-					(item->object.scale <= 3.f));
+				((item->object.scale >= 0.5f) &&
+					(item->object.scale <= 3.f)) ||
+				/* port: MCC-authored miniature items retain their tag scale. */
+				mcc_item_small_scale(item->object.scale));
 		}
 
 		/*
@@ -9044,6 +9307,8 @@ static void game_engine_update_item_spawn(
 					definition_index,
 					NONE);
 				placement_data.position = equipment->position;
+				if (mcc_cache_tags_loaded())
+					vector3d_from_angle(&placement_data.forward, equipment->facing);
 				/* port: Halo PC faces a Custom Edition map's items the way
 				their placements do, where the Xbox copied only the position */
 				if (custom_edition_cache_tags_loaded())
@@ -9158,8 +9423,8 @@ static void handle_custom_starting_equipment(
 
 /* port: a custom loadout's weapon's place in the globals' weapon list
 (game_engine_h's _loadout_weapon_*, from the assault rifle); random: one
-of those the map has */
-static long game_engine_loadout_weapon_definition(
+of those the map has (and port/linux/game/gun_game.c's weapons) */
+long game_engine_loadout_weapon_definition(
 	byte weapon)
 {
 	static short const list_indices[] =
@@ -9328,8 +9593,15 @@ void game_engine_postspawn_player_update(
 			unit->unit.grenade_counts[
 				_unit_grenade_covenant_plasma] =
 				(char)starting_plasma_grenade_count;
+			/* port: and MCC's expanded grenade types (mcc_player.c) */
+			mcc_player_postspawn_grenades(unit_index,
+				global_variant.universal_variant.weapon_set == _game_engine_weapons_no_grenades &&
+				!game_engine_infinite_grenades_internal());
 		}
 	}
+	/* port: an OpenCE gametype's mode's equipment (Gun Game's weapon,
+	Infection's skull: port/linux/game/game_modes.c) */
+	game_modes_postspawn(player_index);
 
 	return;
 }
@@ -9433,13 +9705,13 @@ void game_engine_client_respawn_countdown(
 	{
 		return;
 	}
-	if (player->local_player_index != NONE &&
+	if (game_engine_player_heard(player_index, player) &&
 		(player->respawn_timer == 90 || player->respawn_timer == 60 || player->respawn_timer == 30))
 	{
 		game_engine_play_multiplayer_sound(_multiplayer_sound_countdown_for_respawn);
 	}
 	player->respawn_timer--;
-	if (player->local_player_index != NONE && player->respawn_timer == 1)
+	if (game_engine_player_heard(player_index, player) && player->respawn_timer == 1)
 		game_engine_play_multiplayer_sound(_multiplayer_sound_respawn);
 
 	return;
@@ -9705,7 +9977,9 @@ long game_engine_write_network_state(
 	switch (game_engine_get_type())
 	{
 	case game_engine_ctf: written = game_engine_ctf_write_network_state(buffer, size); break;
-	case game_engine_slayer: written = game_engine_slayer_write_network_state(buffer, size); break;
+	/* port: (Infection's own state: infection.c) */
+	case game_engine_slayer: written = infection_enabled() ? infection_write_network_state(buffer, size) :
+		game_engine_slayer_write_network_state(buffer, size); break;
 	case game_engine_oddball: written = game_engine_oddball_write_network_state(buffer, size); break;
 	case game_engine_king: written = game_engine_king_write_network_state(buffer, size); break;
 	case game_engine_race: written = game_engine_race_write_network_state(buffer, size); break;
@@ -9732,7 +10006,8 @@ void game_engine_read_network_state(
 	switch (game_engine_get_type())
 	{
 	case game_engine_ctf: read = game_engine_ctf_read_network_state(buffer, size, first); break;
-	case game_engine_slayer: read = game_engine_slayer_read_network_state(buffer, size, first); break;
+	case game_engine_slayer: read = infection_enabled() ? infection_read_network_state(buffer, size, first) :
+		game_engine_slayer_read_network_state(buffer, size, first); break;
 	case game_engine_oddball: read = game_engine_oddball_read_network_state(buffer, size, first); break;
 	case game_engine_king: read = game_engine_king_read_network_state(buffer, size, first); break;
 	case game_engine_race: read = game_engine_race_read_network_state(buffer, size, first); break;

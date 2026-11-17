@@ -33,6 +33,11 @@ the host (LP64) can include this too.
 #define VK_BINDING_TEXTURE1 4
 #define VK_BINDING_TEXTURE2 5
 #define VK_BINDING_TEXTURE3 6
+/* The dynamic lighting's visibility fields, for the model variants with occlusion (XGPU_PLASMA_MODEL_OCCLUSION) and only
+those: a set of their own, so that every other pipeline keeps its layout. Read in the stage that lights the model. */
+#define VK_PLASMA_SET 1
+#define VK_PLASMA_BINDING_TEXTURE0 0
+#define VK_PLASMA_BINDING_TEXTURE1 1
 
 /* the locations the vertex and pixel stages meet at: every vertex shader writes all nine and every pixel shader
 declares all nine, read or not, so that any vertex shader goes with any pixel shader */
@@ -57,6 +62,19 @@ position the model lighting program lights by */
 cache makes new names for new GLSL */
 #define VK_SHADER_GENERATOR_VERSION 1
 
+/* The pixel key's texture_modes: four 5-bit modes, and above them bits the Xbox leaves 0, as the Switch's renderer has
+them (port/switch/guest/dk_shaders.h). Only a key with one of them makes different GLSL, so a shader whose key has none
+keeps its name and its code (no generator version raised): */
+/* a stage's coordinates clipped (halo_texture_clip, d3d8_vk.c): the shader lets a pixel go first if its u or v (and w,
+with NV2A_PIXEL_KEY_CLIP_3D) is outside the limits in alpha_reference.y and .z; the stage in the bits at
+NV2A_PIXEL_KEY_CLIP_STAGE_SHIFT (0 for the shadows' stage 0) */
+#define NV2A_PIXEL_KEY_CLIP 0x10000000u
+#define NV2A_PIXEL_KEY_CLIP_STAGE_SHIFT 20
+#define NV2A_PIXEL_KEY_CLIP_STAGE_MASK (3u << NV2A_PIXEL_KEY_CLIP_STAGE_SHIFT)
+#define NV2A_PIXEL_KEY_CLIP_3D 0x00400000u
+/* the zoom's blend of its blurred small copy of the screen over the screen (halo_screen_warp_blend, d3d8_vk.c) */
+#define NV2A_PIXEL_KEY_WARP_BLEND 0x40000000u
+
 /* ---------- vertex_constants (binding 0): Direct3D's constant registers c[-96..95] */
 
 #define VK_VERTEX_CONSTANT_COUNT 192
@@ -73,7 +91,11 @@ struct vk_vertex_constants
 #define VK_VERTEX_PARAMETERS_VIEWPORT_SCALE 0
 #define VK_VERTEX_PARAMETERS_VIEWPORT_OFFSET 16
 #define VK_VERTEX_PARAMETERS_POINT_AND_SCREEN 32
-#define VK_VERTEX_PARAMETERS_SIZE 48
+#define VK_VERTEX_PARAMETERS_PLASMA_MODEL 48
+#define VK_VERTEX_PARAMETERS_PLASMA_OCC_TRANSFORM 64
+#define VK_VERTEX_PARAMETERS_SIZE 96
+/* (what a stock shader declares of it) */
+#define VK_VERTEX_PARAMETERS_STOCK_SIZE 48
 
 struct vk_vertex_parameters
 {
@@ -82,6 +104,11 @@ struct vk_vertex_parameters
 	/* x: the point size; y: the columns the menus shift by to centre on a wide screen (the GL renderer's
 	screen_offset) */
 	float point_and_screen[4];
+	/* the dynamic lighting's model variant, declared only by the shaders that read it (zero otherwise). x, y: whether
+	point light 0, 1 is selected; z, w: whether its visibility field is bound */
+	float plasma_model[4];
+	/* a field's centre, and 1 over its side */
+	float plasma_occ_transform[2][4];
 };
 
 /* ---------- pixel_parameters (binding 2) */
@@ -97,7 +124,9 @@ struct vk_vertex_parameters
 #define VK_PIXEL_PARAMETERS_BUMP_LUMINANCE 400
 #define VK_PIXEL_PARAMETERS_TEXTURE_SCALE 464
 #define VK_PIXEL_PARAMETERS_MODEL_LIGHTS 528
-#define VK_PIXEL_PARAMETERS_SIZE 720
+#define VK_PIXEL_PARAMETERS_PLASMA_MODEL 720
+#define VK_PIXEL_PARAMETERS_PLASMA_OCC_TRANSFORM 736
+#define VK_PIXEL_PARAMETERS_SIZE 768
 
 struct vk_pixel_parameters
 {
@@ -115,6 +144,9 @@ struct vk_pixel_parameters
 	/* a draw lit for each pixel: the vertex constants its lighting reads (XGPU_MODEL_LIGHT_COUNT, xgpu.h); zero otherwise.
 	Declared only by the pixel shaders that read them */
 	float model_lights[12][4];
+	/* as the vertex parameters' */
+	float plasma_model[4];
+	float plasma_occ_transform[2][4];
 };
 
 /* ---------- compile-time checks: the structures are the blocks, byte for byte */
@@ -130,7 +162,15 @@ VK_SHADERS_CHECK(vertex_parameters_offset,
 	offsetof(struct vk_vertex_parameters, viewport_offset) == VK_VERTEX_PARAMETERS_VIEWPORT_OFFSET);
 VK_SHADERS_CHECK(vertex_parameters_point,
 	offsetof(struct vk_vertex_parameters, point_and_screen) == VK_VERTEX_PARAMETERS_POINT_AND_SCREEN);
+VK_SHADERS_CHECK(vertex_parameters_plasma_model,
+	offsetof(struct vk_vertex_parameters, plasma_model) == VK_VERTEX_PARAMETERS_PLASMA_MODEL);
+VK_SHADERS_CHECK(vertex_parameters_plasma_transform,
+	offsetof(struct vk_vertex_parameters, plasma_occ_transform) == VK_VERTEX_PARAMETERS_PLASMA_OCC_TRANSFORM);
 VK_SHADERS_CHECK(pixel_parameters_size, sizeof(struct vk_pixel_parameters) == VK_PIXEL_PARAMETERS_SIZE);
+VK_SHADERS_CHECK(pixel_parameters_plasma_model,
+	offsetof(struct vk_pixel_parameters, plasma_model) == VK_PIXEL_PARAMETERS_PLASMA_MODEL);
+VK_SHADERS_CHECK(pixel_parameters_plasma_transform,
+	offsetof(struct vk_pixel_parameters, plasma_occ_transform) == VK_PIXEL_PARAMETERS_PLASMA_OCC_TRANSFORM);
 VK_SHADERS_CHECK(pixel_parameters_c0, offsetof(struct vk_pixel_parameters, ps_c0) == VK_PIXEL_PARAMETERS_PS_C0);
 VK_SHADERS_CHECK(pixel_parameters_c1, offsetof(struct vk_pixel_parameters, ps_c1) == VK_PIXEL_PARAMETERS_PS_C1);
 VK_SHADERS_CHECK(pixel_parameters_final_c0,
@@ -225,10 +265,14 @@ struct vk_pipeline_state
 /* GLSL 450 for glslang for an NV2A vertex program (the instruction words after the program header). Attributes whose
 bit is set in packed_attribute_mask are fed as NORMPACKED3 32-bit integers and unpacked in the shader. With lighting
 (else NULL), the normal and world position go to the pixel shader too (VK_LOCATION_WORLD_*), which lights the diffuse
-color for each pixel (the key's per_pixel_lighting). Returns a malloc'd string. */
+color for each pixel (the key's per_pixel_lighting). plasma (XGPU_PLASMA_MODEL_*) adds the dynamic lighting's model variant
+to a program lit for each vertex; 0 writes the stock shader. Returns a malloc'd string. */
 struct nv2a_vertex_lighting;
 char *nv2a_vk_vertex_shader_to_glsl(const uint32_t *instructions, unsigned long instruction_count,
-	unsigned long packed_attribute_mask, const struct nv2a_vertex_lighting *lighting);
+	unsigned long packed_attribute_mask, const struct nv2a_vertex_lighting *lighting, unsigned int plasma);
+/* the fixed-function pipeline's vertex shader (SetVertexShader with 0: the loading screen's immediate-mode draws, whose
+positions d3d8_vk.c's draw_make has put in clip space). Returns a malloc'd string. */
+char *nv2a_vk_fixed_function_glsl(void);
 
 struct nv2a_pixel_shader_key;
 

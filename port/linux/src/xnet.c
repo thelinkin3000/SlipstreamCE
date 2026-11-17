@@ -286,13 +286,26 @@ static void peer_incoming_address(int stream, struct sockaddr *address, const in
 
 /* the local port the game's socket is bound to (network byte order), or 0
 if it is not yet */
+/* the ports socket_port found, by socket (0: not known yet), so that a
+datagram socket's is asked of the system once, not at every send: on the
+Switch each getsockname is a request to the console's network service, and
+a host of 48 machines spent 14% of its game thread on them. A bound socket's
+port does not change; its socket's close forgets it */
+#define CACHED_SOCKET_PORTS 4096
+static unsigned short cached_socket_ports[CACHED_SOCKET_PORTS];
+
 static unsigned short socket_port(SOCKET socket)
 {
 	struct sockaddr_in bound;
 	int length = sizeof(bound);
+	int cached = socket < CACHED_SOCKET_PORTS;
 
+	if (cached && cached_socket_ports[socket])
+		return cached_socket_ports[socket];
 	if (posix_socket_getsockname((int)socket, &bound, &length) < 0 || bound.sin_family != AF_INET)
 		return 0;
+	if (cached)
+		cached_socket_ports[socket] = bound.sin_port;
 	return bound.sin_port;
 }
 
@@ -383,6 +396,8 @@ int WSAAPI halo_ws_closesocket(SOCKET socket)
 
 	posix_socket_getsockopt((int)socket, SOL_SOCKET, SO_TYPE, &type, &type_length);
 	p2p_socket_closed((int)socket, type == SOCK_DGRAM ? socket_port(socket) : 0);
+	if (socket < CACHED_SOCKET_PORTS)
+		cached_socket_ports[socket] = 0;
 	delayed_closed((int)socket);
 	return winsock_result(posix_socket_close((int)socket));
 }
@@ -489,6 +504,16 @@ int WSAAPI halo_ws_send(SOCKET socket, const char *buffer, int length, int flags
 	return winsock_result(posix_socket_send((int)socket, buffer, length, flags));
 }
 
+/* the bytes of the datagrams the game has sent (with 28 a datagram for the IP
+and UDP headers): its own traffic, which a file connection's rate leaves room
+for (port/android/host/host_file_share.c, map_share.c and mcc_share.c read it) */
+static volatile unsigned long long xnet_datagram_bytes;
+
+unsigned long long xnet_datagram_bytes_sent(void)
+{
+	return xnet_datagram_bytes;
+}
+
 int WSAAPI halo_ws_sendto(SOCKET socket, const char *buffer, int length, int flags,
 	const struct sockaddr *address, int address_length)
 {
@@ -498,6 +523,9 @@ int WSAAPI halo_ws_sendto(SOCKET socket, const char *buffer, int length, int fla
 	unsigned short source_port = socket_port(socket);
 	int result;
 	int send_error;
+
+	if (length > 0)
+		xnet_datagram_bytes += (unsigned long long)length + 28;
 
 	if (address && address->sa_family == AF_INET && address_length >= (int)sizeof(struct sockaddr_in) &&
 		((const struct sockaddr_in *)address)->sin_addr.s_addr == INADDR_BROADCAST)

@@ -28,6 +28,8 @@ enum
 	_game_variant_always_invisible_bit,
 	/* (the starting equipment: generic, else the map's) */
 	_game_variant_generic_starting_equipment_bit,
+	/* port: players standing on a vehicle are carried by it (the gametype's VEHICLE RIDING: vehicle_riding.c) */
+	_game_variant_vehicle_riding_bit,
 };
 
 enum game_engine_type
@@ -92,6 +94,12 @@ struct ctf_variant
 	boolean flag_must_reset;
 	boolean flag_at_home_to_score;
 	long single_flag_time;
+	/* port: Kills Score (the editor's): a kill scores a point for the
+	killer's team, and a capture is worth points_per_capture (5 to 100, 25 by
+	default) in place of one; the score to win is in captures, each worth
+	that much. Off (0): the Xbox's capture the flag */
+	long points_per_capture;
+	long kills_score;
 };
 
 struct slayer_variant
@@ -104,6 +112,9 @@ struct slayer_variant
 struct king_variant
 {
 	boolean moving_hill;
+	/* port: Multi-Hill: this many hills in play at once (2 to 5), else one
+	(game_engine_king.c). Zero in January's gametypes, whose union keeps it */
+	byte multi_hill;
 };
 
 /* the balls of an oddball game */
@@ -212,6 +223,27 @@ enum
 	VARIANT_VEHICLE_SET_CUSTOM = 0xFF
 };
 
+/* port: OpenCE's gametypes (port/linux/game/game_modes.c): a mode's rules
+over its game engine's (Slayer's), and Hardcore's over any */
+enum
+{
+	_game_mode_none = 0,
+	_game_mode_swat,
+	_game_mode_infection,
+	_game_mode_gun_game,
+	NUMBER_OF_GAME_MODES
+};
+
+enum
+{
+	/* Gun Game's weapons: the strongest first, the weakest first, or in an
+	order the host draws for each game */
+	_gun_game_order_strongest_first = 0,
+	_gun_game_order_weakest_first,
+	_gun_game_order_random,
+	NUMBER_OF_GUN_GAME_ORDERS
+};
+
 /* (the starting equipment, generic or the map's, is the variant's own:
 _game_variant_generic_starting_equipment_bit) */
 struct game_variant_options
@@ -236,9 +268,35 @@ struct game_variant_options
 	/* no weapons spawn on the map (its grenades and powerups do): for
 	a loadout of none, melee only */
 	boolean no_map_weapons;
+	/* port: OpenCE's gametypes (game_modes.c): the mode (_game_mode_*), and
+	Hardcore's rules (no motion sensor, no aim assist, a kill restores the
+	killer's health and shields) */
+	byte mode;
+	boolean hardcore;
+	/* Infection: the zombies chosen at the start, their speed and their
+	skull's melee damage (percent), their respawn time and the countdown
+	before the first are chosen (seconds), and whether they have shields */
+	byte infection_initial_zombies;
+	byte infection_zombie_speed;
+	byte infection_skull_damage;
+	byte infection_respawn_time;
+	byte infection_countdown;
+	boolean infection_zombie_shields;
+	/* Gun Game: the weapons' order (_gun_game_order_*), and whether a melee
+	kill takes the victim back a weapon */
+	byte gun_game_order;
+	boolean gun_game_melee_demotes;
+	/* port: Teamplay Options' FORCE TEAM SPAWNS: a team game other than CTF
+	spawns its players as CTF does, only at the map's CTF starting locations
+	of their own team (game_engine_get_starting_location_rating). Taken from
+	reserved, which older builds zero and ignore: the host alone picks spawns */
+	boolean force_team_spawns;
+	byte reserved[5];
 };
 
-typedef char verify_game_variant_options_size[sizeof(struct game_variant_options) == 0x1C ? 1 : -1];
+typedef char verify_game_variant_options_size[sizeof(struct game_variant_options) == 0x2C ? 1 : -1];
+/* (builds before OpenCE's gametypes saved and sent only the first 0x1C bytes) */
+#define GAME_VARIANT_OPTIONS_V1_SIZE 0x1C
 
 struct game_engine
 {
@@ -369,6 +427,10 @@ void game_variant_options_default(
 	struct game_variant_options *options);
 void game_engine_playlist_initialize(
 	void);
+/* port: a loadout weapon's (_loadout_weapon_*) definition, NONE if the map
+has none */
+long game_engine_loadout_weapon_definition(
+	byte weapon);
 
 long game_globals_get_weapon(
 	struct game_globals *game_globals,
@@ -425,6 +487,8 @@ void get_postgame_hilite_colors(
 boolean game_engine_running(
 	void);
 boolean game_engine_showing_postgame(
+	void);
+boolean game_engine_in_play(
 	void);
 
 boolean game_engine_get_state_message(
@@ -616,6 +680,9 @@ boolean game_engine_should_end_game(
 void game_engine_clear_goal_position(
 	short goal_index);
 
+void game_engine_objective_weapon_deleted(
+	long weapon_index);
+
 long get_flag_definition_index(
 	void);
 
@@ -705,5 +772,33 @@ extern struct game_engine *game_engine;
 real game_engine_get_damage_multiplier(
 	long damaging_player_index,
 	long damaged_player_index);
+
+/* port: (game_engine_ctf.c) a team's flag as the bots see it: where it is, who carries it, whether it is home,
+and where home is; FALSE for a team with no flag this game */
+boolean game_engine_ctf_flag_state(long team_index, real_point3d *position, long *carrier_player_index,
+	boolean *at_home, real_point3d *home);
+/* port: whether touching one's own flag away from home returns it */
+boolean game_engine_ctf_touch_returns(void);
+/* port: whether a capture needs the capturer's own flag at home */
+boolean game_engine_ctf_home_to_score(void);
+
+/* port: (game_engine_king.c) the hill as the bots see it: its points, its height, its middle and its number;
+FALSE while there is none */
+boolean game_engine_king_hill(real_point3d *points, long maximum, long *point_count, real *bottom, real *top,
+	real_point3d *center, long *hill_id);
+/* port: whether a point is on the hill, as a player's middle is counted */
+boolean game_engine_king_point_on_hill(real_point3d const *position);
+
+/* port: (game_engine_oddball.c, for the Proving Grounds bots) a ball's object, NONE for none: the balls are the
+weapons weapon_is_flag says are, their owner team index the ball's; and the player holding it, NONE for none */
+long game_engine_oddball_ball(short index);
+long game_engine_oddball_carrier(short index);
+
+/* port: (game_engine_race.c, for the Proving Grounds bots) the race's type (_race_type_normal, any order, rally),
+whether a player may touch race flag flag_number next (the single rally flag in rally; the first again once all are
+touched), and the reach a touch counts within (on foot, or in a vehicle) */
+short game_engine_race_type(void);
+boolean game_engine_race_can_touch(long player_index, long flag_number);
+real game_engine_race_touch_radius(boolean in_vehicle);
 
 #endif // __GAME_ENGINE_H

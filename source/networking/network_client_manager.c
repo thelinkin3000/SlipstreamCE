@@ -383,15 +383,21 @@ symbols in this file:
 #include "main/main.h"
 #include "memory/data.h"
 #include "networking/network_client_manager.h"
+#include "mcc_load_network.h" /* port: bounded MCC conversion wait */
 #include "networking/network_client_message_handler.h"
 #include "networking/network_connection.h"
 #include "networking/network_game_globals.h"
 #include "networking/network_game_manager.h"
+void network_game_client_reset_settings_staging(void); /* port: discard partial settings across connections */
+#include "mcc_cache.h" /* port: MCC-only origin-change admission guard */
+#include "mcc_identity.h" /* port: MCC content admission and local package resolution */
 #include "networking/network_game_protocol.h"
 #include "networking/network_messages.h"
 #include "networking/network_server_manager.h"
 #include "text/unicode.h"
 #include "map_share.h" /* port: port/linux/game/map_share.c */
+#include "custom_edition_cache.h" /* port: port/linux/game/custom_edition_cache.c */
+#include "network_extensions.h" /* port: port/linux/game/network_extensions.c */
 
 /* ---------- constants */
 
@@ -598,6 +604,17 @@ struct message_client_ping
 
 /* port/linux/src/p2p.c's */
 void p2p_hardware_id(char *hex, int size);
+void p2p_join_refused(int rejection_code);
+/* port/linux/src/player_link.c's (a Discord account's pass, shown to a
+dedicated server that asks for it) */
+int player_link_join_fill(unsigned long host_virtual_address, unsigned char *pass, unsigned char *proof);
+int player_link_join_refused(int rejection_code);
+void player_link_join_reset(void);
+/* port: a join made again with the pass (network_game_client_rejected_by_game),
+not a new one; and one made while the refused connection's end is handled
+(its idle failed: the join goes on) */
+static boolean network_game_client_joining_with_link;
+static boolean network_game_client_joined_again_with_link;
 
 struct message_client_join_game_request
 {
@@ -605,6 +622,11 @@ struct message_client_join_game_request
 	byte join_token[0x10];
 	/* port: this machine's hardware id, as hex (p2p.c's p2p_hardware_id) */
 	char hardware_id[0x20];
+	/* port: a Discord account's pass and its proof for this connection, all
+	zero for none (port/linux/src/player_link.c) */
+	byte link_pass[170];
+	byte link_proof[64];
+	word network_version; /* port: shared agreement before host admission */
 };
 
 struct message_client_map_is_precached_pregame
@@ -731,8 +753,9 @@ typedef char message_client_broadcast_game_search_size_assert[
 	sizeof(struct message_client_broadcast_game_search) == 0xC ? 1 : -1];
 typedef char message_client_ping_size_assert[
 	sizeof(struct message_client_ping) == 8 ? 1 : -1];
+/* (port: and a Discord account's pass and proof after the Xbox's 0x70) */
 typedef char message_client_join_game_request_size_assert[
-	sizeof(struct message_client_join_game_request) == 0x70 ? 1 : -1];
+	sizeof(struct message_client_join_game_request) == 0x70 + 170 + 64 + 2 ? 1 : -1];
 typedef char network_game_client_seconds_to_game_start_offset_assert[
 	offsetof(struct network_game_client, seconds_to_game_start) == NETWORK_GAME_CLIENT_TAIL_OFFSET + 0x10 ? 1 : -1];
 typedef char network_game_client_error_offset_assert[
@@ -783,6 +806,22 @@ update is to bring the host's time (at every start) */
 long network_game_client_late_join_time;
 static boolean network_game_client_late_join_clock_pending;
 
+/* port: a replay's playback (port/linux/game/network_replay_playback.c): a
+client with no connection to anyone, whose messages are the replay's */
+boolean network_replay_playing(void);
+void network_replay_record_received(void const *message, long size, boolean unreliable);
+boolean network_replay_playback_starting(void);
+void network_replay_playback_started(void);
+boolean network_replay_playback_idle(struct network_game_client *client);
+void network_replay_playback_stop(void);
+/* port: the host said to start while this machine was still downloading the
+map (map sharing): started once the map is there, network_game_client_idle_pregame,
+if the game is still the one put off (its map, and the games played before
+it: the host may end it, or go on to another, meanwhile) */
+static boolean network_game_client_start_pending;
+static char network_game_client_start_pending_map[0x80];
+static long network_game_client_start_pending_games;
+
 /* whether the automated tests' join has told the player why a host cannot
 be joined (network_game_client_join_first_available_game) */
 static boolean network_game_client_incompatibility_told;
@@ -800,12 +839,14 @@ static unsigned long network_game_client_link_down_time;
 static unsigned long network_game_client_link_checked_time;
 static boolean network_game_client_link_down;
 
-/* each advertised game's host's network version and netcode, by its place
-in the client's available_games (HALO_PORT_NETWORK_VERSION) */
+/* each advertised game's host's network version and netcode, and the game's
+kind (game_modes_kind), by its place in the client's available_games
+(HALO_PORT_NETWORK_VERSION) */
 static struct
 {
 	word version;
 	byte flags;
+	byte kind;
 } network_game_client_advertised_versions[MAXIMUM_NETWORK_ADVERTISED_GAMES];
 
 struct network_game_client network_game_client_dont_use_directly;
@@ -900,8 +941,12 @@ static boolean check_networking_and_generate_error(
 void network_game_client_dispose(
 	struct network_game_client *client)
 {
+	/* port: a replay's playback ends with its client */
+	network_replay_playback_stop();
 	if (client)
 	{
+		network_game_client_reset_settings_staging(); /* port: discard partial old-host settings */
+		mcc_identity_disconnect(); /* port: discard the MCC session's local binding */
 		if (client->connection)
 			network_connection_delete(client->connection);
 
@@ -1013,11 +1058,14 @@ boolean network_game_client_switch_to_pregame(
 		network_game_reset_for_next_round(&client->game, TRUE);
 		network_connection_keep_alive(client->connection);
 		client->next_update_number = 0;
+		network_game_client_reset_settings_staging(); /* port: discard the previous host's partial record */
 		client->join_in_progress = TRUE;
 		client->connection_silent = FALSE;
 		client->state = _network_game_client_state_pregame;
 		network_game_client_late_join_time = 0;
 		network_game_client_late_join_clock_pending = FALSE;
+		/* port: a start put off is not this game's */
+		network_game_client_start_pending = FALSE;
 		network_event("switching to pregame");
 		network_game_reset_to_pregame_ui();
 		network_connection_keep_alive(client->connection);
@@ -1198,6 +1246,9 @@ boolean network_game_client_write(
 	struct transport_address *address,
 	boolean reliable)
 {
+	/* port: a replay's playback has no host to send anything to */
+	if (network_replay_playing())
+		return TRUE;
 	return network_connection_write(
 		connection,
 		message,
@@ -1285,9 +1336,19 @@ boolean network_game_client_game_settings_updated(
 			return FALSE;
 		}
 		if (csstrcmp(message_packet->map.name, client->game.map.name) ||
-			message_packet->map.version != client->game.map.version)
+			/* port: MCC validation also belongs to the advertised origin in the name tail. */
+			(mcc_level_name(message_packet->map.name) &&
+			 memcmp(message_packet->map.name, client->game.map.name, sizeof(message_packet->map.name))) ||
+			message_packet->map.version != client->game.map.version ||
+			/* port: the host's MCC content may change without changing its stored checksum */
+			memcmp(message_packet->mcc_content_sha256, client->game.mcc_content_sha256, 32) ||
+			/* port: a changed MCC campaign manifest also requires admission. */
+			memcmp(message_packet->mcc_metadata_sha256, client->game.mcc_metadata_sha256, 32))
 		{
 			char build[0x20];
+
+			/* port: resolve MCC locally before native presence checks, retaining the host's wire name */
+			if (!mcc_identity_accept(message_packet)) return FALSE;
 
 			/* port: a map this machine has not (a Custom Edition map not in
 			its custom_maps folder, or another version of it than the host's,
@@ -1492,6 +1553,12 @@ boolean network_game_client_add_player(
 		0x530,
 		client && (local_player_index>=0) && (local_player_index<MAXIMUM_NUMBER_OF_LOCAL_PLAYERS));
 
+	/* port: hosting from the menus, the server has no player of its own:
+	the host's controller works its screen (port/linux/game/host_dashboard.c),
+	and the pregame screen's joins (its controllers signed in) are none */
+	if (halo_server_hosting())
+		return TRUE;
+
 	/* port: not until the host's settings name the game's map, and a game
 	in progress whose map is being downloaded not until it is (map sharing:
 	port/linux/game/map_share.c); asked again each frame */
@@ -1647,8 +1714,33 @@ boolean network_game_client_handle_game_update(
 			message_packet->game_time);
 		game_time_set_distributed(message_packet->game_time);
 	}
+	else
+	{
+		/* port: smaller deficits need simulation ticks too, bounded per frame. */
+		game_time_synchronize_distributed(message_packet->game_time);
+	}
 
 	return TRUE;
+}
+
+/* port: not while the map is still being downloaded (map sharing): loaded
+then, it is not there (the damaged disc error, for good). The game starts
+once it is there (network_game_client_idle_pregame). A host of this version
+starts no machine before its download is done; one of before may. */
+boolean network_game_client_begin_game(
+	struct network_game_client *client)
+{
+	if (client && map_share_downloading(client->game.map.name))
+	{
+		network_game_client_start_pending = TRUE;
+		csstrncpy(network_game_client_start_pending_map, client->game.map.name,
+			sizeof(network_game_client_start_pending_map) - 1);
+		network_game_client_start_pending_map[sizeof(network_game_client_start_pending_map) - 1] = 0;
+		network_game_client_start_pending_games = client->game.number_of_games_played;
+		network_event("the host started the game while its map is being downloaded: joining it once the map is there");
+		return TRUE;
+	}
+	return network_game_client_game_has_started(client);
 }
 
 boolean network_game_client_game_has_started(
@@ -1814,7 +1906,47 @@ boolean network_game_client_remove_player(
 				}
 			}
 
-			if (network_player_index == MAXIMUM_NUMBER_OF_PLAYERS)
+			/* port: a local player who leaves while another remains no longer has
+			its slot: its entry in the local players is cleared here, as the datum
+			stays until a joiner takes the slot (network_game_spawn_player), which
+			then deletes it and makes another with a new identifier, and the entry
+			would name a player that no longer exists (player_get halts on it). The
+			last to leave ends the game, whose sounds and views still name it until
+			then, so its entry stays */
+			if (network_player_index != MAXIMUM_NUMBER_OF_PLAYERS &&
+				player->machine_index == client->machine_index &&
+				player->controller_index >= 0 && player->controller_index < MAXIMUM_LOCAL_PLAYERS &&
+				local_player_get_player_index(player->controller_index) == player_index)
+			{
+				local_player_set_player_index(player->controller_index, NONE);
+				/* (and its control, which names its unit: the datum no longer has a
+				local player index, so the host deleting the unit does not reset it
+				(network_player_detach_unit), and player_control_update would get a
+				unit that is gone) */
+				player_control_new_unit(player->controller_index, NONE);
+			}
+
+			/* port: a dedicated server's own machine never has a player
+			(port/linux/game/server_director.c): it leaves only when a player
+			of its own goes, which none is; nor has a replay's playback, which
+			plays on as the game's players leave
+			(port/linux/game/network_replay_playback.c) */
+			/* port: a split screen player of this machine who quit, the others
+			staying: their view goes, the others' filling the screen (and
+			their menus close); the unit dies at the quit (game.c) */
+			if (reason != NONE && player->machine_index == client->machine_index &&
+				network_player_index < MAXIMUM_NUMBER_OF_PLAYERS &&
+				VALID_INDEX(player->controller_index, MAXIMUM_NUMBER_OF_LOCAL_PLAYERS) &&
+				local_player_get_player_index(player->controller_index) == player_index)
+			{
+				extern void ui_widgets_port_close_for_controller(short controller_index);
+
+				local_player_set_player_index(player->controller_index, NONE);
+				ui_widgets_port_close_for_controller(player->controller_index);
+				network_event("local player #%d left, the others staying", player->controller_index);
+			}
+			if (network_player_index == MAXIMUM_NUMBER_OF_PLAYERS && !network_replay_playing() &&
+				(!halo_server_mode() || player->machine_index == client->machine_index))
 			{
 				network_game_client_all_local_players_have_quit();
 				network_event("no local players remain in the game, exiting the game now");
@@ -1853,6 +1985,8 @@ void network_game_client_accepted_into_game(
 		client->game.machines[message_packet->machine_index].machine_index =
 			(char)message_packet->machine_index;
 		client->state = _network_game_client_state_pregame;
+		/* port: the next join shows no Discord pass until asked */
+		player_link_join_reset();
 
 		network_game_set_random_seed(message_packet->random_seed);
 		network_event(
@@ -2041,6 +2175,9 @@ boolean network_game_client_initiate_join_game(
 	client->join_in_progress = TRUE;
 	client->connect_process = 0;
 	client->connection_attempt_time = system_milliseconds();
+	/* port: a new join shows no Discord pass until its host asks for one */
+	if (!network_game_client_joining_with_link)
+		player_link_join_reset();
 
 	csmemcpy(
 		&client->join_parameters,
@@ -2115,6 +2252,10 @@ boolean network_game_client_address_matches_server(
 	struct transport_address server_unreliable_address;
 	boolean address_matches;
 
+	/* port: a replay's playback's messages are all the host's, and come
+	from no address (port/linux/game/network_replay_playback.c) */
+	if (network_replay_playing())
+		return TRUE;
 	match_assert(
 		"c:\\halo\\SOURCE\\networking\\network_client_manager.c",
 		0x2D2,
@@ -2200,6 +2341,8 @@ void network_game_client_reset(
 		client);
 
 	network_game_invalidate(&client->game);
+	/* port: a host's capabilities are its game's (port/linux/game/network_extensions.c) */
+	network_extensions_client_reset();
 
 	client->machine_index = NONE;
 	client->state = _network_game_client_state_searching;
@@ -2234,10 +2377,40 @@ void network_game_client_reset(
 	client->seconds_to_game_start = NONE;
 	network_game_client_late_join_time = 0;
 	network_game_client_late_join_clock_pending = FALSE;
+	/* port: no start put off */
+	network_game_client_start_pending = FALSE;
 	network_game_client_incompatibility_told = FALSE;
 	csmemset(network_game_client_add_player_requested, 0, sizeof(network_game_client_add_player_requested));
 
 	return;
+}
+
+/* port: a replay's playback (port/linux/game/network_replay_playback.c):
+the global client made one joined to the game the replay recorded, with no
+player of its own (no machine), in the pregame, which starts the game at
+the next idle (network_game_client_idle_pregame) */
+boolean network_game_client_port_replay_begin(
+	struct network_game const *game)
+{
+	struct network_game_client *client = global_network_game_client_get();
+
+	if (!client || !game)
+		return FALSE;
+	network_game_client_reset(client, FALSE);
+	csmemcpy(&client->game, game, sizeof(client->game));
+	client->game.local_data.game_objects_loaded = FALSE;
+	client->machine_index = NONE;
+	client->state = _network_game_client_state_pregame;
+	game_connection_set(_game_connection_network_client);
+	return TRUE;
+}
+
+/* port: whether the client's game is over (its scores shown), for a
+replay's playback's end */
+boolean network_game_client_port_in_postgame(
+	struct network_game_client *client)
+{
+	return client && client->state == _network_game_client_state_postgame;
 }
 
 struct network_game_client *network_game_client_create(
@@ -2318,12 +2491,70 @@ void network_game_client_rejected_by_game(
 	case _rejection_code_blacklisted_machine:
 		reason = "_rejection_code_blacklisted_machine";
 		break;
+
+	/* port: the port's own */
+	case _rejection_code_name_refused:
+		reason = "_rejection_code_name_refused";
+		break;
+
+	case _rejection_code_vpn_link_required:
+		reason = "_rejection_code_vpn_link_required";
+		break;
+
+	case _rejection_code_vpn_blocked:
+		reason = "_rejection_code_vpn_blocked";
+		break;
+
+	case _rejection_code_vpn_link_invalid:
+		reason = "_rejection_code_vpn_link_invalid";
+		break;
+
+	case _rejection_code_vpn_link_too_new:
+		reason = "_rejection_code_vpn_link_too_new";
+		break;
+
+	case _rejection_code_vpn_link_in_use:
+		reason = "_rejection_code_vpn_link_in_use";
+		break;
+
+	case _rejection_code_address_full:
+		reason = "_rejection_code_address_full";
+		break;
 	}
 
 	network_event(
 		"unable to join game: reason= #%d/%s",
 		rejection_code,
 		reason);
+	/* port: a dedicated server that refused this machine for its VPN asked
+	for a Discord account's pass (or refused the one shown): the join made
+	again at once with this machine's (the next it holds), if it holds one
+	(player_link.c), on the pregame screen it is on */
+	if (player_link_join_refused(rejection_code))
+	{
+		struct transport_address address;
+		struct network_join_parameters join_parameters;
+		struct network_advertised_game game;
+		boolean joining;
+
+		csmemset(&address, 0, sizeof(address));
+		network_connection_get_address(client->connection, &address, NULL);
+		csmemcpy(&join_parameters, &client->join_parameters, sizeof(join_parameters));
+		network_game_client_reset(client, TRUE);
+		csmemset(&game, 0, sizeof(game));
+		game.platform = network_game_get_local_platform();
+		network_game_client_joining_with_link = TRUE;
+		joining = network_game_client_initiate_join_game(client, &game, &join_parameters, &address);
+		network_game_client_joining_with_link = FALSE;
+		if (joining)
+		{
+			network_event("joining again with a Discord account's pass");
+			network_game_client_joined_again_with_link = TRUE;
+			return;
+		}
+	}
+	/* port: why, for the server browser's line (p2p_join_progress) */
+	p2p_join_refused(rejection_code);
 	/* port: the join went to the pregame screen at once (and a machine
 	refused a game in progress, network_game_server_refuse_late_joiner, is in
 	it): with no game behind it, it is left for the main menu, which says
@@ -2504,6 +2735,8 @@ static boolean add_advertised_game(
 				(advertisement->__unknown5A[HALO_PORT_ADVERTISED_VERSION_OFFSET + 1] << 8));
 			network_game_client_advertised_versions[game_index].flags =
 				advertisement->__unknown5A[HALO_PORT_ADVERTISED_FLAGS_OFFSET];
+			network_game_client_advertised_versions[game_index].kind =
+				advertisement->__unknown5A[HALO_PORT_ADVERTISED_KIND_OFFSET];
 		}
 
 		if (advertisement->game_name[0] != L'\0')
@@ -2589,6 +2822,10 @@ static boolean network_game_client_process_messages(
 		&message_packet_size,
 		&source_address))
 	{
+		/* port: into the replay a client records of what it reads of its host
+		(port/linux/game/network_replay.c) */
+		network_replay_record_received(message_packet, message_packet_size,
+			network_connection_last_read_was_unreliable());
 		if (!(success = network_game_client_handle_message(
 			client,
 			message_packet,
@@ -2816,6 +3053,7 @@ static boolean network_game_client_idle_joining(
 				message_header *message;
 
 				csmemset(&join_game_request, 0, sizeof(join_game_request));
+				join_game_request.network_version = HALO_PORT_NETWORK_VERSION; /* port: explicit shared agreement */
 				network_game_generate_local_machine_name(join_game_request.machine_name);
 				csmemcpy(
 					join_game_request.join_token,
@@ -2828,6 +3066,21 @@ static boolean network_game_client_idle_joining(
 
 					p2p_hardware_id(hardware_id, sizeof(hardware_id));
 					csmemcpy(join_game_request.hardware_id, hardware_id, csstrlen(hardware_id));
+				}
+				/* (port: and a Discord account's pass, when the host asked
+				for one: bound to this connection, the internet play tunnel's
+				with the host's stand-in in 100.64.0.0/10, in network byte
+				order) */
+				{
+					struct transport_address host_address;
+					unsigned long host;
+
+					csmemset(&host_address, 0, sizeof(host_address));
+					network_connection_get_address(client->connection, &host_address, NULL);
+					host = host_address.address.long_words[0];
+					player_link_join_fill((host & 0xFFC00000) == 0x64400000 ?
+						(host >> 24) | ((host >> 8) & 0xFF00) | ((host << 8) & 0xFF0000) | (host << 24) : 0,
+						join_game_request.link_pass, join_game_request.link_proof);
 				}
 
 				message = create_network_game_message(
@@ -2885,6 +3138,14 @@ static boolean network_game_client_idle_joining(
 			network_event("network_connection_idle() failed in network_game_client_idle_joining()");
 			success = network_game_client_process_last_messages(client);
 		}
+		/* port: the host's refusal asked for a Discord account's pass and the
+		join was made again with it: the refused connection's end, which the
+		host closed, is not this join's failure */
+		if (network_game_client_joined_again_with_link)
+		{
+			network_game_client_joined_again_with_link = FALSE;
+			success = TRUE;
+		}
 	}
 
 	return success;
@@ -2893,7 +3154,23 @@ static boolean network_game_client_idle_joining(
 static boolean network_game_client_idle_pregame(
 	struct network_game_client *client)
 {
-	boolean success = check_networking_and_generate_error();
+	boolean success;
+
+	/* port: a replay's playback starts the game it recorded at once
+	(network_game_client_port_replay_begin), its clock from the replay's
+	first tick: no host sends the first game update the clock waits for */
+	if (network_replay_playback_starting())
+	{
+		success = network_game_client_game_has_started(client);
+		if (success)
+		{
+			client->next_update_number = 1;
+			network_game_client_late_join_clock_pending = FALSE;
+			network_replay_playback_started();
+		}
+		return success;
+	}
+	success = check_networking_and_generate_error();
 
 	if (success)
 	{
@@ -2913,6 +3190,26 @@ static boolean network_game_client_idle_pregame(
 			else if (!(success = network_game_client_process_incoming_messages(client)))
 			{
 				network_event("network_game_client_process_incoming_messages() failed in network_game_client_idle_pregame()");
+			}
+			/* port: a start put off while the map was downloaded (map
+			sharing), once the download is over: the game loaded if the map
+			is there (a failed download leaves the game: map_share.c) */
+			else if (network_game_client_start_pending && client->state == _network_game_client_state_pregame &&
+				!map_share_downloading(client->game.map.name))
+			{
+				network_game_client_start_pending = FALSE;
+				if (csstrcmp(client->game.map.name, network_game_client_start_pending_map) ||
+					client->game.number_of_games_played != network_game_client_start_pending_games)
+				{
+					network_event("the game put off is over: waiting for the host's next start");
+				}
+				else if (!custom_edition_level_name(client->game.map.name) ||
+					custom_edition_cache_playable(client->game.map.name))
+				{
+					network_event("the map is downloaded: joining the game the host started");
+					if (!network_game_client_game_has_started(client))
+						network_event("network_game_client_game_has_started() failed");
+				}
 			}
 		}
 		else
@@ -2948,6 +3245,10 @@ static boolean network_game_client_idle_ingame(
 	NETWORK_GAME_SERVER_MAXIMUM_WAIT_TIME_FOR_LEVEL_LOADING) */
 	boolean started = network_game_client_server_has_started_game(client);
 
+	/* port: a replay's playback: its messages come from the replay, and no
+	connection has to be alive */
+	if (network_replay_playing())
+		return network_replay_playback_idle(client);
 	if (!network_connection_active(client->connection) ||
 		!network_connection_connected(client->connection))
 	{
@@ -2987,6 +3288,14 @@ static boolean network_game_client_idle_ingame(
 		client->connection_silent = connection_stale;
 	}
 
+	/* port: progressing MCC conversion has an absolute limit too, even when
+	 * the host keeps writing while its synchronous map conversion runs. */
+	if (success && mcc_load_network_client_expired())
+	{
+		network_event("MCC loading exceeded its bounded conversion window");
+		display_error_when_main_menu_loaded(_error_network_connection_lost);
+		success = FALSE;
+	}
 	if (success == TRUE)
 	{
 		success = network_connection_idle(client->connection, started ? 15000 : 75000, NULL);
@@ -3023,6 +3332,10 @@ static boolean network_game_client_idle_postgame(
 	/* (the scores of the game just over: the network may be down for a
 	moment, as in the game, network_game_client_network_lost) */
 	boolean success = network_game_is_splitscreen_local() || !network_game_client_network_lost();
+
+	/* port: a replay's playback, to the replay's end */
+	if (network_replay_playing())
+		return network_replay_playback_idle(client);
 
 	if (!success)
 	{
@@ -3097,7 +3410,6 @@ boolean network_game_client_advertised_game_compatible(
 	unsigned int ours = HALO_PORT_NETWORK_VERSION;
 	unsigned int theirs;
 	boolean distributed;
-	char message[400];
 
 	if (game_index < 0 || game_index >= MAXIMUM_NETWORK_ADVERTISED_GAMES)
 		return FALSE;
@@ -3109,6 +3421,20 @@ boolean network_game_client_advertised_game_compatible(
 		network_event("joining a host of network version %u", theirs);
 		return TRUE;
 	}
+	if (tell)
+		network_game_client_tell_version(theirs, distributed);
+	return FALSE;
+}
+
+/* port: the player told why a host of this network version (and netcode)
+cannot be joined: an advertised game's, or a server browser's row's */
+void network_game_client_tell_version(
+	unsigned int theirs,
+	boolean distributed)
+{
+	unsigned int ours = HALO_PORT_NETWORK_VERSION;
+	char message[400];
+
 	if (theirs == ours)
 	{
 		csprintf(message,
@@ -3131,13 +3457,9 @@ boolean network_game_client_advertised_game_compatible(
 			"Ask the host to update the game.",
 			ours, theirs);
 	}
-	if (tell)
-	{
-		network_event("not joining a host of network version %u%s (this machine's is %u)", theirs,
-			distributed ? "" : " with the lockstep netcode", ours);
-		platform_show_message("Halo: cannot join this game", message);
-	}
-	return FALSE;
+	network_event("not joining a host of network version %u%s (this machine's is %u)", theirs,
+		distributed ? "" : " with the lockstep netcode", ours);
+	platform_show_message("Halo: cannot join this game", message);
 }
 
 /* port: whether the advertised game is under way (HALO_PORT_ADVERTISED_IN_PROGRESS_FLAG),
@@ -3150,6 +3472,61 @@ boolean network_game_client_advertised_game_in_progress(
 
 	return game_index >= 0 && game_index < MAXIMUM_NETWORK_ADVERTISED_GAMES &&
 		(network_game_client_advertised_versions[game_index].flags & HALO_PORT_ADVERTISED_IN_PROGRESS_FLAG) != 0;
+}
+
+/* port: whether the advertised game's host is a dedicated server
+(HALO_PORT_ADVERTISED_DEDICATED_FLAG), for the lobby's line */
+boolean network_game_client_advertised_game_dedicated(
+	struct network_game_client *client,
+	struct network_advertised_game const *game)
+{
+	long game_index = client ? game - client->available_games : NONE;
+
+	return game_index >= 0 && game_index < MAXIMUM_NETWORK_ADVERTISED_GAMES &&
+		(network_game_client_advertised_versions[game_index].flags & HALO_PORT_ADVERTISED_DEDICATED_FLAG) != 0;
+}
+
+/* port: the client's index'th advertised game, as a probe tells it (halo
+--probe: port/linux/game/network_test.c) */
+boolean network_game_client_port_advertised_game_summary(
+	long index,
+	struct network_advertised_game_summary *summary)
+{
+	struct network_game_client *client = global_network_game_client_get();
+	struct network_advertised_game *game;
+
+	if (!client || index < 0 || index >= MAXIMUM_NETWORK_ADVERTISED_GAMES)
+		return FALSE;
+	game = &client->available_games[index];
+	if (!network_game_client_advertised_game_is_valid(game))
+		return FALSE;
+	csmemset(summary, 0, sizeof(*summary));
+	csmemcpy(summary->name, game->game_name, sizeof(summary->name));
+	summary->name[NUMBEROF(summary->name) - 1] = 0;
+	csmemcpy(summary->map_name, game->map.name, sizeof(summary->map_name));
+	summary->map_name[sizeof(summary->map_name) - 1] = 0;
+	summary->engine_type = game->engine_type;
+	summary->player_count = (short)game->player_count;
+	summary->maximum_player_count = game->maximum_player_count;
+	summary->open = game->open;
+	summary->has_teams = game->has_teams;
+	summary->in_progress = network_game_client_advertised_game_in_progress(client, game);
+	summary->dedicated = network_game_client_advertised_game_dedicated(client, game);
+	summary->version = network_game_client_advertised_versions[index].version;
+	summary->kind = network_game_client_advertised_versions[index].kind;
+	return TRUE;
+}
+
+/* port: the advertised game's kind (an OpenCE gametype's mode, and Hardcore:
+port/linux/game/game_modes.h), for the server browser's name of it */
+byte network_game_client_advertised_game_kind(
+	struct network_game_client *client,
+	struct network_advertised_game const *game)
+{
+	long game_index = client ? game - client->available_games : NONE;
+
+	return game_index >= 0 && game_index < MAXIMUM_NETWORK_ADVERTISED_GAMES ?
+		network_game_client_advertised_versions[game_index].kind : 0;
 }
 
 boolean network_game_client_join_first_available_game(

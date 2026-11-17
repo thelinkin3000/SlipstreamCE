@@ -932,6 +932,8 @@ symbols in this file:
 #include "saved games/saved_game_files.h"
 #include "text/unicode.h"
 #include "halo_menus.h" /* port: PC_MENU_FUNCTION_BASE */
+#include "custom_campaigns.h" /* port: port/linux/game/custom_campaigns.c */
+#include "mcc_ui.h" /* port: port/linux/game/mcc_ui.c */
 
 /* ---------- constants */
 
@@ -3030,9 +3032,9 @@ static boolean multiplayer_level_list_initialize(
 		definition->child_count == 3,
 		"expected 3 list items for 'multiplayer level list' widget");
 	/* port: the Xbox levels, then the Custom Edition maps in the maps
-	folders, looked for again as the list opens
+	folders, looked for again as the list opens if their names have changed
 	(port/linux/game/custom_edition_maps.c) */
-	custom_edition_maps_look_again();
+	custom_edition_maps_look_again_if_changed();
 	levels = custom_edition_maps_level_list(event_handler_functions.multiplayer_levels, level_count,
 		&level_count);
 	widget->generated_list = levels;
@@ -3437,9 +3439,15 @@ static boolean ui_widget_function_denied(
 	boolean denied = FALSE;
 	short index;
 
+	/* port: only MCC's own pause widgets may use its private actions */
+	if (mcc_ui_trusted_action(widget, function_index))
+		return FALSE;
 	if (pc_menu_tag(widget->definition_tag_index))
 		return FALSE;
-	if (function_index >= PC_MENU_FUNCTION_BASE && function_index < 0x8000)
+	/* port: (a custom campaign's own menus, whose Halo PC functions are
+	given the port's: port/linux/game/menu_tags.c, custom_campaigns.c) */
+	if (function_index >= PC_MENU_FUNCTION_BASE && function_index < 0x8000 &&
+		!(custom_campaign_has_ui() && main_menu_is_active()))
 	{
 		denied = TRUE;
 	}
@@ -3478,6 +3486,9 @@ boolean ui_widget_event_handler_function_invoke(
 	screens after it) */
 	if (ui_widget_function_denied(widget, function_index))
 		return FALSE;
+	/* port: MCC's additional in-map functions have their own dispatcher (mcc_ui.c) */
+	if (mcc_ui_event_function(widget, event, function_index, widget_deleted, &result))
+		return result;
 	/* port: the menus' own functions (port/linux/game/menu_functions.c) */
 	if (function_index >= PC_MENU_FUNCTION_BASE && function_index < 0x8000)
 	{
@@ -4851,6 +4862,8 @@ static boolean player_profile_change_controller_settings(
 		case _button_preset_green_thumb:
 		case _button_preset_bumper_jumper:
 		case _button_preset_reclaimer:
+		case _button_preset_fishsticks:
+		case _button_preset_recon:
 			profile->controller_settings.button_preset = (byte)option_spinner->data3C.selected_index;
 			return TRUE;
 		default: error(2, "unknown button config option selected"); return TRUE;
