@@ -692,6 +692,9 @@ struct widget_instance;
 /* port: port/linux/game/menu_functions.c: a text's colour in place of its
 own (the server browser's pings) */
 boolean pc_menu_text_color(struct widget_instance *widget, real_argb_color *color);
+/* port: whether a text box of the menus' is broken into lines at its width
+(port/linux/game/menu_functions.c) */
+boolean menu_functions_text_wraps(struct widget_instance *widget);
 
 /* ---------- constants */
 
@@ -2625,11 +2628,14 @@ static __inline boolean widget_instance_can_handle_events(
 takes no events and has nothing in it that does, which its game passes over
 (its rows of settings take none themselves, but their spinners do), or one
 hidden (a list's rows past its items: port/linux/game/menu_functions.c) or
-disabled (the server browser's column titles, which sort nothing) */
+disabled (the server browser's column titles, which sort nothing), or a
+list with nothing in it (a button bar whose buttons are all another
+platform's: the consoles' hints stand for them) */
 static boolean widget_instance_port_is_label(
 	struct widget_instance *widget)
 {
-	return (!widget_instance_can_handle_events(widget) && !widget->child) || !widget->visible || widget->disabled;
+	return (!widget_instance_can_handle_events(widget) && !widget->child) || !widget->visible || widget->disabled ||
+		(widget->type == _ui_widget_type_column_list && !widget->child);
 }
 
 static struct widget_instance *widget_instance_find_by_tag_index_recursive(
@@ -3389,6 +3395,13 @@ static void widget_back_left_nothing(
 	if (widget_stack < 0 || widget_stack >= MAXIMUM_NUMBER_OF_LOCAL_PLAYERS)
 		return;
 	if (!we_are_at_the_main_menu)
+		return;
+	/* (a map change's fade, main_screen_shell_begin_fade: the screens close
+	themselves as the map loads, their history gone, the menus still active
+	till it ends; that is not Back leaving nothing, and the main menu asked
+	for then would follow the map in: the campaign started from New Game
+	back at the menus as soon as its level loaded) */
+	if (widget_globals.processing_inhibited)
 		return;
 	if (widget_globals.widget_stack[widget_stack])
 		return;
@@ -4346,6 +4359,69 @@ static void render_state_bitmap(
 	return;
 }
 
+/* port: the button icon of the menus' text's icon type, for the local player
+whose text it is (draw_string_and_hack_in_icons; measured by
+ui_widget_port_text_width) */
+static short hack_in_icon_index(
+	short icon_type)
+{
+	short remapped_icon_type;
+	short icon_index;
+
+	remapped_icon_type = remap_sticks_for_local_player(
+		icon_type,
+		local_player_index_for_draw_string_and_hack_in_icons);
+	icon_index = NONE;
+	if (remapped_icon_type > _icon_right_stick)
+	{
+		if (remapped_icon_type <= _icon_look)
+		{
+			if (remapped_icon_type <= _icon_accept)
+			{
+				struct game_input_preferences preferences;
+
+				input_abstraction_get_local_player_preferences(
+					local_player_index_for_draw_string_and_hack_in_icons,
+					&preferences);
+				icon_index = preferences.game_control_to_xbox_buttons[
+					button_mappings[remapped_icon_type - _icon_action]];
+			}
+			else
+			{
+				icon_index = button_mappings[remapped_icon_type - _icon_action];
+				switch (remapped_icon_type)
+				{
+				case _icon_accept:
+					icon_index = _icon_start_button;
+					break;
+				case _icon_back:
+					icon_index = _icon_back_button;
+					break;
+				case _icon_move:
+					icon_index = _icon_left_stick;
+					break;
+				case _icon_look:
+					icon_index = _icon_right_stick;
+					break;
+				}
+			}
+		}
+		else
+		{
+			match_assert(
+				"c:\\halo\\SOURCE\\interface\\ui_widget.c",
+				4341,
+				FALSE);
+		}
+	}
+	else
+	{
+		icon_index = remapped_icon_type;
+	}
+
+	return icon_index;
+}
+
 /* port: where the last draw_string_and_hack_in_icons left its cursor (the
 right of its last line), for a caller that centres what it drew
 (port/linux/game/network_replay_playback.c) */
@@ -4400,60 +4476,10 @@ void draw_string_and_hack_in_icons(
 		}
 		else
 		{
-			short remapped_icon_type;
 			short icon_index;
 
 			current = icon_spec + wcslen(icon_names[icon_type]);
-			remapped_icon_type = remap_sticks_for_local_player(
-				icon_type,
-				local_player_index_for_draw_string_and_hack_in_icons);
-			icon_index = NONE;
-			if (remapped_icon_type > _icon_right_stick)
-			{
-				if (remapped_icon_type <= _icon_look)
-				{
-					if (remapped_icon_type <= _icon_accept)
-					{
-						struct game_input_preferences preferences;
-
-						input_abstraction_get_local_player_preferences(
-							local_player_index_for_draw_string_and_hack_in_icons,
-							&preferences);
-						icon_index = preferences.game_control_to_xbox_buttons[
-							button_mappings[remapped_icon_type - _icon_action]];
-					}
-					else
-					{
-						icon_index = button_mappings[remapped_icon_type - _icon_action];
-						switch (remapped_icon_type)
-						{
-						case _icon_accept:
-							icon_index = _icon_start_button;
-							break;
-						case _icon_back:
-							icon_index = _icon_back_button;
-							break;
-						case _icon_move:
-							icon_index = _icon_left_stick;
-							break;
-						case _icon_look:
-							icon_index = _icon_right_stick;
-							break;
-						}
-					}
-				}
-				else
-				{
-					match_assert(
-						"c:\\halo\\SOURCE\\interface\\ui_widget.c",
-						4341,
-						FALSE);
-				}
-			}
-			else
-			{
-				icon_index = remapped_icon_type;
-			}
+			icon_index = hack_in_icon_index(icon_type);
 
 			{
 				struct icon_hud_element_definition *icon = TAG_BLOCK_GET_ELEMENT(
@@ -4501,6 +4527,162 @@ void draw_string_and_hack_in_icons(
 	draw_string_set_indents(0, 0);
 
 	return;
+}
+
+/* port: how far an icon of the menus' text moves the cursor on, as
+render_state_bitmap moves it, without drawing it */
+static short measure_icon_advance(
+	short icon_index,
+	short cursor_x)
+{
+	struct icon_hud_element_definition *icon = TAG_BLOCK_GET_ELEMENT(
+		&hud_globals->messaging.button_icons,
+		icon_index,
+		struct icon_hud_element_definition);
+	struct game_globals *game_globals;
+	struct game_globals_interface_tag_references *interface_tag_references;
+	struct bitmap_data const *bitmap = NULL;
+	real_rectangle2d const *clip = NULL;
+	boolean absolute_width = TEST_FLAG(icon->flags, _hud_icon_absolute_width_bit);
+	short width_offset = icon->width_offset;
+	short x;
+
+	if (icon_is_special[icon_index])
+	{
+		absolute_width = FALSE;
+		width_offset = -5;
+	}
+	global_scenario_get();
+	game_globals = scenario_get_game_globals();
+	if (!game_globals->interface_tag_references.count)
+		return cursor_x;
+	interface_tag_references = TAG_BLOCK_GET_ELEMENT(
+		&game_globals->interface_tag_references,
+		0,
+		struct game_globals_interface_tag_references);
+	hud_retrieve_bitmap_and_bounding_rect(
+		interface_tag_references->interface_tag_references[_interface_bitmap_iface_map2].index,
+		icon->sequence_index,
+		0,
+		&bitmap,
+		&clip);
+	if (!bitmap)
+		return cursor_x;
+	x = (short)(icon->offset.x * hud_globals_get_scale(local_player_count() > 1) + cursor_x + 1.0f);
+	if (absolute_width)
+		return (short)(width_offset + x);
+	if (clip)
+		return (short)((clip->x1 - clip->x0) * bitmap->width + width_offset + x);
+	return (short)(bitmap->width + width_offset + x);
+}
+
+/* port: how wide a widget is (its definition's bounds), for the menus' hint
+bars (menu_functions.c's hint_bar_update) */
+short ui_widget_port_width(
+	struct widget_instance *widget)
+{
+	struct ui_widget_definition *definition;
+
+	if (!widget || widget->definition_tag_index == NONE)
+		return 0;
+	definition = ui_widget_definition_get(widget->definition_tag_index);
+
+	return (short)(definition->bounds.x1 - definition->bounds.x0);
+}
+
+/* port: how wide a text box's text is drawn (its font, its button icons as
+draw_string_and_hack_in_icons draws them), for the menus' hint bars
+(menu_functions.c's hint_bar_update), which place each hint after the one
+before it. 0 when it has no text or font. */
+short ui_widget_port_text_width(
+	struct widget_instance *widget)
+{
+	static real_argb_color const white = { 1.0f, 1.0f, 1.0f, 1.0f };
+	struct ui_widget_definition *definition;
+	wchar_t const *text;
+	wchar_t buffer[256];
+	wchar_t *current;
+	rectangle2d bounds;
+	rectangle2d cursor_bounds;
+	rectangle2d text_bounds;
+	short right = 0;
+	unsigned long length;
+
+	if (!widget || widget->definition_tag_index == NONE)
+		return 0;
+	definition = ui_widget_definition_get(widget->definition_tag_index);
+	if (definition->text_font.index == NONE)
+		return 0;
+	text = widget->parameters.text_box.text;
+	if ((!text || !*text) && definition->text_label_string_list.index != NONE)
+	{
+		short string_list_index = widget->parameters.text_box.string_list_index == NONE ?
+			definition->string_list_index : widget->parameters.text_box.string_list_index;
+
+		text = unicode_string_list_get_string(definition->text_label_string_list.index, string_list_index);
+	}
+	if (!text || !*text)
+		return 0;
+	for (length = 0; length < NUMBEROF(buffer) - 1 && text[length]; length++)
+		buffer[length] = text[length];
+	buffer[length] = 0;
+	bounds.x0 = 0;
+	bounds.y0 = 0;
+	bounds.x1 = 0x3FFF;
+	bounds.y1 = 0x3FFF;
+	cursor_bounds = bounds;
+	draw_string_set_draw_mode(definition->text_font.index, NONE, _text_justification_left, 0, &white);
+	current = buffer;
+	while (current)
+	{
+		wchar_t *icon_spec = wcschr(current, L'%');
+		wchar_t const *segment = current;
+		short icon_type = NONE;
+
+		if (icon_spec)
+		{
+			*icon_spec = 0;
+			icon_type = get_icon_type(icon_spec + 1);
+			current = icon_type == NONE ? icon_spec + 1 : icon_spec + 1 + wcslen(icon_names[icon_type]);
+		}
+		else
+		{
+			current = NULL;
+		}
+		/* (as render_state_text: from the cursor, which then goes back 3) */
+		if (*segment || !icon_spec)
+		{
+			draw_string_set_indents((short)MAX(0, cursor_bounds.x0 - bounds.x0), 0);
+			draw_unicode_string_compute_bounds(&bounds, segment, &text_bounds, &cursor_bounds);
+			right = (short)MAX(right, MAX(text_bounds.x1, cursor_bounds.x0));
+			cursor_bounds.x0 -= 3;
+			bounds.y0 = cursor_bounds.y0;
+		}
+		if (!icon_spec)
+			break;
+		if (icon_type == NONE)
+		{
+			draw_string_set_indents((short)MAX(0, cursor_bounds.x0 - bounds.x0), 0);
+			draw_unicode_string_compute_bounds(&bounds, L"%", &text_bounds, &cursor_bounds);
+			right = (short)MAX(right, MAX(text_bounds.x1, cursor_bounds.x0));
+			cursor_bounds.x0 -= 3;
+			bounds.y0 = cursor_bounds.y0;
+		}
+		else
+		{
+			short icon_index = hack_in_icon_index(icon_type);
+
+			if (icon_index >= 0 && icon_index < NUM_ICONS)
+			{
+				cursor_bounds.x0 = measure_icon_advance(icon_index, cursor_bounds.x0);
+				right = (short)MAX(right, cursor_bounds.x0);
+			}
+			bounds.x0++;
+		}
+	}
+	draw_string_set_indents(0, 0);
+
+	return right;
 }
 
 void ui_start_main_menu_music(
@@ -5669,7 +5851,9 @@ static void widget_instance_render_text_box(
 	/* port: MCC owns these text boxes; wrap their instance copies to the panel
 	 * width without changing the map's objective strings or other menus. */
 	{
-		if (mcc_pause_text_wrap_needed(widget->definition_tag_index))
+		/* port: and the menus' own long text (menu_functions.c's
+		menu_functions_text_wraps: the consoles' IMPORT page's words) */
+		if (mcc_pause_text_wrap_needed(widget->definition_tag_index) || menu_functions_text_wraps(widget))
 		{
 			ui_widget_port_text_wrap(*text, &bounds, (short)(bounds.x1 - bounds.x0));
 			clip.x0 = MAX(clip.x0, bounds.x0);

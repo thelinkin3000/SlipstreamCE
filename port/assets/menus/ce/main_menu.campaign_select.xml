@@ -35,9 +35,9 @@
 	</widget>
 	<widget name="main_menu/campaign_select/load_level_select_button_bar" type="column_list" width="640" height="28" flags="pass_unhandled_to_focused_child left_right_tabs_items">
 		<data input="common button bar update"/>
-		<child widget="main_menu/campaign_select/load_level_select_button_delete" y="1"/>
-		<child widget="main_menu/solo_level_select/solo_level_select_button_ok" x="380" y="1"/>
-		<child widget="common_button_back" x="510" y="1"/>
+		<child widget="main_menu/campaign_select/load_level_select_button_delete" y="1" platform="desktop android web"/>
+		<child widget="main_menu/solo_level_select/solo_level_select_button_ok" x="380" y="1" platform="desktop android web"/>
+		<child widget="common_button_back" x="510" y="1" platform="desktop android web"/>
 	</widget>
 	<widget name="main_menu/campaign_select/load_level_select_button_delete" type="text" width="128" height="24" bitmap="bitmaps/text_button_background" string_list="strings/common_button_captions" string_index="5" font="ui\small_ui" color="#FFFFFFFF" align="center" text_y="2">
 		<on event="a" run="mouse emit x event"/>
@@ -67,6 +67,7 @@
 		<child widget="main_menu/new_select/sel_list_desc_bkd"/>
 		<child widget="main_menu/campaign_select/load_level_select_list"/>
 		<child widget="main_menu/campaign_select/header_load_game"/>
+		<child widget="main_menu/campaign_select/load/hint_bar" x="24" y="415" platform="switch ps5"/>
 	</widget>
 	<widget name="main_menu/campaign_select/menu_item_back" type="text" width="256" height="33" bitmap="main_menu/campaign_select/item_back" string_list="main_menu/main_menu_options" font="ui\small_ui" color="#000080FF">
 		<on event="a" back="true"/>

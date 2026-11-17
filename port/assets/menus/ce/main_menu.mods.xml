@@ -12,14 +12,7 @@
 		<child widget="main_menu/new_select/sel_list_desc_bkd"/>
 		<child widget="main_menu/mods/mods_list"/>
 		<child widget="main_menu/mods/header_mods"/>
-		<child widget="main_menu/mods/mod_hint_save" x="8" y="415" platform="switch ps5"/>
-		<child widget="main_menu/mods/mod_hint_toggle" x="80" y="415" platform="switch ps5"/>
-		<child widget="main_menu/mods/mod_hint_l_switch" x="184" y="418" platform="switch"/>
-		<child widget="main_menu/mods/mod_hint_r_switch" x="200" y="418" platform="switch"/>
-		<child widget="main_menu/mods/mod_hint_l_ps5" x="184" y="418" platform="ps5"/>
-		<child widget="main_menu/mods/mod_hint_r_ps5" x="200" y="418" platform="ps5"/>
-		<child widget="main_menu/mods/mod_hint_move" x="218" y="415" platform="switch ps5"/>
-		<child widget="main_menu/mods/mod_hint_cancel" x="510" y="415" platform="switch ps5"/>
+		<child widget="main_menu/mods/hint_bar" x="24" y="415" platform="switch ps5"/>
 	</widget>
 	<widget name="main_menu/mods/header_mods" controller="1" left="35" top="11" width="363" height="59" bitmap="main_menu/mods/header_mods">
 	</widget>
@@ -27,7 +20,7 @@
 		<data input="port mods update"/>
 		<on event="created" run="port mods init"/>
 		<on event="deleted" run="port mods close"/>
-		<on event="y" run="port mods toggle"/>
+		<on event="x" run="port mods save" back="true"/>
 		<on event="white" run="port mods move up"/>
 		<on event="black" run="port mods move down"/>
 		<child widget="main_menu/mods/op_mod_1" x="20" y="73"/>
@@ -206,20 +199,31 @@
 		<on event="start" run="port mods save" back="true"/>
 		<on event="left_mouse" run="mouse emit accept event"/>
 	</widget>
-	<widget name="main_menu/mods/mod_hint_save" type="text" controller="1" width="160" height="24" text="%a-button SAVE" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	<widget name="main_menu/mods/hint_bar/left_0" type="text" controller="1" width="300" height="24" text="%x-button SAVE" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
 	</widget>
-	<widget name="main_menu/mods/mod_hint_toggle" type="text" controller="1" width="160" height="24" text="%y-button ON / OFF" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	<widget name="main_menu/mods/hint_bar/left_1_pic0_switch" width="14" height="14" bitmap="hints/switch_l">
 	</widget>
-	<widget name="main_menu/mods/mod_hint_move" type="text" controller="1" width="160" height="24" text="MOVE" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	<widget name="main_menu/mods/hint_bar/left_1_pic0_ps5" width="14" height="14" bitmap="hints/ps5_l1">
 	</widget>
-	<widget name="main_menu/mods/mod_hint_cancel" type="text" controller="1" width="160" height="24" text="%b-button CANCEL" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	<widget name="main_menu/mods/hint_bar/left_1_pic1_switch" width="14" height="14" bitmap="hints/switch_r">
 	</widget>
-	<widget name="main_menu/mods/mod_hint_l_switch" width="14" height="14" bitmap="hints/switch_l">
+	<widget name="main_menu/mods/hint_bar/left_1_pic1_ps5" width="14" height="14" bitmap="hints/ps5_r1">
 	</widget>
-	<widget name="main_menu/mods/mod_hint_r_switch" width="14" height="14" bitmap="hints/switch_r">
+	<widget name="main_menu/mods/hint_bar/left_1" type="text" controller="1" width="300" height="24" text="MOVE" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
 	</widget>
-	<widget name="main_menu/mods/mod_hint_l_ps5" width="14" height="14" bitmap="hints/ps5_l1">
+	<widget name="main_menu/mods/hint_bar/right_0" type="text" controller="1" width="300" height="24" text="%b-button CANCEL" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
 	</widget>
-	<widget name="main_menu/mods/mod_hint_r_ps5" width="14" height="14" bitmap="hints/ps5_r1">
+	<widget name="main_menu/mods/hint_bar/right_1" type="text" controller="1" width="300" height="24" text="%a-button ON / OFF" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/mods/hint_bar" width="592" height="24">
+		<data input="port hint bar"/>
+		<child widget="main_menu/mods/hint_bar/left_0"/>
+		<child widget="main_menu/mods/hint_bar/left_1_pic0_switch" y="3" platform="switch"/>
+		<child widget="main_menu/mods/hint_bar/left_1_pic0_ps5" y="3" platform="ps5"/>
+		<child widget="main_menu/mods/hint_bar/left_1_pic1_switch" y="3" platform="switch"/>
+		<child widget="main_menu/mods/hint_bar/left_1_pic1_ps5" y="3" platform="ps5"/>
+		<child widget="main_menu/mods/hint_bar/left_1"/>
+		<child widget="main_menu/mods/hint_bar/right_0"/>
+		<child widget="main_menu/mods/hint_bar/right_1"/>
 	</widget>
 </menus>

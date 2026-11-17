@@ -9,7 +9,7 @@
 	</widget>
 	<widget name="main_menu/multiplayer_type_select/multiplayer_type_button_bar" type="column_list" width="640" height="28" flags="pass_unhandled_to_focused_child left_right_tabs_items">
 		<data input="common button bar update"/>
-		<child widget="common_button_back" x="510" y="1"/>
+		<child widget="common_button_back" x="510" y="1" platform="desktop android web"/>
 	</widget>
 	<widget name="main_menu/multiplayer_type_select/multiplayer_type_create_internet_item" type="text" left="51" width="232" height="32" bitmap="bitmaps/list_item_bkd" string_list="main_menu/multiplayer_type_select/multiplayer_options" string_index="2" font="ui\large_ui" color="#FF2896FF" text_x="13" text_y="5">
 		<on event="a" run="join controller to mp game"/>
@@ -23,7 +23,7 @@
 		<on event="a" run="mp type set mode" open="main_menu/multiplayer_type_select/connected/connected_map_select_wrapper"/>
 		<on event="left_mouse" run="mouse emit accept event"/>
 	</widget>
-	<widget name="main_menu/multiplayer_type_select/multiplayer_type_gametypes_item" type="text" left="51" width="232" height="32" bitmap="bitmaps/list_item_bkd" string_list="main_menu/multiplayer_type_select/multiplayer_options" string_index="5" font="ui\large_ui" color="#FF2896FF" text_x="13" text_y="5">
+	<widget name="main_menu/multiplayer_type_select/multiplayer_type_gametypes_item" type="text" left="51" width="232" height="32" bitmap="bitmaps/list_item_bkd_bottom" string_list="main_menu/multiplayer_type_select/multiplayer_options" string_index="5" font="ui\large_ui" color="#FF2896FF" text_x="13" text_y="5">
 		<on event="a" open="main_menu/settings_select/multiplayer_setup/playlist_select/gametype_select_screen"/>
 		<on event="start" open="main_menu/settings_select/multiplayer_setup/playlist_select/gametype_select_screen"/>
 		<on event="left_mouse" run="mouse emit accept event"/>
@@ -53,21 +53,22 @@
 	<widget name="main_menu/multiplayer_type_select/multiplayer_type_select_list" type="column_list" width="640" height="480" flags="pass_unhandled_to_focused_child up_down_tabs_items" description="main_menu/multiplayer_type_select/multiplayer_type_list_ext_desc">
 		<data input="multiplayer type menu update desc"/>
 		<child widget="main_menu/multiplayer_type_select/multiplayer_type_join_item" x="-32" y="78"/>
-		<child widget="main_menu/multiplayer_type_select/multiplayer_type_join_internet_item" y="111"/>
-		<child widget="main_menu/multiplayer_type_select/multiplayer_type_join_lan_item" y="144"/>
-		<child widget="main_menu/multiplayer_type_select/multiplayer_type_join_direct_item" y="177"/>
-		<child widget="main_menu/multiplayer_type_select/multiplayer_type_create_item" x="-32" y="210"/>
-		<child widget="main_menu/multiplayer_type_select/multiplayer_type_create_internet_item" y="243"/>
-		<child widget="main_menu/multiplayer_type_select/multiplayer_type_create_lan_item" y="276"/>
-		<child widget="main_menu/multiplayer_type_select/multiplayer_type_coop_item" y="309"/>
-		<child widget="main_menu/multiplayer_type_select/multiplayer_type_host_item" y="342"/>
-		<child widget="main_menu/multiplayer_type_select/multiplayer_type_gametypes_item" y="381"/>
+		<child widget="main_menu/multiplayer_type_select/multiplayer_type_join_internet_item" y="109"/>
+		<child widget="main_menu/multiplayer_type_select/multiplayer_type_join_lan_item" y="140"/>
+		<child widget="main_menu/multiplayer_type_select/multiplayer_type_join_direct_item" y="171"/>
+		<child widget="main_menu/multiplayer_type_select/multiplayer_type_create_item" x="-32" y="202"/>
+		<child widget="main_menu/multiplayer_type_select/multiplayer_type_create_internet_item" y="233"/>
+		<child widget="main_menu/multiplayer_type_select/multiplayer_type_create_lan_item" y="264"/>
+		<child widget="main_menu/multiplayer_type_select/multiplayer_type_coop_item" y="295"/>
+		<child widget="main_menu/multiplayer_type_select/multiplayer_type_host_item" y="326"/>
+		<child widget="main_menu/multiplayer_type_select/multiplayer_type_gametypes_item" y="368"/>
 		<child widget="main_menu/multiplayer_type_select/multiplayer_type_button_bar" y="414"/>
 	</widget>
 	<widget name="main_menu/multiplayer_type_select/multiplayer_type_select_screen" width="640" height="480" flags="pass_unhandled_to_focused_child" bitmap="bitmaps/gradient">
 		<on event="created" run="mp type menu initialize"/>
 		<child widget="main_menu/multiplayer_type_select/header_multiplayer"/>
 		<child widget="main_menu/multiplayer_type_select/multiplayer_type_select_list"/>
-		<child widget="main_menu/blueline" x="64" y="376"/>
+		<child widget="main_menu/multiplayer_type_select/hint_bar" x="24" y="415" platform="switch ps5"/>
+		<child widget="main_menu/blueline" x="64" y="362"/>
 	</widget>
 </menus>

@@ -365,6 +365,9 @@ static struct
 {
 	boolean active;
 	boolean masked;
+	/* a name's (virtual_keyboard_launch_name): Done keeps it by a name's
+	rules, as the Xbox's keyboard does */
+	boolean named;
 	wchar_t caption[MAXIMUM_VIRTUAL_KEYBOARD_FREE_CAPTION_LENGTH];
 	struct onscreen_keyboard keys;
 	char text[MAXIMUM_VIRTUAL_KEYBOARD_FREE_BUFFER_SIZE / sizeof(wchar_t)];
@@ -523,6 +526,7 @@ boolean virtual_keyboard_launch_text(
 	}
 	virtual_keyboard_free_text.active = TRUE;
 	virtual_keyboard_free_text.masked = masked;
+	virtual_keyboard_free_text.named = FALSE;
 	for (index = 0; caption && caption[index] && index < MAXIMUM_VIRTUAL_KEYBOARD_FREE_CAPTION_LENGTH - 1; index++)
 		virtual_keyboard_free_text.caption[index] = (wchar_t)(unsigned char)caption[index];
 	virtual_keyboard_free_text.caption[index] = 0;
@@ -536,6 +540,18 @@ boolean virtual_keyboard_launch_text(
 	}
 	virtual_keyboard_free_text.text[index] = 0;
 	onscreen_keyboard_reset(&virtual_keyboard_free_text.keys);
+	return TRUE;
+}
+
+/* (virtual_keyboard.h) */
+boolean virtual_keyboard_launch_name(
+	wchar_t *text_buffer,
+	word buffer_size,
+	char const *caption)
+{
+	if (!virtual_keyboard_launch_text(text_buffer, buffer_size, caption, FALSE))
+		return FALSE;
+	virtual_keyboard_free_text.named = TRUE;
 	return TRUE;
 }
 
@@ -575,6 +591,28 @@ static void virtual_keyboard_free_done(
 	for (index = 0; virtual_keyboard_free_text.text[index] && index < virtual_keyboard_free_text.maximum; index++)
 		virtual_keyboard_globals.text_buffer[index] = (wchar_t)(unsigned char)virtual_keyboard_free_text.text[index];
 	virtual_keyboard_globals.text_buffer[index] = 0;
+	/* (a name: as the Xbox keyboard's Done keeps one, _vkey_done: its spaces
+	before and after dropped, and a new one refused, the name left as it
+	was, when it is empty or another saved game's) */
+	if (virtual_keyboard_free_text.named)
+	{
+		if (!player_name_clean(virtual_keyboard_globals.text_buffer,
+			virtual_keyboard_globals.buffer_size / (long)sizeof(wchar_t)))
+		{
+			virtual_keyboard_globals.text_buffer[0] = 0;
+		}
+		if (ustrcmp(virtual_keyboard_globals.saved_text, virtual_keyboard_globals.text_buffer) != 0 &&
+			(!virtual_keyboard_globals.text_buffer[0] ||
+				!saved_game_file_name_unique(virtual_keyboard_globals.text_buffer)))
+		{
+			display_error(virtual_keyboard_globals.text_buffer[0] ?
+				_error_already_a_saved_game_file_with_that_name : _error_cannot_create_saved_game_file_with_empty_name,
+				NONE, TRUE, FALSE);
+			virtual_keyboard_cancel();
+			event_manager_flush();
+			return;
+		}
+	}
 	virtual_keyboard_globals.last_exit_saved_text = TRUE;
 	ui_play_audio_feedback_sound(_ui_audio_feedback_back);
 	virtual_keyboard_set_active(FALSE);

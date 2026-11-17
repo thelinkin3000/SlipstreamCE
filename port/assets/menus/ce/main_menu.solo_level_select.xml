@@ -33,8 +33,8 @@
 		<data input="common button bar update"/>
 		<child widget="main_menu/new_select/button_map_delete" x="120" y="1" platform="android"/>
 		<child widget="main_menu/new_select/button_map_import" x="250" y="1" platform="android"/>
-		<child widget="main_menu/solo_level_select/solo_level_select_button_ok" x="380" y="1"/>
-		<child widget="common_button_back" x="510" y="1"/>
+		<child widget="main_menu/solo_level_select/solo_level_select_button_ok" x="380" y="1" platform="desktop android web"/>
+		<child widget="common_button_back" x="510" y="1" platform="desktop android web"/>
 	</widget>
 	<widget name="main_menu/solo_level_select/solo_level_select_button_ok" type="text" width="128" height="24" bitmap="bitmaps/text_button_background" string_list="strings/common_button_captions" string_index="1" font="ui\small_ui" color="#FFFFFFFF" align="center" text_y="2">
 		<on event="a" run="emit custom activation event"/>
@@ -42,6 +42,8 @@
 		<on event="left_mouse" run="mouse emit accept event"/>
 	</widget>
 	<widget name="main_menu/solo_level_select/solo_level_select_list" type="column_list" width="640" height="480" flags="pass_unhandled_to_focused_child up_down_tabs_children" description="main_menu/solo_level_select/solo_level_extended_desc">
+		<on event="white" run="port chooser previous"/>
+		<on event="black" run="port chooser next"/>
 		<on event="created" run="initialize sp level list solo"/>
 		<on event="deleted" run="dispose sp level list"/>
 		<on event="custom_activation" run="solo level set map" open="main_menu/difficulty_select/difficulty_select_list_screen"/>
@@ -50,7 +52,6 @@
 		<on event="b" run="port mcc solo folder back"/>
 		<on event="back" run="port mcc solo folder back"/>
 		<data input="solo map list update"/>
-		<child widget="main_menu/new_select/list_item_0_map_kind" x="82" y="73"/>
 		<child widget="main_menu/new_select/list_item_1" x="20" y="103"/>
 		<child widget="main_menu/new_select/list_item_2" x="20" y="133"/>
 		<child widget="main_menu/new_select/list_item_3" x="20" y="163"/>
@@ -69,5 +70,7 @@
 		<child widget="main_menu/new_select/sel_list_desc_bkd"/>
 		<child widget="main_menu/solo_level_select/solo_level_select_list"/>
 		<child widget="main_menu/solo_level_select/header_replay_level"/>
+		<child widget="main_menu/new_select/list_item_0_map_kind" x="82" y="73"/>
+		<child widget="main_menu/solo_level_select/hint_bar" x="24" y="415" platform="switch ps5"/>
 	</widget>
 </menus>

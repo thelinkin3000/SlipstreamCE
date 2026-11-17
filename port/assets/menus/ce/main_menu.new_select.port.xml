@@ -30,4 +30,268 @@
 	</widget>
 	<widget name="main_menu/new_select/map_delete_status" type="text" controller="1" left="417" top="258" width="146" height="136" font="ui\small_ui" color="#FF2896FF" text_flags="no_focus_test">
 	</widget>
+	<widget name="main_menu/solo_level_select/hint_bar/left_0" type="text" controller="1" width="300" height="24" text="%y-button IMPORT" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/solo_level_select/hint_bar/left_1_pic0_switch" width="14" height="14" bitmap="hints/switch_l">
+	</widget>
+	<widget name="main_menu/solo_level_select/hint_bar/left_1_pic0_ps5" width="14" height="14" bitmap="hints/ps5_l1">
+	</widget>
+	<widget name="main_menu/solo_level_select/hint_bar/left_1_pic1_switch" width="14" height="14" bitmap="hints/switch_r">
+	</widget>
+	<widget name="main_menu/solo_level_select/hint_bar/left_1_pic1_ps5" width="14" height="14" bitmap="hints/ps5_r1">
+	</widget>
+	<widget name="main_menu/solo_level_select/hint_bar/left_1" type="text" controller="1" width="300" height="24" text="MAP TYPE" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/solo_level_select/hint_bar/right_0" type="text" controller="1" width="300" height="24" text="%b-button BACK" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/solo_level_select/hint_bar/right_1" type="text" controller="1" width="300" height="24" text="%a-button SELECT" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/solo_level_select/hint_bar" width="592" height="24">
+		<data input="port hint bar"/>
+		<child widget="main_menu/solo_level_select/hint_bar/left_0"/>
+		<child widget="main_menu/solo_level_select/hint_bar/left_1_pic0_switch" y="3" platform="switch"/>
+		<child widget="main_menu/solo_level_select/hint_bar/left_1_pic0_ps5" y="3" platform="ps5"/>
+		<child widget="main_menu/solo_level_select/hint_bar/left_1_pic1_switch" y="3" platform="switch"/>
+		<child widget="main_menu/solo_level_select/hint_bar/left_1_pic1_ps5" y="3" platform="ps5"/>
+		<child widget="main_menu/solo_level_select/hint_bar/left_1"/>
+		<child widget="main_menu/solo_level_select/hint_bar/right_0"/>
+		<child widget="main_menu/solo_level_select/hint_bar/right_1"/>
+	</widget>
+	<widget name="main_menu/multiplayer_type_select/mp_map_select/hint_bar/left_0" type="text" controller="1" width="300" height="24" text="%y-button IMPORT" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/multiplayer_type_select/mp_map_select/hint_bar/left_1_pic0_switch" width="14" height="14" bitmap="hints/switch_l">
+	</widget>
+	<widget name="main_menu/multiplayer_type_select/mp_map_select/hint_bar/left_1_pic0_ps5" width="14" height="14" bitmap="hints/ps5_l1">
+	</widget>
+	<widget name="main_menu/multiplayer_type_select/mp_map_select/hint_bar/left_1_pic1_switch" width="14" height="14" bitmap="hints/switch_r">
+	</widget>
+	<widget name="main_menu/multiplayer_type_select/mp_map_select/hint_bar/left_1_pic1_ps5" width="14" height="14" bitmap="hints/ps5_r1">
+	</widget>
+	<widget name="main_menu/multiplayer_type_select/mp_map_select/hint_bar/left_1" type="text" controller="1" width="300" height="24" text="MAP TYPE" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/multiplayer_type_select/mp_map_select/hint_bar/right_0" type="text" controller="1" width="300" height="24" text="%b-button BACK" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/multiplayer_type_select/mp_map_select/hint_bar/right_1" type="text" controller="1" width="300" height="24" text="%a-button SELECT" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/multiplayer_type_select/mp_map_select/hint_bar" width="592" height="24">
+		<data input="port hint bar"/>
+		<child widget="main_menu/multiplayer_type_select/mp_map_select/hint_bar/left_0"/>
+		<child widget="main_menu/multiplayer_type_select/mp_map_select/hint_bar/left_1_pic0_switch" y="3" platform="switch"/>
+		<child widget="main_menu/multiplayer_type_select/mp_map_select/hint_bar/left_1_pic0_ps5" y="3" platform="ps5"/>
+		<child widget="main_menu/multiplayer_type_select/mp_map_select/hint_bar/left_1_pic1_switch" y="3" platform="switch"/>
+		<child widget="main_menu/multiplayer_type_select/mp_map_select/hint_bar/left_1_pic1_ps5" y="3" platform="ps5"/>
+		<child widget="main_menu/multiplayer_type_select/mp_map_select/hint_bar/left_1"/>
+		<child widget="main_menu/multiplayer_type_select/mp_map_select/hint_bar/right_0"/>
+		<child widget="main_menu/multiplayer_type_select/mp_map_select/hint_bar/right_1"/>
+	</widget>
+	<widget name="main_menu/gametype_select/hint_bar/left_0_pic0_switch" width="14" height="14" bitmap="hints/switch_l">
+	</widget>
+	<widget name="main_menu/gametype_select/hint_bar/left_0_pic0_ps5" width="14" height="14" bitmap="hints/ps5_l1">
+	</widget>
+	<widget name="main_menu/gametype_select/hint_bar/left_0_pic1_switch" width="14" height="14" bitmap="hints/switch_r">
+	</widget>
+	<widget name="main_menu/gametype_select/hint_bar/left_0_pic1_ps5" width="14" height="14" bitmap="hints/ps5_r1">
+	</widget>
+	<widget name="main_menu/gametype_select/hint_bar/left_0" type="text" controller="1" width="300" height="24" text="CATEGORY" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/gametype_select/hint_bar/right_0" type="text" controller="1" width="300" height="24" text="%b-button BACK" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/gametype_select/hint_bar/right_1" type="text" controller="1" width="300" height="24" text="%a-button SELECT" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/gametype_select/hint_bar" width="592" height="24">
+		<data input="port hint bar"/>
+		<child widget="main_menu/gametype_select/hint_bar/left_0_pic0_switch" y="3" platform="switch"/>
+		<child widget="main_menu/gametype_select/hint_bar/left_0_pic0_ps5" y="3" platform="ps5"/>
+		<child widget="main_menu/gametype_select/hint_bar/left_0_pic1_switch" y="3" platform="switch"/>
+		<child widget="main_menu/gametype_select/hint_bar/left_0_pic1_ps5" y="3" platform="ps5"/>
+		<child widget="main_menu/gametype_select/hint_bar/left_0"/>
+		<child widget="main_menu/gametype_select/hint_bar/right_0"/>
+		<child widget="main_menu/gametype_select/hint_bar/right_1"/>
+	</widget>
+	<widget name="main_menu/difficulty_select/hint_bar/right_0" type="text" controller="1" width="300" height="24" text="%b-button BACK" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/difficulty_select/hint_bar/right_1" type="text" controller="1" width="300" height="24" text="%a-button SELECT" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/difficulty_select/hint_bar" width="592" height="24">
+		<data input="port hint bar"/>
+		<child widget="main_menu/difficulty_select/hint_bar/right_0"/>
+		<child widget="main_menu/difficulty_select/hint_bar/right_1"/>
+	</widget>
+	<widget name="main_menu/campaign_select/load/hint_bar/left_0" type="text" controller="1" width="300" height="24" text="%x-button DELETE" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/campaign_select/load/hint_bar/right_0" type="text" controller="1" width="300" height="24" text="%b-button BACK" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/campaign_select/load/hint_bar/right_1" type="text" controller="1" width="300" height="24" text="%a-button LOAD" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/campaign_select/load/hint_bar" width="592" height="24">
+		<data input="port hint bar"/>
+		<child widget="main_menu/campaign_select/load/hint_bar/left_0"/>
+		<child widget="main_menu/campaign_select/load/hint_bar/right_0"/>
+		<child widget="main_menu/campaign_select/load/hint_bar/right_1"/>
+	</widget>
+	<widget name="main_menu/settings_select/multiplayer_setup/playlist_select/hint_bar/left_0" type="text" controller="1" width="300" height="24" text="%x-button DELETE" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/settings_select/multiplayer_setup/playlist_select/hint_bar/left_1" type="text" controller="1" width="300" height="24" text="%y-button NEW" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/settings_select/multiplayer_setup/playlist_select/hint_bar/right_0" type="text" controller="1" width="300" height="24" text="%b-button BACK" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/settings_select/multiplayer_setup/playlist_select/hint_bar/right_1" type="text" controller="1" width="300" height="24" text="%a-button EDIT" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/settings_select/multiplayer_setup/playlist_select/hint_bar" width="592" height="24">
+		<data input="port hint bar"/>
+		<child widget="main_menu/settings_select/multiplayer_setup/playlist_select/hint_bar/left_0"/>
+		<child widget="main_menu/settings_select/multiplayer_setup/playlist_select/hint_bar/left_1"/>
+		<child widget="main_menu/settings_select/multiplayer_setup/playlist_select/hint_bar/right_0"/>
+		<child widget="main_menu/settings_select/multiplayer_setup/playlist_select/hint_bar/right_1"/>
+	</widget>
+	<widget name="main_menu/settings_select/multiplayer_setup/playlist_edit/hint_bar/left_0" type="text" controller="1" width="300" height="24" text="%x-button SAVE" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/settings_select/multiplayer_setup/playlist_edit/hint_bar/right_0" type="text" controller="1" width="300" height="24" text="%b-button CANCEL" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/settings_select/multiplayer_setup/playlist_edit/hint_bar/right_1" type="text" controller="1" width="300" height="24" text="%a-button SELECT" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/settings_select/multiplayer_setup/playlist_edit/hint_bar" width="592" height="24">
+		<data input="port hint bar"/>
+		<child widget="main_menu/settings_select/multiplayer_setup/playlist_edit/hint_bar/left_0"/>
+		<child widget="main_menu/settings_select/multiplayer_setup/playlist_edit/hint_bar/right_0"/>
+		<child widget="main_menu/settings_select/multiplayer_setup/playlist_edit/hint_bar/right_1"/>
+	</widget>
+	<widget name="main_menu/settings_select/multiplayer_setup/playlist_edit/game_type_select/hint_bar/right_0" type="text" controller="1" width="300" height="24" text="%b-button BACK" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/settings_select/multiplayer_setup/playlist_edit/game_type_select/hint_bar/right_1" type="text" controller="1" width="300" height="24" text="%a-button SELECT" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/settings_select/multiplayer_setup/playlist_edit/game_type_select/hint_bar" width="592" height="24">
+		<data input="port hint bar"/>
+		<child widget="main_menu/settings_select/multiplayer_setup/playlist_edit/game_type_select/hint_bar/right_0"/>
+		<child widget="main_menu/settings_select/multiplayer_setup/playlist_edit/game_type_select/hint_bar/right_1"/>
+	</widget>
+	<widget name="main_menu/settings_select/player_setup/player_profile_edit/hint_bar/left_0" type="text" controller="1" width="300" height="24" text="%x-button SAVE" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/settings_select/player_setup/player_profile_edit/hint_bar/right_0" type="text" controller="1" width="300" height="24" text="%b-button CANCEL" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/settings_select/player_setup/player_profile_edit/hint_bar/right_1" type="text" controller="1" width="300" height="24" text="%a-button SELECT" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/settings_select/player_setup/player_profile_edit/hint_bar" width="592" height="24">
+		<data input="port hint bar"/>
+		<child widget="main_menu/settings_select/player_setup/player_profile_edit/hint_bar/left_0"/>
+		<child widget="main_menu/settings_select/player_setup/player_profile_edit/hint_bar/right_0"/>
+		<child widget="main_menu/settings_select/player_setup/player_profile_edit/hint_bar/right_1"/>
+	</widget>
+	<widget name="main_menu/settings_select/player_setup/player_profile_edit/color_edit/hint_bar/right_0" type="text" controller="1" width="300" height="24" text="%b-button BACK" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/settings_select/player_setup/player_profile_edit/color_edit/hint_bar/right_1" type="text" controller="1" width="300" height="24" text="%a-button SELECT" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/settings_select/player_setup/player_profile_edit/color_edit/hint_bar" width="592" height="24">
+		<data input="port hint bar"/>
+		<child widget="main_menu/settings_select/player_setup/player_profile_edit/color_edit/hint_bar/right_0"/>
+		<child widget="main_menu/settings_select/player_setup/player_profile_edit/color_edit/hint_bar/right_1"/>
+	</widget>
+	<widget name="main_menu/multiplayer_type_select/hint_bar/right_0" type="text" controller="1" width="300" height="24" text="%b-button BACK" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/multiplayer_type_select/hint_bar/right_1" type="text" controller="1" width="300" height="24" text="%a-button SELECT" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/multiplayer_type_select/hint_bar" width="592" height="24">
+		<data input="port hint bar"/>
+		<child widget="main_menu/multiplayer_type_select/hint_bar/right_0"/>
+		<child widget="main_menu/multiplayer_type_select/hint_bar/right_1"/>
+	</widget>
+	<widget name="main_menu/settings_select/multiplayer_setup/indicator_options_edit/hint_bar/left_0" type="text" controller="1" width="300" height="24" text="%x-button SAVE" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/settings_select/multiplayer_setup/indicator_options_edit/hint_bar/right_0" type="text" controller="1" width="300" height="24" text="%b-button BACK" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/settings_select/multiplayer_setup/indicator_options_edit/hint_bar" width="592" height="24">
+		<data input="port hint bar"/>
+		<child widget="main_menu/settings_select/multiplayer_setup/indicator_options_edit/hint_bar/left_0"/>
+		<child widget="main_menu/settings_select/multiplayer_setup/indicator_options_edit/hint_bar/right_0"/>
+	</widget>
+	<widget name="main_menu/settings_select/multiplayer_setup/item_options_edit/hint_bar/left_0" type="text" controller="1" width="300" height="24" text="%x-button SAVE" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/settings_select/multiplayer_setup/item_options_edit/hint_bar/right_0" type="text" controller="1" width="300" height="24" text="%b-button BACK" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/settings_select/multiplayer_setup/item_options_edit/hint_bar" width="592" height="24">
+		<data input="port hint bar"/>
+		<child widget="main_menu/settings_select/multiplayer_setup/item_options_edit/hint_bar/left_0"/>
+		<child widget="main_menu/settings_select/multiplayer_setup/item_options_edit/hint_bar/right_0"/>
+	</widget>
+	<widget name="main_menu/settings_select/multiplayer_setup/player_options_edit/hint_bar/left_0" type="text" controller="1" width="300" height="24" text="%x-button SAVE" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/settings_select/multiplayer_setup/player_options_edit/hint_bar/right_0" type="text" controller="1" width="300" height="24" text="%b-button BACK" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/settings_select/multiplayer_setup/player_options_edit/hint_bar" width="592" height="24">
+		<data input="port hint bar"/>
+		<child widget="main_menu/settings_select/multiplayer_setup/player_options_edit/hint_bar/left_0"/>
+		<child widget="main_menu/settings_select/multiplayer_setup/player_options_edit/hint_bar/right_0"/>
+	</widget>
+	<widget name="main_menu/settings_select/multiplayer_setup/teamplay_options_edit/hint_bar/left_0" type="text" controller="1" width="300" height="24" text="%x-button SAVE" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/settings_select/multiplayer_setup/teamplay_options_edit/hint_bar/right_0" type="text" controller="1" width="300" height="24" text="%b-button BACK" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/settings_select/multiplayer_setup/teamplay_options_edit/hint_bar" width="592" height="24">
+		<data input="port hint bar"/>
+		<child widget="main_menu/settings_select/multiplayer_setup/teamplay_options_edit/hint_bar/left_0"/>
+		<child widget="main_menu/settings_select/multiplayer_setup/teamplay_options_edit/hint_bar/right_0"/>
+	</widget>
+	<widget name="main_menu/settings_select/multiplayer_setup/vehicle_options_edit/hint_bar/left_0" type="text" controller="1" width="300" height="24" text="%x-button SAVE" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/settings_select/multiplayer_setup/vehicle_options_edit/hint_bar/right_0" type="text" controller="1" width="300" height="24" text="%b-button BACK" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/settings_select/multiplayer_setup/vehicle_options_edit/hint_bar" width="592" height="24">
+		<data input="port hint bar"/>
+		<child widget="main_menu/settings_select/multiplayer_setup/vehicle_options_edit/hint_bar/left_0"/>
+		<child widget="main_menu/settings_select/multiplayer_setup/vehicle_options_edit/hint_bar/right_0"/>
+	</widget>
+	<widget name="main_menu/settings_select/multiplayer_setup/playlist_edit/ctf_edit/hint_bar/left_0" type="text" controller="1" width="300" height="24" text="%x-button SAVE" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/settings_select/multiplayer_setup/playlist_edit/ctf_edit/hint_bar/right_0" type="text" controller="1" width="300" height="24" text="%b-button BACK" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/settings_select/multiplayer_setup/playlist_edit/ctf_edit/hint_bar" width="592" height="24">
+		<data input="port hint bar"/>
+		<child widget="main_menu/settings_select/multiplayer_setup/playlist_edit/ctf_edit/hint_bar/left_0"/>
+		<child widget="main_menu/settings_select/multiplayer_setup/playlist_edit/ctf_edit/hint_bar/right_0"/>
+	</widget>
+	<widget name="main_menu/settings_select/multiplayer_setup/playlist_edit/koth_edit/hint_bar/left_0" type="text" controller="1" width="300" height="24" text="%x-button SAVE" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/settings_select/multiplayer_setup/playlist_edit/koth_edit/hint_bar/right_0" type="text" controller="1" width="300" height="24" text="%b-button BACK" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/settings_select/multiplayer_setup/playlist_edit/koth_edit/hint_bar" width="592" height="24">
+		<data input="port hint bar"/>
+		<child widget="main_menu/settings_select/multiplayer_setup/playlist_edit/koth_edit/hint_bar/left_0"/>
+		<child widget="main_menu/settings_select/multiplayer_setup/playlist_edit/koth_edit/hint_bar/right_0"/>
+	</widget>
+	<widget name="main_menu/settings_select/multiplayer_setup/playlist_edit/oddball_edit/hint_bar/left_0" type="text" controller="1" width="300" height="24" text="%x-button SAVE" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/settings_select/multiplayer_setup/playlist_edit/oddball_edit/hint_bar/right_0" type="text" controller="1" width="300" height="24" text="%b-button BACK" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/settings_select/multiplayer_setup/playlist_edit/oddball_edit/hint_bar" width="592" height="24">
+		<data input="port hint bar"/>
+		<child widget="main_menu/settings_select/multiplayer_setup/playlist_edit/oddball_edit/hint_bar/left_0"/>
+		<child widget="main_menu/settings_select/multiplayer_setup/playlist_edit/oddball_edit/hint_bar/right_0"/>
+	</widget>
+	<widget name="main_menu/settings_select/multiplayer_setup/playlist_edit/race_edit/hint_bar/left_0" type="text" controller="1" width="300" height="24" text="%x-button SAVE" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/settings_select/multiplayer_setup/playlist_edit/race_edit/hint_bar/right_0" type="text" controller="1" width="300" height="24" text="%b-button BACK" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/settings_select/multiplayer_setup/playlist_edit/race_edit/hint_bar" width="592" height="24">
+		<data input="port hint bar"/>
+		<child widget="main_menu/settings_select/multiplayer_setup/playlist_edit/race_edit/hint_bar/left_0"/>
+		<child widget="main_menu/settings_select/multiplayer_setup/playlist_edit/race_edit/hint_bar/right_0"/>
+	</widget>
+	<widget name="main_menu/settings_select/multiplayer_setup/playlist_edit/slayer_edit/hint_bar/left_0" type="text" controller="1" width="300" height="24" text="%x-button SAVE" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/settings_select/multiplayer_setup/playlist_edit/slayer_edit/hint_bar/right_0" type="text" controller="1" width="300" height="24" text="%b-button BACK" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/settings_select/multiplayer_setup/playlist_edit/slayer_edit/hint_bar" width="592" height="24">
+		<data input="port hint bar"/>
+		<child widget="main_menu/settings_select/multiplayer_setup/playlist_edit/slayer_edit/hint_bar/left_0"/>
+		<child widget="main_menu/settings_select/multiplayer_setup/playlist_edit/slayer_edit/hint_bar/right_0"/>
+	</widget>
+	<widget name="pause/hint_bar/right_0" type="text" controller="1" width="300" height="24" text="%b-button BACK" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="pause/hint_bar/right_1" type="text" controller="1" width="300" height="24" text="%a-button SELECT" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="pause/hint_bar" width="200" height="24">
+		<data input="port hint bar"/>
+		<child widget="pause/hint_bar/right_0"/>
+		<child widget="pause/hint_bar/right_1"/>
+	</widget>
 </menus>

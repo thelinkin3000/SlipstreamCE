@@ -121,7 +121,9 @@ static void map_page_close_client(void)
 		posix_socket_close(page.client);
 	page.client = -1;
 	page.head_length = 0;
-	free(page.response);
+	/* (the game's free asserts on NULL: debug_memory.c #165) */
+	if (page.response)
+		free(page.response);
 	page.response = NULL;
 	page.response_length = page.response_sent = 0;
 	if (page.file)

@@ -38,6 +38,14 @@ boolean virtual_keyboard_launch_text(
 	word buffer_size,
 	char const *caption,
 	boolean masked);
+/* port: the same keyboard for a name (a player profile's, a gametype's), up
+to buffer_size bytes with its end: Done keeps it by a name's rules (its
+spaces before and after dropped; refused, with the game's error, when it is
+empty or another saved game's), B leaves it as it was */
+boolean virtual_keyboard_launch_name(
+	wchar_t *text_buffer,
+	word buffer_size,
+	char const *caption);
 boolean virtual_keyboard_active(
 	void);
 void virtual_keyboard_close(

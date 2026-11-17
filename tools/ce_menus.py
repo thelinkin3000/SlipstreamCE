@@ -98,10 +98,14 @@ CHILD_OFFSETS = {
     **{("ui\\shell\\main_menu\\main_menu_select_list", f"ui\\shell\\main_menu\\main_menu_item_{item}"):
        port_settings.main_menu_item_place(item)
        for item in ("load_camp", "multiplayer", "profile", "settings", "quit_game")},
-    ("ui\\shell\\main_menu\\multiplayer_type_select\\multiplayer_type_select_list",
-     "ui\\shell\\main_menu\\multiplayer_type_select\\multiplayer_type_gametypes_item"): (0, 381),
+    # (Multiplayer's rows, port_settings.MULTIPLAYER_ROW_PLACES: the
+    # headings, JOIN GAME and CREATE GAME, 32 left of their items)
+    **{("ui\\shell\\main_menu\\multiplayer_type_select\\multiplayer_type_select_list",
+        f"ui\\shell\\main_menu\\multiplayer_type_select\\multiplayer_type_{row}_item"):
+       (-32 if row in ("join", "create") else 0, y)
+       for row, y in port_settings.MULTIPLAYER_ROW_PLACES.items() if row not in ("coop", "host")},
     ("ui\\shell\\main_menu\\multiplayer_type_select\\multiplayer_type_select_screen",
-     "ui\\shell\\main_menu\\blueline"): (64, 376),
+     "ui\\shell\\main_menu\\blueline"): (64, port_settings.MULTIPLAYER_DIVIDER_Y),
     # the profile settings' rows, twelve from 78 to the description panel's
     # bottom
     # (port_settings.PROFILE_ROWS)
@@ -592,6 +596,8 @@ def widget_xml(tag: str, widget: dict, tags: Tags, functions: list, inputs: list
         lines.append(f"{inner}<data{attributes([('input', f'unwired {name}' if name in INCOMPATIBLE else name)])}/>")
     lines += [f"{inner}<data{attributes([('input', name)])}/>" for name in patch.get("inputs", [])]
     lines += [f"{inner}{line}" for line in patch.get("handlers", [])]
+    # (handlers_add: added to the tag's own, which stay)
+    lines += [f"{inner}{line}" for line in patch.get("handlers_add", [])]
     for handler in widget["event handlers"] if "handlers" not in patch else []:
         flags = handler["flags"]
         target = our_name(handler["widget tag"]) if handler["widget tag"] else None
@@ -629,7 +635,7 @@ def widget_xml(tag: str, widget: dict, tags: Tags, functions: list, inputs: list
         lines.append(f"{inner}<conditional{attributes([('widget', our_name(conditional['widget tag'])), ('if_failed', 'true' if conditional['flags'] & 1 else None)])}/>")
     for child in widget["child widgets"]:
         child_tag = child["widget tag"]
-        if child_tag in LEFT_OUT:
+        if child_tag in LEFT_OUT or our_name(child_tag) in patch.get("drop", ()):
             continue
         x, y = CHILD_OFFSETS.get((tag, child_tag), (child["horizontal offset"], child["vertical offset"]))
         name = patch.get("swap", {}).get(our_name(child_tag), our_name(child_tag))
@@ -657,17 +663,18 @@ def pause_art(art):
         heights = [port_settings.pause_box_height(buttons) for buttons in port_settings.PAUSE_BOX_BUTTONS]
         heights += list(port_settings.PAUSE_BOX_EXTRA_HEIGHTS)
         lines.append(art.port_picture(f"pause/pausebox_{piece}", [
-            (port_settings.pause_box_svg(piece, height), 4 if piece == "center" else 16, 256) for height in heights]))
-    # (the in-game join box's: the 3-button box's frames alone, which the
-    # pause menu's own does not change: port_settings.py's _ingame_join)
+            (port_settings.pause_box_svg(piece, height), 4 if piece == "center" else 16,
+             port_settings.pause_box_texture(height)) for height in heights]))
+    # (the in-game join box's own, as high as it is: port_settings.py's
+    # _ingame_join, JOIN_BOX_HEIGHT)
     for piece in ("left", "center", "right"):
-        width = 4 if piece == "center" else 16
-        lines.append(f'\t<bitmap name="pause/joinbox_{piece}">\n'
-                     f'\t\t<frame png="ce/port/pause/pausebox_{piece}__0.png" width="{width}" height="256"/>\n'
-                     '\t</bitmap>')
+        lines.append(art.port_picture(f"pause/joinbox_{piece}", [
+            (port_settings.pause_box_svg(piece, port_settings.JOIN_BOX_HEIGHT), 4 if piece == "center" else 16,
+             port_settings.pause_box_texture(port_settings.JOIN_BOX_HEIGHT))]))
     for piece in ("left", "center", "right"):
         lines.append(art.port_picture(f"pause/objectives_{piece}", [
-            (port_settings.pause_box_svg(piece, height, header=True), 4 if piece == "center" else 16, 256)
+            (port_settings.pause_box_svg(piece, height, header=True), 4 if piece == "center" else 16,
+             port_settings.pause_box_texture(height))
             for height in port_settings.PAUSE_BOX_EXTRA_HEIGHTS]))
     return lines
 
@@ -782,6 +789,23 @@ def main() -> None:
     lines += [f"\t<bitmap{attributes([('name', logo)])}>",
               f"\t\t<frame{attributes([('png', f'ce/port/{logo}.png'), ('width', 256), ('height', 256)])}/>",
               "\t</bitmap>"]
+    # (Server Setup's rows' highlight, 24 units high where option_bkds is
+    # 28 inside its 32: the same picture with 4 units of its flat middle cut
+    # out, so that its round ends stay as they are: port_settings.SHORT_ROW_BITMAP)
+    short = port_settings.SHORT_ROW_BITMAP
+    lines.append(f"\t<bitmap{attributes([('name', short)])}>")
+    for index in range(2):
+        png = f"ce/port/bitmaps/option_bkds_short__{index}.png"
+        source = Image.open(MENUS / f"ce/shell/bitmaps/option_bkds__{index}.png")
+        scale = source.width // 512
+        cut = Image.new("RGBA", (source.width, 24 * scale), (0, 0, 0, 0))
+        cut.paste(source.crop((0, 0, source.width, 12 * scale)), (0, 0))
+        cut.paste(source.crop((0, 16 * scale, source.width, 28 * scale)), (0, 12 * scale))
+        (MENUS / png).parent.mkdir(parents=True, exist_ok=True)
+        cut.save(MENUS / png, optimize=True)
+        art.pngs.append(png)
+        lines.append(f"\t\t<frame{attributes([('png', png), ('width', 512), ('height', 24)])}/>")
+    lines.append("\t</bitmap>")
     # (the button-layout overlay's controllers, AL2009man's Gamepad Asset
     # Pack's, beside the pictures that draw them: port_settings.CONTROLLERS)
     (MENUS / "port_svg/controllers").mkdir(parents=True, exist_ok=True)

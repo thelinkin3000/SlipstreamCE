@@ -1033,6 +1033,11 @@ boolean virtual_keyboard_launch(
 	void *text,
 	long maximum_length,
 	long keyboard_type);
+/* port: (interface/virtual_keyboard.h) the menus' keyboard for a name */
+boolean virtual_keyboard_launch_name(
+	wchar_t *text_buffer,
+	word buffer_size,
+	char const *caption);
 void *network_game_client_get_game(
 	void *client);
 short network_game_client_get_machine_index(
@@ -1873,7 +1878,8 @@ static boolean create_and_begin_editing_new_gametype_profile(
 				*(short *)(profile + 0x64) = 0;
 				ustrncpy((wchar_t *)profile, name, 11);
 				*(short *)(profile + 0x16) = 0;
-				result = virtual_keyboard_launch(profile, 24, 9);
+				/* port: the menus' keyboard, a name's rules kept */
+				result = virtual_keyboard_launch_name((wchar_t *)profile, 24, "ENTER THE GAMETYPE'S NAME");
 			}
 			else
 			{
@@ -2392,7 +2398,9 @@ static boolean playlist_profile_change_name(
 
 	if (profile)
 	{
-		if (!virtual_keyboard_launch(profile, 24, 9))
+		/* port: on the keyboard the menus' text fields have, a name's
+		rules kept (virtual_keyboard_launch_name) */
+		if (!virtual_keyboard_launch_name((wchar_t *)profile, 24, "ENTER THE GAMETYPE'S NAME"))
 			error(2, "failed to invoke virtual keyboard on profile name");
 	}
 	else
@@ -2413,7 +2421,9 @@ static boolean player_profile_change_name(
 
 	if (profile)
 	{
-		if (!virtual_keyboard_launch(profile->player_name, sizeof(profile->player_name), 8))
+		/* port: (as the gametype's name, above) */
+		if (!virtual_keyboard_launch_name(profile->player_name, sizeof(profile->player_name),
+			"ENTER THE PROFILE'S NAME"))
 		{
 			error(2, "failed to invoke virtual keyboard on player profile name");
 			result = FALSE;
@@ -2994,7 +3004,9 @@ static boolean create_and_begin_editing_new_player_profile(
 			{
 				ustrncpy(profile->player_name, name, MAXIMUM_PLAYER_PROFILE_NAME_LENGTH-1);
 				profile->player_name[MAXIMUM_PLAYER_PROFILE_NAME_LENGTH-1] = 0;
-				result = virtual_keyboard_launch(profile->player_name, sizeof(profile->player_name), 8);
+				/* port: the menus' keyboard, a name's rules kept */
+				result = virtual_keyboard_launch_name(profile->player_name, sizeof(profile->player_name),
+					"ENTER THE PROFILE'S NAME");
 			}
 			else
 			{
@@ -3564,7 +3576,8 @@ static boolean new_campaign_chosen(
 	ustrncpy(new_campaign_profile_name, name, 11);
 	new_campaign_profile_name[11] = L'\0';
 	event_handler_functions.unknown74 = event->controller_index;
-	if (!virtual_keyboard_launch(new_campaign_profile_name, 24, 8))
+	/* port: the menus' keyboard, a name's rules kept */
+	if (!virtual_keyboard_launch_name(new_campaign_profile_name, 24, "ENTER THE PROFILE'S NAME"))
 		error(2, "failed to invoke the virtual keyboard for a new campaign profile name");
 	return TRUE;
 }

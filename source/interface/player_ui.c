@@ -1095,17 +1095,18 @@ boolean player_ui_prompt_user_to_rename_edit_profile(
 		switch (type)
 		{
 			case _saved_game_file_type_player_profile:
-				result = virtual_keyboard_launch(
+				/* port: the menus' keyboard, a name's rules kept */
+				result = virtual_keyboard_launch_name(
 					player_ui_globals.edit_profile.current.player.player_name,
 					sizeof(player_ui_globals.edit_profile.current.player.player_name),
-					10);
+					"ENTER THE PROFILE'S NAME");
 				break;
 
 			case _saved_game_file_type_game_variant:
-				result = virtual_keyboard_launch(
+				result = virtual_keyboard_launch_name(
 					player_ui_globals.edit_profile.current.variant.human_readable_game_description,
 					sizeof(player_ui_globals.edit_profile.current.variant.human_readable_game_description),
-					10);
+					"ENTER THE GAMETYPE'S NAME");
 				break;
 
 			default:

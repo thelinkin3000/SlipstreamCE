@@ -8,15 +8,16 @@
 		<child widget="main_menu/new_select/sel_list_desc_bkd"/>
 		<child widget="main_menu/settings_select/multiplayer_setup/playlist_select/playlist_select_list"/>
 		<child widget="main_menu/settings_select/multiplayer_setup/playlist_select/header_select_gametype_to_edit"/>
+		<child widget="main_menu/settings_select/multiplayer_setup/playlist_select/hint_bar" x="24" y="415" platform="switch ps5"/>
 	</widget>
 	<widget name="main_menu/settings_select/multiplayer_setup/playlist_select/header_select_gametype_to_edit" controller="1" left="35" top="11" width="605" height="59" bitmap="main_menu/settings_select/multiplayer_setup/playlist_select/header_select_gametype_to_edit">
 	</widget>
 	<widget name="main_menu/settings_select/multiplayer_setup/playlist_select/playlist_button_bar" type="column_list" width="640" height="28" flags="pass_unhandled_to_focused_child left_right_tabs_items">
 		<data input="common button bar update"/>
-		<child widget="main_menu/settings_select/multiplayer_setup/playlist_select/playlist_button_new" y="1"/>
-		<child widget="main_menu/settings_select/multiplayer_setup/playlist_select/playlist_button_delete" x="130" y="1"/>
-		<child widget="main_menu/settings_select/multiplayer_setup/playlist_select/playlist_button_ok" x="380" y="1"/>
-		<child widget="common_button_back" x="510" y="1"/>
+		<child widget="main_menu/settings_select/multiplayer_setup/playlist_select/playlist_button_new" y="1" platform="desktop android web"/>
+		<child widget="main_menu/settings_select/multiplayer_setup/playlist_select/playlist_button_delete" x="130" y="1" platform="desktop android web"/>
+		<child widget="main_menu/settings_select/multiplayer_setup/playlist_select/playlist_button_ok" x="380" y="1" platform="desktop android web"/>
+		<child widget="common_button_back" x="510" y="1" platform="desktop android web"/>
 	</widget>
 	<widget name="main_menu/settings_select/multiplayer_setup/playlist_select/playlist_button_delete" type="text" width="128" height="24" bitmap="bitmaps/text_button_background" string_list="strings/common_button_captions" string_index="5" font="ui\small_ui" color="#FFFFFFFF" align="center" text_y="2">
 		<on event="a" run="mouse emit x event"/>
@@ -39,6 +40,7 @@
 		<on event="deleted" run="mp profiles list dispose"/>
 		<on event="custom_activation" run="mp profile begin editing" open="main_menu/settings_select/multiplayer_setup/playlist_edit/gametype_edit_screen"/>
 		<on event="x" run="request del playlist profile" open="error/confirm_delete_gametype_modal_fullscreen"/>
+		<on event="y" run="create&amp;edit playlist profile" open="main_menu/settings_select/multiplayer_setup/create_and_edit_new_gametype_screen"/>
 		<child widget="main_menu/new_select/list_item_0" x="20" y="73"/>
 		<child widget="main_menu/new_select/list_item_1" x="20" y="103"/>
 		<child widget="main_menu/new_select/list_item_2" x="20" y="133"/>

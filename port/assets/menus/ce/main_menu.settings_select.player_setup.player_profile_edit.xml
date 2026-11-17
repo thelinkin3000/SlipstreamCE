@@ -47,12 +47,13 @@
 		<on event="back" run="player profile end editing" back="true"/>
 		<child widget="main_menu/settings_select/player_setup/player_profile_edit/header_profile_settings"/>
 		<child widget="main_menu/settings_select/player_setup/player_profile_edit/profile_edit_select_list"/>
+		<child widget="main_menu/settings_select/player_setup/player_profile_edit/hint_bar" x="24" y="415" platform="switch ps5"/>
 		<child widget="main_menu/settings_select/player_setup/player_profile_edit/profile_label" x="293" y="375"/>
 	</widget>
 	<widget name="main_menu/settings_select/player_setup/player_profile_edit/profile_edit_button_bar" type="column_list" width="640" height="28" flags="pass_unhandled_to_focused_child left_right_tabs_items">
 		<data input="common button bar update"/>
-		<child widget="main_menu/settings_select/player_setup/player_profile_edit/profile_edit_button_ok" x="380" y="1"/>
-		<child widget="common_button_cancel" x="510" y="1"/>
+		<child widget="main_menu/settings_select/player_setup/player_profile_edit/profile_edit_button_ok" x="380" y="1" platform="desktop android web"/>
+		<child widget="common_button_cancel" x="510" y="1" platform="desktop android web"/>
 	</widget>
 	<widget name="main_menu/settings_select/player_setup/player_profile_edit/profile_edit_button_ok" type="text" width="128" height="24" bitmap="bitmaps/text_button_background" string_list="strings/common_button_captions" string_index="1" font="ui\small_ui" color="#FFFFFFFF" align="center" text_y="2">
 		<on event="a" run="player profile save changes" open="error/warning_saving_file_screen"/>
@@ -75,6 +76,7 @@
 	</widget>
 	<widget name="main_menu/settings_select/player_setup/player_profile_edit/profile_edit_select_list" type="column_list" width="640" height="480" flags="pass_unhandled_to_focused_child up_down_tabs_items" description="main_menu/settings_select/player_setup/player_profile_edit/profile_edit_extended_description">
 		<data input="plyr prof edit select menu upd8"/>
+		<on event="x" run="player profile save changes" open="error/warning_saving_file_screen"/>
 		<child widget="main_menu/settings_select/player_setup/player_profile_edit/name_profile_item"/>
 		<child widget="main_menu/settings_select/player_setup/player_profile_edit/controller_setup_profile_item" y="-7"/>
 		<child widget="main_menu/settings_select/player_setup/player_profile_edit/gamepads_profile_item" y="-13"/>

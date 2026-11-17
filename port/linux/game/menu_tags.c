@@ -417,6 +417,8 @@ static char const *const port_function_names[] =
 	"port game files app", "port game files other",
 	/* (the map lists' IMPORT, Android's, and DELETE: menu_functions.c) */
 	"port map import", "port map delete",
+	/* (a list's chooser beside it, turned by the shoulders: menu_functions.c's list_chooser_turn) */
+	"port chooser previous", "port chooser next",
 	/* (the main menu's news: menu_functions.c) */
 	"port news init", "port news close", "port news up", "port news down", "port news page up",
 	"port news page down",
@@ -496,6 +498,9 @@ static char const *const port_game_data_input_names[] =
 	rounds, the gametypes, the settings' values typed) */
 	"port host playlists update", "port host maps update", "port host entries update",
 	"port host gametypes update", "port host settings update", "port host round update",
+	/* (the consoles' hint bars: tools/port_settings.py's hint_bar,
+	menu_functions.c's hint_bar_update) */
+	"port hint bar",
 };
 
 static struct
@@ -1571,6 +1576,37 @@ what is below the list moves down. */
 #define PAUSE_SETTINGS_SCREEN "main_menu/settings_select/player_setup/player_profile_edit/player_profile_edit_screen"
 #define PAUSE_BUTTON_SPACING 35
 #define PAUSE_BOX_FIRST_BUTTONS 3
+/* the port's box's frames, one for each number of buttons from
+PAUSE_BOX_FIRST_BUTTONS (tools/port_settings.py's PAUSE_BOX_BUTTONS); the
+campaign's follow them */
+#define PAUSE_BOX_FRAMES 5
+/* the consoles' hints, in the box's footer band in the place of the map's
+button key (tools/port_settings.py's PAUSE_HINTS), as wide as they are laid
+out in */
+#define PAUSE_HINT_BAR "pause/hint_bar"
+#define PAUSE_HINT_HEIGHT 24
+
+/* the pause screens' hint bar (the consoles'), else NONE: the map's button
+key stays */
+static long pause_hint_bar_tag(void)
+{
+#if defined(HALO_SWITCH) || defined(HALO_PS5)
+	long widget = widget_named(PAUSE_HINT_BAR);
+
+	return widget != NONE ? build.widget_tags[widget] : NONE;
+#else
+	return NONE;
+#endif
+}
+
+static boolean tag_name_ends(long tag_index, char const *end);
+
+/* whether a widget is the map's button key (B=BACK A=SELECT, its pictures) */
+static boolean pause_key_tag(long tag_index)
+{
+	return tag_index != NONE &&
+		(tag_name_ends(tag_index, "\\button_key_sm") || tag_name_ends(tag_index, "\\button_key"));
+}
 
 static long ui_function_named(char const *name)
 {
@@ -1762,14 +1798,19 @@ static boolean pause_box_stock(struct ui_widget_definition const *box)
 }
 
 /* the port's box's height for the number of buttons (tools/port_settings.py's
-pause_box_height: the Xbox's of two is 159), and its footer band, the button
-key's, at its bottom */
-#define PAUSE_BOX_HEIGHT(buttons) (159 + ((buttons) - 2) * PAUSE_BUTTON_SPACING)
+pause_box_height): PAUSE_BOX_PAD above the first row and below the last,
+the rows PAUSE_BUTTON_SPACING apart and PAUSE_ROW_HEIGHT high, and its footer
+band, the button key's (the consoles' hints'), at its bottom */
+#define PAUSE_BOX_PAD 12
+#define PAUSE_ROW_HEIGHT 28
 #define PAUSE_BOX_FOOTER 28
+#define PAUSE_BOX_HEIGHT(buttons) \
+	(2 * PAUSE_BOX_PAD + PAUSE_BOX_FOOTER + PAUSE_ROW_HEIGHT + ((buttons) - 1) * PAUSE_BUTTON_SPACING)
 
-/* the stock box's pieces drawn with the port's taller box: its frame for
-the number of buttons; the box's height */
-static short pause_box_redraw(struct ui_widget_definition const *box, long buttons)
+/* the stock box's pieces drawn with the port's box: its frame that holds
+`needed` units (the rows with their margins and the footer), the tallest
+else; the box's height */
+static short pause_box_redraw(struct ui_widget_definition const *box, short needed)
 {
 	static char const *const names[] = { "pause/pausebox_left", "pause/pausebox_center", "pause/pausebox_right" };
 	struct ui_widget_child_reference const *pieces = TAG_BLOCK_ADDRESS(box->child_widgets);
@@ -1787,8 +1828,16 @@ static short pause_box_redraw(struct ui_widget_definition const *box, long butto
 			continue;
 		group = bitmap_group_get(build.bitmap_tags[bitmap]);
 		sequence = TAG_BLOCK_ADDRESS(group->sequences);
-		/* (one frame: the one for the number of buttons) */
-		sequence->first_bitmap_index = (short)PIN(buttons - PAUSE_BOX_FIRST_BUTTONS, 0, group->bitmaps.count - 1);
+		/* (one frame: the least of the multiplayer box's that holds what is
+		needed; the campaign's come after) */
+		{
+			short frames = (short)MIN(PAUSE_BOX_FRAMES, group->bitmaps.count);
+			short frame = 0;
+
+			while (frame < frames - 1 && PAUSE_BOX_HEIGHT(PAUSE_BOX_FIRST_BUTTONS + frame) < needed)
+				frame++;
+			sequence->first_bitmap_index = frame;
+		}
 		sequence->bitmap_count = 1;
 		reference_set(&definition->background_bitmap, BITMAP_GROUP_TAG, build.bitmap_tags[bitmap]);
 		/* (as high as the box: its texture's rows below it, empty, cropped,
@@ -1808,6 +1857,7 @@ static void pause_box_fit(struct ui_widget_definition *screen, long box_child, l
 	short height)
 {
 	struct ui_widget_child_reference *children = screen->child_widgets.address;
+	long hint = pause_hint_bar_tag();
 	short room = (short)(screen->bounds.y1 - screen->bounds.y0 - 4);
 	short top = children[box_child].vertical_offset;
 	short up = (short)MAX(0, MIN(top - 2, top + height - room));
@@ -1823,6 +1873,21 @@ static void pause_box_fit(struct ui_widget_definition *screen, long box_child, l
 		if (child == box_child || child == list_child || children[child].widget_tag.index == NONE ||
 			children[child].vertical_offset <= list_top)
 		{
+			continue;
+		}
+		/* (the consoles': the button key's place the hints', across the
+		box, pause_hint_bar_tag) */
+		if (hint != NONE && pause_key_tag(children[child].widget_tag.index))
+		{
+			struct ui_widget_definition const *box = tag_get(UI_WIDGET_DEFINITION_TAG,
+				children[box_child].widget_tag.index);
+			struct ui_widget_definition const *bar = tag_get(UI_WIDGET_DEFINITION_TAG, hint);
+
+			reference_set(&children[child].widget_tag, UI_WIDGET_DEFINITION_TAG, hint);
+			children[child].horizontal_offset = (short)(children[box_child].horizontal_offset + box->bounds.x0 +
+				(box->bounds.x1 - box->bounds.x0 - (bar->bounds.x1 - bar->bounds.x0)) / 2 - bar->bounds.x0);
+			children[child].vertical_offset = (short)(top + height - PAUSE_BOX_FOOTER +
+				(PAUSE_BOX_FOOTER - PAUSE_HINT_HEIGHT) / 2 - bar->bounds.y0);
 			continue;
 		}
 		widget = tag_get(UI_WIDGET_DEFINITION_TAG, children[child].widget_tag.index);
@@ -2151,13 +2216,38 @@ static void pause_patch(struct cache_file_tag_instance *instances)
 		}
 		if (box_child != NONE)
 		{
+			struct ui_widget_definition const *box = tag_get(UI_WIDGET_DEFINITION_TAG,
+				children[box_child].widget_tag.index);
+			struct ui_widget_definition const *list = tag_get(UI_WIDGET_DEFINITION_TAG,
+				children[list_child].widget_tag.index);
+			struct ui_widget_child_reference const *rows = list->child_widgets.address;
+			struct ui_widget_definition const *first_row = tag_get(UI_WIDGET_DEFINITION_TAG, rows[0].widget_tag.index);
+			struct ui_widget_definition const *last_row = tag_get(UI_WIDGET_DEFINITION_TAG,
+				rows[list->child_widgets.count - 1].widget_tag.index);
+			/* (the rows' top and bottom, and the box's, in the screen) */
+			short first = (short)(children[list_child].vertical_offset + list->bounds.y0 + rows[0].vertical_offset +
+				first_row->bounds.y0);
+			short last = (short)(children[list_child].vertical_offset + list->bounds.y0 +
+				rows[list->child_widgets.count - 1].vertical_offset + last_row->bounds.y1);
+			short top = (short)(children[box_child].vertical_offset + box->bounds.y0);
+			short centre = (short)(top + (box->bounds.y1 - box->bounds.y0 + grow) / 2);
+			short needed = (short)(last - first + 2 * PAUSE_BOX_PAD + PAUSE_BOX_FOOTER);
+
+			(void)buttons;
 			/* (the pieces are the screens' own: drawn once) */
 			if (!box_redrawn)
 			{
-				box_height = pause_box_redraw(tag_get(UI_WIDGET_DEFINITION_TAG, children[box_child].widget_tag.index),
-					buttons);
+				box_height = pause_box_redraw(box, needed);
 				box_redrawn = TRUE;
 			}
+			/* the box as high as its rows need (its frame's), centred where
+			it was, the rows PAUSE_BOX_PAD inside it (and in its middle, in a
+			frame taller than they need) */
+			children[box_child].vertical_offset = (short)(children[box_child].vertical_offset +
+				centre - box_height / 2 - top);
+			top = (short)(centre - box_height / 2);
+			children[list_child].vertical_offset = (short)(children[list_child].vertical_offset +
+				top + PAUSE_BOX_PAD + (box_height - needed) / 2 - first);
 			pause_box_fit(definition, box_child, list_child, list_top, box_height);
 		}
 	}
@@ -2284,8 +2374,9 @@ from the third, and the mission objectives' box's, are the stock 159 grown by
 the 36 that five rows at this pitch add (SETTINGS), then by the 66 that six
 add (network co-op's FRIENDLY FIRE too: tools/port_settings.py) */
 #define PAUSE_CAMPAIGN_ROW_PITCH 30
-#define PAUSE_CAMPAIGN_BOX_FRAME 2
-static short const pause_campaign_box_heights[] = { 195, 225 };
+#define PAUSE_CAMPAIGN_BOX_FRAME PAUSE_BOX_FRAMES
+/* (tools/port_settings.py's PAUSE_BOX_EXTRA_HEIGHTS: five rows to eight) */
+static short const pause_campaign_box_heights[] = { 195, 225, 255, 285 };
 
 /* the port box piece for one of the map's pause box pieces, else NULL */
 static char const *pause_campaign_box_bitmap(long tag_index)
@@ -2321,6 +2412,44 @@ static short pause_campaign_prompts(struct ui_widget_definition const *screen)
 		}
 	}
 	return NONE;
+}
+
+/* the consoles' hints in the prompts' place (pause_hint_bar_tag): the first
+key the bar, centred where it was and on its middle line, any other key
+gone */
+static void pause_campaign_hints(struct ui_widget_definition *widget, long hint, boolean *placed)
+{
+	struct ui_widget_child_reference *children = widget->child_widgets.address;
+	long child;
+
+	for (child = 0; child < widget->child_widgets.count; child++)
+	{
+		if (children[child].widget_tag.index == NONE)
+			continue;
+		if (pause_key_tag(children[child].widget_tag.index))
+		{
+			struct ui_widget_definition const *key = tag_get(UI_WIDGET_DEFINITION_TAG, children[child].widget_tag.index);
+			struct ui_widget_definition const *bar = tag_get(UI_WIDGET_DEFINITION_TAG, hint);
+
+			if (*placed)
+			{
+				reference_clear(&children[child].widget_tag, UI_WIDGET_DEFINITION_TAG);
+				continue;
+			}
+			/* (centred on where the key was: its right end is past the
+			box's) */
+			children[child].horizontal_offset = (short)(children[child].horizontal_offset + key->bounds.x0 +
+				(key->bounds.x1 - key->bounds.x0 - (bar->bounds.x1 - bar->bounds.x0)) / 2 - bar->bounds.x0);
+			children[child].vertical_offset = (short)(children[child].vertical_offset + key->bounds.y0 +
+				(key->bounds.y1 - key->bounds.y0 - PAUSE_HINT_HEIGHT) / 2 - bar->bounds.y0);
+			reference_set(&children[child].widget_tag, UI_WIDGET_DEFINITION_TAG, hint);
+			*placed = TRUE;
+		}
+		else if (!pause_campaign_box_bitmap(children[child].widget_tag.index))
+		{
+			pause_campaign_hints(tag_get(UI_WIDGET_DEFINITION_TAG, children[child].widget_tag.index), hint, placed);
+		}
+	}
 }
 
 /* the prompts move down with the last row */
@@ -2594,6 +2723,28 @@ static void pause_campaign_patch(struct cache_file_tag_instance *instances)
 			{
 				pause_campaign_shift_prompts(definition, need);
 				pause_campaign_grow_box(definition, need);
+			}
+			/* (the consoles': the prompts' place the hints', centred under the
+			list, which is centred in the box: the key's own place runs past
+			the box's right edge) */
+			if (pause_hint_bar_tag() != NONE)
+			{
+				long hint = pause_hint_bar_tag(), other;
+				struct ui_widget_child_reference const *placed_rows = list->child_widgets.address;
+				boolean placed = FALSE;
+
+				pause_campaign_hints(definition, hint, &placed);
+				for (other = 0; other < definition->child_widgets.count; other++)
+				{
+					struct ui_widget_definition const *bar = tag_get(UI_WIDGET_DEFINITION_TAG, hint);
+
+					if (children[other].widget_tag.index != hint)
+						continue;
+					/* (its first row's middle: the rows' highlights span the box) */
+					children[other].horizontal_offset = (short)(children[child].horizontal_offset +
+						placed_rows[0].horizontal_offset + button->bounds.x0 +
+						(button->bounds.x1 - button->bounds.x0 - (bar->bounds.x1 - bar->bounds.x0)) / 2 - bar->bounds.x0);
+				}
 			}
 			pause_settings_patch();
 			platform_log("menus: the pause menu has SETTINGS%s", build.coop ? " and FRIENDLY FIRE" : "");

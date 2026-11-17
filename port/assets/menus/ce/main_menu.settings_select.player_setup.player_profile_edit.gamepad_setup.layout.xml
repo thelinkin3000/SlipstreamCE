@@ -1,6 +1,18 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- The port's settings screen, in the PC version's style (tools/port_settings.py) -->
 <menus>
+	<widget name="main_menu/settings_select/player_setup/player_profile_edit/gamepad_setup/layout/hint_bar/left_0" type="text" controller="1" width="300" height="24" text="%x-button SAVE" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/settings_select/player_setup/player_profile_edit/gamepad_setup/layout/hint_bar/left_1" type="text" controller="1" width="300" height="24" text="%y-button DEFAULTS" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/settings_select/player_setup/player_profile_edit/gamepad_setup/layout/hint_bar/right_0" type="text" controller="1" width="300" height="24" text="%b-button BACK" font="ui\small_ui" color="#FFFFFFFF" text_y="2" text_flags="no_focus_test">
+	</widget>
+	<widget name="main_menu/settings_select/player_setup/player_profile_edit/gamepad_setup/layout/hint_bar" width="592" height="24">
+		<data input="port hint bar"/>
+		<child widget="main_menu/settings_select/player_setup/player_profile_edit/gamepad_setup/layout/hint_bar/left_0"/>
+		<child widget="main_menu/settings_select/player_setup/player_profile_edit/gamepad_setup/layout/hint_bar/left_1"/>
+		<child widget="main_menu/settings_select/player_setup/player_profile_edit/gamepad_setup/layout/hint_bar/right_0"/>
+	</widget>
 	<widget name="main_menu/settings_select/player_setup/player_profile_edit/gamepad_setup/layout/button_layout_screen" width="640" height="480" flags="pass_unhandled_to_focused_child pause_game" bitmap="bitmaps/gradient">
 		<on event="b" back="true"/>
 		<on event="back" back="true"/>
@@ -9,6 +21,7 @@
 		<child widget="main_menu/settings_select/player_setup/player_profile_edit/gamepad_setup/layout/xbox_series/overlay" platform="desktop android web"/>
 		<child widget="main_menu/settings_select/player_setup/player_profile_edit/gamepad_setup/layout/dualsense/overlay" platform="ps5"/>
 		<child widget="main_menu/settings_select/player_setup/player_profile_edit/gamepad_setup/layout/switch_pro/overlay" platform="switch"/>
+		<child widget="main_menu/settings_select/player_setup/player_profile_edit/gamepad_setup/layout/hint_bar" x="24" y="415" platform="switch ps5"/>
 	</widget>
 	<widget name="main_menu/settings_select/player_setup/player_profile_edit/gamepad_setup/layout/header_profile_controller_setting" controller="1" left="35" top="11" width="605" height="59" bitmap="main_menu/settings_select/player_setup/player_profile_edit/controller_edit/header_profile_controller_setting">
 	</widget>
@@ -16,15 +29,17 @@
 	</widget>
 	<widget name="main_menu/settings_select/player_setup/player_profile_edit/gamepad_setup/layout/options_menu" type="column_list" width="640" height="480" flags="pass_unhandled_to_focused_child up_down_tabs_children" description="main_menu/settings_select/player_setup/player_profile_edit/gamepad_setup/layout/help">
 		<data input="port settings help"/>
+		<on event="x" run="port settings save" back="true" platform="switch ps5"/>
+		<on event="y" run="port settings defaults" platform="switch ps5"/>
 		<child widget="main_menu/settings_select/player_setup/player_profile_edit/gamepad_setup/layout/op_button_preset" x="54" y="73" platform="desktop android web"/>
 		<child widget="main_menu/settings_select/player_setup/player_profile_edit/gamepad_setup/layout/op_button_preset_console" x="54" y="73" platform="switch ps5"/>
 		<child widget="main_menu/settings_select/player_setup/player_profile_edit/gamepad_setup/layout/op_joystick_preset" x="54" y="103"/>
 		<child widget="main_menu/settings_select/player_setup/player_profile_edit/gamepad_setup/layout/button_bar" y="414"/>
 	</widget>
 	<widget name="main_menu/settings_select/player_setup/player_profile_edit/gamepad_setup/layout/button_bar" type="column_list" width="640" height="28" flags="pass_unhandled_to_focused_child left_right_tabs_items">
-		<child widget="main_menu/settings_select/player_setup/player_profile_edit/gamepad_setup/layout/button_defaults" y="1"/>
-		<child widget="main_menu/settings_select/player_setup/player_profile_edit/gamepad_setup/layout/button_ok" x="380" y="1"/>
-		<child widget="common_button_cancel" x="510" y="1"/>
+		<child widget="main_menu/settings_select/player_setup/player_profile_edit/gamepad_setup/layout/button_defaults" y="1" platform="desktop android web"/>
+		<child widget="main_menu/settings_select/player_setup/player_profile_edit/gamepad_setup/layout/button_ok" x="380" y="1" platform="desktop android web"/>
+		<child widget="common_button_cancel" x="510" y="1" platform="desktop android web"/>
 	</widget>
 	<widget name="main_menu/settings_select/player_setup/player_profile_edit/gamepad_setup/layout/op_button_preset" width="512" height="28" flags="pass_unhandled_to_focused_child" bitmap="bitmaps/option_bkds" color="#FF2896FF" platform="desktop android web">
 		<child widget="main_menu/settings_select/player_setup/player_profile_edit/gamepad_setup/layout/button_preset_label"/>

@@ -3,7 +3,7 @@
 <menus>
 	<widget name="main_menu/settings_select/multiplayer_setup/playlist_edit/game_type_select/gametype_select_button_bar" type="column_list" width="640" height="28" flags="pass_unhandled_to_focused_child left_right_tabs_items">
 		<data input="common button bar update"/>
-		<child widget="common_button_back" x="510" y="1"/>
+		<child widget="common_button_back" x="510" y="1" platform="desktop android web"/>
 	</widget>
 	<widget name="main_menu/settings_select/multiplayer_setup/playlist_edit/game_type_select/gametype_select_ctf_item" type="text" left="51" top="78" width="232" height="32" bitmap="bitmaps/list_item_bkd_top" string_list="main_menu/settings_select/multiplayer_setup/playlist_edit/game_type_select/gametype_select_list_options" font="ui\large_ui" color="#FF2896FF" text_x="13" text_y="5">
 		<on event="a" run="mp profile set game engine" open="main_menu/settings_select/multiplayer_setup/playlist_edit/ctf_edit/ctf_options_screen"/>
@@ -44,6 +44,7 @@
 		<child widget="main_menu/settings_select/multiplayer_setup/playlist_edit/header_set_options"/>
 		<child widget="main_menu/settings_select/multiplayer_setup/playlist_edit/game_type_select/gametype_select_list"/>
 		<child widget="main_menu/settings_select/multiplayer_setup/playlist_edit/game_type_select/rules_label" x="296" y="362"/>
+		<child widget="main_menu/settings_select/multiplayer_setup/playlist_edit/game_type_select/hint_bar" x="24" y="415" platform="switch ps5"/>
 	</widget>
 	<widget name="main_menu/settings_select/multiplayer_setup/playlist_edit/game_type_select/gametype_select_slayer_item" type="text" left="51" top="144" width="232" height="32" bitmap="bitmaps/list_item_bkd" string_list="main_menu/settings_select/multiplayer_setup/playlist_edit/game_type_select/gametype_select_list_options" string_index="2" font="ui\large_ui" color="#FF2896FF" text_x="13" text_y="5">
 		<on event="a" run="mp profile set game engine" open="main_menu/settings_select/multiplayer_setup/playlist_edit/slayer_edit/slayer_options_screen"/>

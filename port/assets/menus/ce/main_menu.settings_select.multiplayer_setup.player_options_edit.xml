@@ -57,8 +57,8 @@
 	</widget>
 	<widget name="main_menu/settings_select/multiplayer_setup/player_options_edit/player_button_bar" type="column_list" width="640" height="28" flags="pass_unhandled_to_focused_child left_right_tabs_items">
 		<data input="common button bar update"/>
-		<child widget="main_menu/settings_select/multiplayer_setup/player_options_edit/player_button_ok" x="380" y="1"/>
-		<child widget="common_button_cancel" x="510" y="1"/>
+		<child widget="main_menu/settings_select/multiplayer_setup/player_options_edit/player_button_ok" x="380" y="1" platform="desktop android web"/>
+		<child widget="common_button_cancel" x="510" y="1" platform="desktop android web"/>
 	</widget>
 	<widget name="main_menu/settings_select/multiplayer_setup/player_options_edit/player_button_ok" type="text" width="128" height="24" bitmap="bitmaps/text_button_background" string_list="strings/common_button_captions" string_index="1" font="ui\small_ui" color="#FFFFFFFF" align="center" text_y="2">
 		<on event="a" run="mp profile set player options" back="true"/>
@@ -70,6 +70,7 @@
 	<widget name="main_menu/settings_select/multiplayer_setup/player_options_edit/player_options_menu" type="column_list" width="640" height="480" flags="pass_unhandled_to_focused_child up_down_tabs_children" description="main_menu/settings_select/multiplayer_setup/player_options_edit/player_options_help">
 		<data input="game settings lists text update"/>
 		<on event="created" run="mp profile init player opts"/>
+		<on event="x" run="mp profile set player options" back="true" platform="switch ps5"/>
 		<child widget="main_menu/settings_select/multiplayer_setup/player_options_edit/op_number_of_lives" x="54" y="73"/>
 		<child widget="main_menu/settings_select/multiplayer_setup/player_options_edit/op_maximum_health" x="54" y="100"/>
 		<child widget="main_menu/settings_select/multiplayer_setup/player_options_edit/op_shields" x="54" y="127"/>
@@ -85,6 +86,7 @@
 	<widget name="main_menu/settings_select/multiplayer_setup/player_options_edit/player_options_screen" width="640" height="480" flags="pass_unhandled_to_focused_child" bitmap="bitmaps/gradient">
 		<child widget="main_menu/settings_select/multiplayer_setup/player_options_edit/header_player_options"/>
 		<child widget="main_menu/settings_select/multiplayer_setup/player_options_edit/player_options_menu"/>
+		<child widget="main_menu/settings_select/multiplayer_setup/player_options_edit/hint_bar" x="24" y="415" platform="switch ps5"/>
 	</widget>
 	<widget name="main_menu/settings_select/multiplayer_setup/player_options_edit/respawn_time_growth_label" type="text" controller="1" width="320" height="22" string_list="main_menu/settings_select/multiplayer_setup/player_options_edit/player_options_labels" string_index="4" font="ui\large_ui" color="#FF2896FF" text_x="13" text_y="4">
 	</widget>

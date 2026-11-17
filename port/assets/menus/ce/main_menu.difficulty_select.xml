@@ -12,8 +12,8 @@
 	</widget>
 	<widget name="main_menu/difficulty_select/difficulty_select_button_bar" type="column_list" width="640" height="28" flags="pass_unhandled_to_focused_child left_right_tabs_items">
 		<data input="common button bar update"/>
-		<child widget="main_menu/difficulty_select/difficulty_select_button_ok" x="380" y="1"/>
-		<child widget="common_button_back" x="510" y="1"/>
+		<child widget="main_menu/difficulty_select/difficulty_select_button_ok" x="380" y="1" platform="desktop android web"/>
+		<child widget="common_button_back" x="510" y="1" platform="desktop android web"/>
 	</widget>
 	<widget name="main_menu/difficulty_select/difficulty_select_button_ok" type="text" width="128" height="24" bitmap="bitmaps/text_button_background" string_list="strings/common_button_captions" string_index="1" font="ui\small_ui" color="#FFFFFFFF" align="center" text_y="2">
 		<on event="a" run="set difficulty"/>
@@ -37,6 +37,7 @@
 		<child widget="main_menu/difficulty_select/difficulty_select_list"/>
 		<child widget="main_menu/difficulty_select/warning_message" x="65" y="215"/>
 		<child widget="main_menu/difficulty_select/header_choose_difficulty"/>
+		<child widget="main_menu/difficulty_select/hint_bar" x="24" y="415" platform="switch ps5"/>
 	</widget>
 	<widget name="main_menu/difficulty_select/hard_difficulty_item" type="text" controller="1" left="51" top="144" width="232" height="32" bitmap="bitmaps/list_item_bkd" string_list="main_menu/difficulty_select/difficulty_options" string_index="2" font="ui\large_ui" color="#FF0080FF" text_x="13" text_y="5">
 		<on event="left_mouse" run="mouse emit accept event"/>

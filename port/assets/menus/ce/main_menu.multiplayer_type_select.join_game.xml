@@ -118,18 +118,7 @@
 		<child widget="main_menu/multiplayer_type_select/join_game/join_game_items_list"/>
 		<child widget="main_menu/multiplayer_type_select/join_game/gamespy_error_fullscreen"/>
 		<child widget="main_menu/multiplayer_type_select/join_game/filters/filters_screen"/>
-		<child widget="main_menu/multiplayer_type_select/join_game/browser_hint_join" x="24" y="452" platform="switch ps5"/>
-		<child widget="main_menu/multiplayer_type_select/join_game/browser_hint_refresh" x="135" y="452" platform="switch ps5"/>
-		<child widget="main_menu/multiplayer_type_select/join_game/browser_hint_filters" x="229" y="452" platform="switch ps5"/>
-		<child widget="main_menu/multiplayer_type_select/join_game/browser_hint_l_switch" x="327" y="455" platform="switch"/>
-		<child widget="main_menu/multiplayer_type_select/join_game/browser_hint_r_switch" x="343" y="455" platform="switch"/>
-		<child widget="main_menu/multiplayer_type_select/join_game/browser_hint_l_ps5" x="327" y="455" platform="ps5"/>
-		<child widget="main_menu/multiplayer_type_select/join_game/browser_hint_r_ps5" x="343" y="455" platform="ps5"/>
-		<child widget="main_menu/multiplayer_type_select/join_game/browser_hint_mode" x="361" y="452" platform="switch ps5"/>
-		<child widget="main_menu/multiplayer_type_select/join_game/browser_hint_dpad_switch" x="417" y="455" platform="switch"/>
-		<child widget="main_menu/multiplayer_type_select/join_game/browser_hint_dpad_ps5" x="417" y="455" platform="ps5"/>
-		<child widget="main_menu/multiplayer_type_select/join_game/browser_hint_sort" x="435" y="452" platform="switch ps5"/>
-		<child widget="main_menu/multiplayer_type_select/join_game/browser_hint_back" x="540" y="452" platform="switch ps5"/>
+		<child widget="main_menu/multiplayer_type_select/join_game/hint_bar" x="24" y="452" platform="switch ps5"/>
 	</widget>
 	<widget name="main_menu/multiplayer_type_select/join_game/op_browser_mode" width="150" height="28" flags="pass_unhandled_to_focused_child" color="#FF2896FF">
 		<child widget="main_menu/multiplayer_type_select/join_game/browser_mode_spinner" x="16" y="1"/>

@@ -789,6 +789,14 @@ static struct widget_instance *named(struct widget_instance *widget, char const 
 	return widget ? descendant(widget, name, &nth) : NULL;
 }
 
+/* a hint of the screen's hint bar (tools/port_settings.py's hint_bar: left_N
+from its left edge, right_N to its right, in the order its console_hints
+gives them), NULL where it has none (not a console) */
+static struct widget_instance *hint_named(struct widget_instance *screen, char const *name)
+{
+	return named(named(screen, "hint_bar", 0), name, 0);
+}
+
 /* the text box's own text (as the server list sets its items'), in a
 buffer of length characters (made the first time: a text box is always
 given the same length) */
@@ -870,6 +878,83 @@ static void focus_row(struct widget_instance *list, short row)
 		list->focused_child = child;
 		list->parameters.list.selected_index = row == NONE ? 0 : row;
 	}
+}
+
+static boolean list_scrolls_at_end(void);
+
+/* ---- a scrolling list's rows (rows_track): the row focused, its list
+wrapping round at its ends, and given its row again when it has none.
+
+The d-pad goes round a list's rows (the menus' lists pass over the hidden
+rows, and an empty button bar), but with more items than rows that goes from
+the last row to the first one shown, not the first item: a step from the
+last row (with the last item on it) to the first is the list going round,
+the items shown from the first, and a step from the first row (with the
+first item on it) to the last, the items shown up to the last. Each list's
+row last seen is kept to tell (a list made again is another widget).
+
+Going back to a screen gives the focus to the list itself (ui_widget.c's
+widget_instance_set_focused_child_by_index: the list was the widget that
+opened the next screen), which leaves no row with it, nothing highlighted:
+the row of the item chosen takes it again. */
+
+#define ROWS_SEEN 8
+
+static struct
+{
+	struct widget_instance *list;
+	short row;
+} rows_seen[ROWS_SEEN];
+static short rows_seen_next;
+
+static short rows_seen_swap(struct widget_instance *list, short row)
+{
+	short index, before;
+
+	for (index = 0; index < ROWS_SEEN; index++)
+	{
+		if (rows_seen[index].list == list)
+		{
+			before = rows_seen[index].row;
+			rows_seen[index].row = row;
+			return before;
+		}
+	}
+	rows_seen[rows_seen_next].list = list;
+	rows_seen[rows_seen_next].row = row;
+	rows_seen_next = (short)((rows_seen_next + 1) % ROWS_SEEN);
+	return NONE;
+}
+
+/* the row (from 0) of the list's rows focused, NONE for none of them;
+shown of count items are shown from *first; chosen is the item to focus
+when the list has no row focused (NONE: the first shown) */
+static short rows_track(struct widget_instance *list, short *first, short count, short shown, short chosen)
+{
+	short row, before;
+
+	if (!list->focused_child && shown > 0)
+	{
+		short focus = chosen == NONE ? 0 : (short)(chosen - *first);
+
+		if (focus < 0 || focus >= shown)
+		{
+			*first = (short)PIN((chosen == NONE ? 0 : chosen) - shown / 2, 0, MAX(count - shown, 0));
+			focus = chosen == NONE ? 0 : (short)PIN(chosen - *first, 0, shown - 1);
+		}
+		focus_row(list, focus);
+	}
+	row = focused_row(list);
+	if (row != NONE && row >= shown)
+		row = NONE;
+	before = rows_seen_swap(list, row);
+	if (row == NONE || before == NONE || shown <= 2 || count <= shown || !list_scrolls_at_end())
+		return row;
+	if (row == 0 && before == shown - 1 && *first + shown >= count)
+		*first = 0;
+	else if (row == shown - 1 && before == 0 && *first == 0)
+		*first = (short)(count - shown);
+	return row;
 }
 
 /* shows the first count rows, with their texts, the arrows on the one that
@@ -1109,12 +1194,30 @@ static boolean campaign_continue(short controller)
 	return TRUE;
 }
 
-/* ---- the map lists (New Game's and the Map screen's): their first row's
+/* ---- a list's chooser (the map lists' kind, the gametype list's bank):
+a spinner beside the list, not a row of it, so that the d-pad goes through
+the rows alone; the shoulders turn it ("port chooser previous" and "port
+chooser next", on the list), and a tap or click on its arrows does. Found by
+its name in the list's screen (or, in a list laid out as before, among the
+list's own rows). */
+
+static struct widget_instance *list_chooser(struct widget_instance *list, char const *name)
+{
+	struct widget_instance *screen = list;
+
+	while (screen && screen->parent)
+		screen = screen->parent;
+	return screen ? named(screen, name, 0) : NULL;
+}
+
+
+/* ---- the map lists (New Game's and the Map screen's): the chooser's
 chooser of SINGLEPLAYER (the campaign's levels), MULTIPLAYER maps (the
 Xbox's), CUSTOM SINGLEPLAYER or CUSTOM MULTIPLAYER maps (the Custom Edition
 maps of the custom_maps folder, by the scenario type their files give:
-custom_edition_maps.c) (port_settings.MAP_KIND_CHOOSER), then the kind's
-rows, scrolling as list_scroll scrolls. A singleplayer kind's map is played
+custom_edition_maps.c) (port_settings.MAP_KIND_CHOOSER: beside the list, not
+a row of it, turned by the shoulders, "port chooser previous" and "port
+chooser next"), then the kind's rows, scrolling as list_scroll scrolls. A singleplayer kind's map is played
 as the campaign is (alone, or hosted as network co-op), a multiplayer kind's
 as multiplayer maps are. */
 
@@ -1150,9 +1253,11 @@ static boolean map_kind_mcc(short kind)
 /* The kind the chooser shows, kept to the multiplayer kinds unless
 `singleplayer`: a singleplayer kind it was turned to becomes the next
 multiplayer one the way it turned from `previous`. */
+static struct widget_instance *list_chooser(struct widget_instance *list, char const *name);
+
 static short map_kind_shown(struct widget_instance *list, boolean singleplayer, short previous)
 {
-	struct widget_instance *spinner = named(list, "list_item_0_map_kind_spinner", 0);
+	struct widget_instance *spinner = list_chooser(list, "list_item_0_map_kind_spinner");
 	short kind;
 
 	if (!spinner)
@@ -1172,7 +1277,7 @@ static short map_kind_shown(struct widget_instance *list, boolean singleplayer, 
 
 static void map_kind_set(struct widget_instance *list, short kind)
 {
-	struct widget_instance *spinner = named(list, "list_item_0_map_kind_spinner", 0);
+	struct widget_instance *spinner = list_chooser(list, "list_item_0_map_kind_spinner");
 
 	if (spinner)
 		spinner->parameters.list.selected_index = kind;
@@ -1184,29 +1289,26 @@ static short map_kind_first(short chosen, short count)
 	return (short)PIN(chosen - MAP_KIND_ROWS / 2, 0, MAX(count - MAP_KIND_ROWS, 0));
 }
 
-static boolean list_scrolls_at_end(void);
-
 static void map_kind_focus(struct widget_instance *list, short first, short chosen)
 {
-	focus_row(list, (short)(1 + chosen - first));
+	focus_row(list, (short)(chosen - first));
 }
 
-/* the rows after the chooser: count entries from *first's, scrolled on at
-their ends; the entry focused, NONE when the chooser or the buttons have the
-focus */
-static short map_kind_rows_update(struct widget_instance *list, short *first, short count,
+/* the list's rows: count entries from *first's, scrolled on at their ends;
+the entry focused, NONE when the buttons have the focus */
+static short map_kind_rows_update(struct widget_instance *list, short *first, short count, short chosen,
 	void (*entry_text)(short entry, wchar_t *text))
 {
 	short shown = (short)MIN(count, MAP_KIND_ROWS);
-	short row = focused_row(list), index = 0;
+	short row = rows_track(list, first, count, shown, chosen), index = 0;
 	struct widget_instance *child;
 
-	if (row != NONE && row >= 1 && row == shown && *first + shown < count && list_scrolls_at_end())
+	if (row != NONE && row == shown - 1 && *first + shown < count && list_scrolls_at_end())
 	{
 		(*first)++;
 		focus_row(list, --row);
 	}
-	else if (row == 1 && *first > 0 && list_scrolls_at_end())
+	else if (row == 0 && *first > 0 && list_scrolls_at_end())
 	{
 		(*first)--;
 		focus_row(list, ++row);
@@ -1215,21 +1317,19 @@ static short map_kind_rows_update(struct widget_instance *list, short *first, sh
 	{
 		wchar_t text[ROW_TEXT_LENGTH];
 
-		if (index < 1)
-			continue;
 		if (strncmp(child->name, "list_item_", 10))
 			break;
-		child->visible = index - 1 < shown;
-		if (index - 1 < shown)
+		child->visible = index < shown;
+		if (index < shown)
 		{
-			entry_text((short)(*first + index - 1), text);
+			entry_text((short)(*first + index), text);
 			text_set(named(child, "list_item_text", 0), text);
 		}
 		visible_set(named(child, "list_item_arrows", 0), child == list->focused_child);
 		visible_set(named(child, "scroll_up_button", 0), FALSE);
 		visible_set(named(child, "scroll_down_button", 0), FALSE);
 	}
-	return row == NONE || row < 1 || row > shown ? NONE : (short)(*first + row - 1);
+	return row == NONE || row >= shown ? NONE : (short)(*first + row);
 }
 
 /* the Xbox's multiplayer maps: the first of the multiplayer maps
@@ -1590,9 +1690,14 @@ static long map_import_count(void)
 }
 #endif
 
-/* "port map import" (A on IMPORT) */
-static boolean map_import_start(void)
+/* "port map import" (A on IMPORT, the north face button on the map lists),
+from the widget whose event it is */
+boolean ui_widget_port_open(struct widget_instance *widget, char const *name, boolean *widget_deleted);
+
+static boolean map_import_start(struct widget_instance *widget, boolean *widget_deleted)
 {
+	(void)widget;
+	(void)widget_deleted;
 #if defined(HALO_ANDROID) && !defined(HALO_SWITCH)
 	char folder[1024];
 
@@ -1618,12 +1723,17 @@ imported would never be seen, so the player is told why instead) */
 	host_android_import_maps(folder);
 	return TRUE;
 #elif defined(HALO_SWITCH) || defined(HALO_PS5)
-	/* (the upload page's screen: map_import_page.c serves it while it is up) */
+	/* (the upload page's screen: map_import_page.c serves it while it is up.
+	Opened as a handler's open= is, after the screen it is opened from,
+	which B goes back to: the screen's widgets are deleted, as the engine
+	is told, and not used again by the event's handlers - loaded as a
+	screen of its own, it deleted the list under the event, and B then
+	freed it again: debug_memory.c #165) */
 	map_import.importing = TRUE;
 	map_import.maps = map_import_count();
 	map_import.looked = system_milliseconds();
 	if (!map_import.page_screen)
-		map_import.page_screen = ui_widget_load_by_name_or_tag(MAP_IMPORT_PAGE_SCREEN, NONE, NULL, 0, NONE, NONE, NONE);
+		return ui_widget_port_open(widget, MAP_IMPORT_PAGE_SCREEN, widget_deleted);
 	return TRUE;
 #else
 	return FALSE;
@@ -2065,7 +2175,7 @@ static void mcc_browser_focus(struct widget_instance *list, struct mcc_map_brows
 	if (browser->count)
 		map_kind_focus(list, *first, *chosen);
 	else
-		focus_row(list, 0);
+		focus_row(list, NONE);
 }
 
 static void mcc_map_description_show(struct widget_instance *description, short index)
@@ -2133,7 +2243,8 @@ static void mcc_solo_list_update(struct widget_instance *list)
 {
 	struct widget_instance *description = list->parameters.list.extended_description;
 	struct mcc_map_browser *browser = &mcc_solo_browsers[mcc_solo_list.campaign];
-	short row = map_kind_rows_update(list, &mcc_solo_list.first, browser->count, mcc_solo_map_text);
+	short row = map_kind_rows_update(list, &mcc_solo_list.first, browser->count, mcc_solo_list.chosen,
+		mcc_solo_map_text);
 
 	if (row != NONE)
 	{
@@ -2195,12 +2306,10 @@ static void list_loading_show(struct widget_instance *list, char const *right_it
 
 	for (child = list->child; child; child = child->next, index++)
 	{
-		if (index < 1)
-			continue;
 		if (strncmp(child->name, "list_item_", 10))
 			break;
-		child->visible = index == 1;
-		if (index == 1)
+		child->visible = index == 0;
+		if (index == 0)
 			text_set(named(child, "list_item_text", 0), L"LOADING...");
 		visible_set(named(child, "list_item_arrows", 0), FALSE);
 		visible_set(named(child, "scroll_up_button", 0), FALSE);
@@ -2382,16 +2491,15 @@ static void level_list_update(struct widget_instance *list)
 
 	if (kind != level_list.kind)
 	{
+		/* (the shoulders turned the chooser: the new kind's list from its
+		first row) */
+		map_kind_focus(list, 0, 0);
 		if (map_kind_mcc(kind))
 		{
-			boolean chooser = focused_row(list) == 0;
-
 			mcc_solo_list.campaign = kind == MAP_KIND_MCC_SINGLEPLAYER;
 			mcc_map_browser_open(&mcc_solo_browsers[mcc_solo_list.campaign], mcc_solo_list.campaign);
 			mcc_browser_focus(list, &mcc_solo_browsers[mcc_solo_list.campaign],
 				&mcc_solo_list.first, &mcc_solo_list.chosen);
-			if (chooser)
-				focus_row(list, 0);
 		}
 		level_list.kind = kind;
 		level_list.category[0] = 0;
@@ -2436,7 +2544,7 @@ static void level_list_update(struct widget_instance *list)
 		return;
 	}
 	count = map_kind_count(kind, level_list.map_count, level_list.category);
-	entry = map_kind_rows_update(list, &level_list.first, count,
+	entry = map_kind_rows_update(list, &level_list.first, count, level_list.chosen,
 		kind == MAP_KIND_SINGLEPLAYER ? level_row_text :
 		kind == MAP_KIND_MULTIPLAYER ? multiplayer_map_text : level_list_custom_text);
 	if (entry != NONE)
@@ -3395,7 +3503,7 @@ while there are more past them, the list moving instead; the item chosen,
 or NONE (its buttons) */
 static short list_scroll(struct widget_instance *list, short *first, short count, short rows)
 {
-	short row = focused_row(list);
+	short row = rows_track(list, first, count, (short)MIN(count, rows), NONE);
 
 	if (row == rows - 1 && *first + rows < count && list_scrolls_at_end())
 	{
@@ -4717,21 +4825,14 @@ static boolean mods_save(void)
 	return TRUE;
 }
 
-/* "port mods accept" (A, or Start, on a row): the Switch's and the PS5's
-save and go back, as OK, the north button turning a mod on or off; a
-touchscreen's tap, and the other platforms' A, turn it on or off */
+/* "port mods accept" (A, or Start, on a row, and a touchscreen's tap): the
+mod turned on or off */
 static boolean mods_accept(struct widget_instance *widget, boolean *widget_deleted)
 {
-#if defined(HALO_SWITCH) || defined(HALO_PS5)
-	mods_save();
-	ui_play_audio_feedback_sound(SOUND_FORWARD);
-	ui_widget_port_go_back(widget);
-	*widget_deleted = TRUE;
-	return TRUE;
-#else
+	/* (on every platform: the consoles save with the west face button, as
+	every screen does, the list's "port mods save") */
 	(void)widget_deleted;
 	return mods_toggle(widget);
-#endif
 }
 
 /* "port mods delete" (A on DELETE, Android's alone): the first press asks,
@@ -5011,8 +5112,9 @@ static void theater_update(struct widget_instance *list)
 	list's again each time it is drawn, so words set on it never showed) */
 	{
 		struct widget_instance *record = named(list, "button_record", 0);
-		/* (the consoles' hint of the north button in its place: the screen's) */
-		struct widget_instance *hint = named(list->parent, "theater_record_hint", 0);
+		/* (the consoles' hint of the north button, RECORD: its hint bar's
+		second at the left, tools/port_settings.py's _theater) */
+		struct widget_instance *hint = hint_named(list->parent, "left_1");
 
 		if (record)
 			record->parameters.text_box.string_list_index = recording ? 1 : 0;
@@ -5760,7 +5862,7 @@ static void mcc_host_list_update(struct widget_instance *list)
 	struct mcc_map_browser *browser = &mcc_host_browsers[mcc_host_list.campaign];
 	short count = mcc_host_list.step == MAP_STEP_DIFFICULTIES ? NUMBER_OF_GAME_DIFFICULTY_LEVELS :
 		browser->count;
-	short row = map_kind_rows_update(list, &mcc_host_list.first, count,
+	short row = map_kind_rows_update(list, &mcc_host_list.first, count, mcc_host_list.chosen,
 		mcc_host_list.step == MAP_STEP_DIFFICULTIES ? map_difficulty_text : mcc_host_map_text);
 
 	if (row != NONE)
@@ -5908,18 +6010,17 @@ static void map_list_update(struct widget_instance *list)
 
 	if (kind != map_list.kind)
 	{
+		/* (the shoulders turned the chooser: the new kind's list from its
+		first row) */
+		map_kind_focus(list, 0, 0);
 		if (map_kind_mcc(kind))
 		{
-			boolean chooser = focused_row(list) == 0;
-
 			csmemset(&mcc_host_list, 0, sizeof(mcc_host_list));
 			mcc_host_list.multiplayer_only = !map_list.hosting;
 			mcc_host_list.campaign = kind == MAP_KIND_MCC_SINGLEPLAYER;
 			mcc_map_browser_open(&mcc_host_browsers[mcc_host_list.campaign], mcc_host_list.campaign);
 			mcc_browser_focus(list, &mcc_host_browsers[mcc_host_list.campaign],
 				&mcc_host_list.first, &mcc_host_list.chosen);
-			if (chooser)
-				focus_row(list, 0);
 		}
 		map_list.kind = kind;
 		map_list.step = MAP_STEP_MAPS;
@@ -5951,7 +6052,7 @@ static void map_list_update(struct widget_instance *list)
 		return;
 	}
 	count = map_step_count();
-	entry = map_kind_rows_update(list, &map_list.first, count, map_list.step == MAP_STEP_DIFFICULTIES ?
+	entry = map_kind_rows_update(list, &map_list.first, count, map_list.chosen, map_list.step == MAP_STEP_DIFFICULTIES ?
 		map_difficulty_text : kind == MAP_KIND_SINGLEPLAYER ? map_level_text :
 		kind == MAP_KIND_MULTIPLAYER ? multiplayer_map_text : map_list_custom_text);
 	if (entry != NONE)
@@ -6139,8 +6240,9 @@ static boolean gametype_setup_apply(void);
 static void gametype_setup_type(wchar_t *text);
 
 /* ---- the gametype list: its spinner's bank (STANDARD: the Xbox's built-in
-ones, OPENCE: OpenCE's built-in ones, game_modes.c, CUSTOM: those saved) in
-its first row, then the bank's gametypes */
+ones, OPENCE: OpenCE's built-in ones, game_modes.c, CUSTOM: those saved)
+above it (not a row of it: the shoulders turn it, "port chooser previous"
+and "port chooser next"), then the bank's gametypes as its rows */
 
 enum
 {
@@ -6149,6 +6251,34 @@ enum
 	GAMETYPE_BANK_CUSTOM,
 	NUMBER_OF_GAMETYPE_BANKS
 };
+
+static char const *const list_chooser_names[] = { "list_item_0_map_kind_spinner", "list_item_0_chooser_spinner" };
+
+/* "port chooser previous", "port chooser next" */
+static boolean list_chooser_turn(struct widget_instance *list, short step)
+{
+	short index;
+
+	for (index = 0; index < (short)NUMBEROF(list_chooser_names); index++)
+	{
+		struct widget_instance *spinner = list_chooser(list, list_chooser_names[index]);
+		short count;
+
+		if (!spinner)
+			continue;
+		count = (short)spinner->parameters.list.number_of_items;
+		/* (its items are its strings: as many as the kinds or the banks) */
+		if (count <= 0)
+			count = index == 0 ? NUMBER_OF_MAP_KINDS : NUMBER_OF_GAMETYPE_BANKS;
+		if (count <= 1)
+			return TRUE;
+		spinner->parameters.list.selected_index =
+			(short)((PIN(spinner->parameters.list.selected_index, 0, count - 1) + step + count) % count);
+		ui_play_audio_feedback_sound(SOUND_CURSOR);
+		return TRUE;
+	}
+	return FALSE;
+}
 
 /* a gametype's bank */
 static short gametype_bank(long profile_index)
@@ -6361,10 +6491,10 @@ static void gametype_list_loading_show(struct widget_instance *list)
 
 	for (row = list->child, row_index = 0; row; row = row->next, row_index++)
 	{
-		if (row_index < 1 || row_index > GAMETYPE_ROWS)
+		if (row_index >= GAMETYPE_ROWS)
 			continue;
-		row->visible = row_index == 1;
-		if (row_index == 1)
+		row->visible = row_index == 0;
+		if (row_index == 0)
 			text_set(named(row, "list_item_text", 0), L"LOADING...");
 		if (named(row, "list_item_arrows", 0))
 			named(row, "list_item_arrows", 0)->visible = FALSE;
@@ -6376,7 +6506,7 @@ static void gametype_list_loading_show(struct widget_instance *list)
 /* (the gametypes come) the list on the gametype used last, as it opens */
 static void gametype_list_show(struct widget_instance *list, short const *banks, short last)
 {
-	struct widget_instance *spinner = named(list, "list_item_0_chooser_spinner", 0);
+	struct widget_instance *spinner = list_chooser(list, "list_item_0_chooser_spinner");
 	short index;
 
 	for (index = 0; index < multiplayer.gametype_count; index++)
@@ -6391,7 +6521,7 @@ static void gametype_list_show(struct widget_instance *list, short const *banks,
 		MAX(0, multiplayer.bank_count - GAMETYPE_ROWS));
 	if (spinner)
 		spinner->parameters.list.selected_index = multiplayer.bank_shown;
-	focus_row(list, (short)(1 + multiplayer.gametype_chosen - multiplayer.gametype_first));
+	focus_row(list, (short)(multiplayer.gametype_chosen - multiplayer.gametype_first));
 }
 
 /* (with the lock held, and the gametypes current) taken for the list */
@@ -6472,7 +6602,7 @@ the gametype chosen: its name, picture and rules */
 static void gametype_list_update(struct widget_instance *list)
 {
 	struct widget_instance *description = list->parameters.list.extended_description;
-	struct widget_instance *spinner = named(list, "list_item_0_chooser_spinner", 0);
+	struct widget_instance *spinner = list_chooser(list, "list_item_0_chooser_spinner");
 	struct widget_instance *row;
 	struct widget_instance *widget;
 	short row_index = 0, focused = NONE, count;
@@ -6499,24 +6629,26 @@ static void gametype_list_update(struct widget_instance *list)
 	}
 
 	if (spinner && spinner->parameters.list.selected_index != multiplayer.bank_shown)
-		gametype_bank_read((short)PIN(spinner->parameters.list.selected_index, 0, NUMBER_OF_GAMETYPE_BANKS - 1));
-	count = (short)MIN(multiplayer.bank_count, GAMETYPE_ROWS);
-	/* (the rows after the spinner's: scrolled as list_scroll does) */
-	for (row = list->child; row; row = row->next, row_index++)
 	{
-		if (row == list->focused_child && row_index >= 1 && row_index <= GAMETYPE_ROWS)
-			focused = (short)(row_index - 1);
+		/* (the shoulders turned the chooser: the bank's list from its first
+		row) */
+		gametype_bank_read((short)PIN(spinner->parameters.list.selected_index, 0, NUMBER_OF_GAMETYPE_BANKS - 1));
+		focus_row(list, multiplayer.bank_count ? 0 : NONE);
 	}
+	count = (short)MIN(multiplayer.bank_count, GAMETYPE_ROWS);
+	/* (the rows: scrolled as list_scroll does) */
+	focused = rows_track(list, &multiplayer.gametype_first, multiplayer.bank_count, count,
+		multiplayer.gametype_chosen);
 	if (focused == count - 1 && multiplayer.gametype_first + count < multiplayer.bank_count && list_scrolls_at_end())
 	{
 		multiplayer.gametype_first++;
-		focus_row(list, (short)focused);
+		focus_row(list, (short)(focused - 1));
 		focused--;
 	}
 	else if (focused == 0 && multiplayer.gametype_first > 0 && list_scrolls_at_end())
 	{
 		multiplayer.gametype_first--;
-		focus_row(list, 2);
+		focus_row(list, 1);
 		focused++;
 	}
 	if (focused != NONE)
@@ -6525,10 +6657,10 @@ static void gametype_list_update(struct widget_instance *list)
 	{
 		wchar_t text[ROW_TEXT_LENGTH];
 
-		if (row_index < 1 || row_index > GAMETYPE_ROWS)
+		if (row_index >= GAMETYPE_ROWS)
 			continue;
-		row->visible = row_index - 1 < count;
-		gametype_name((short)(multiplayer.gametype_first + row_index - 1), text);
+		row->visible = row_index < count;
+		gametype_name((short)(multiplayer.gametype_first + row_index), text);
 		text_set(named(row, "list_item_text", 0), text);
 		if (named(row, "list_item_arrows", 0))
 			named(row, "list_item_arrows", 0)->visible = row == list->focused_child;
@@ -6757,6 +6889,11 @@ static void wide_to_text(wchar_t const *wide, char *text, short size)
 }
 
 /* "server settings update" */
+/* Server Setup's rows: where the first is, and how far apart they are
+(tools/port_settings.py's SERVER_SETUP_ROW_TOP, _PITCH) */
+#define SERVER_SETUP_ROW_TOP 73
+#define SERVER_SETUP_ROW_PITCH 24
+
 static void server_settings_update(struct widget_instance *list)
 {
 	struct widget_instance *spinner = named(list, "max_players_spinner", 0);
@@ -6846,6 +6983,21 @@ static void server_settings_update(struct widget_instance *list)
 		text_field_show(named(list, "password_value", 0), index ? text : "NONE", text_field_editing(row));
 		if (help && list->focused_child == row)
 			help->parameters.text_box.string_list_index = SERVER_PASSWORD_HELP;
+	}
+	/* (the rows shown one after another from the first's place, a row
+	hidden leaving no gap: LISTING and PASSWORD a LAN game's, co-op's and
+	the gametype's each other's; tools/port_settings.py's
+	SERVER_SETUP_ROW_TOP and _PITCH) */
+	{
+		struct widget_instance *child;
+		short place = 0;
+
+		for (child = list->child; child; child = child->next)
+		{
+			if (strncmp(child->name, "op_", 3) || !child->visible)
+				continue;
+			child->vertical_offset = (short)(SERVER_SETUP_ROW_TOP + SERVER_SETUP_ROW_PITCH * place++);
+		}
 	}
 }
 
@@ -7089,9 +7241,15 @@ static void focus_off_hidden(struct widget_instance *bar)
 server browser's tab (its source) and column titles (its order) too */
 static boolean browser_item_usable(struct widget_instance *child)
 {
+#if defined(HALO_SWITCH) || defined(HALO_PS5)
+	/* (the consoles' rows alone: the shoulders change the tab, the d-pad
+	sorts, browser_shortcut) */
+	return browser_row_index(child) != NONE || !strcmp(child->name, "join_game_button_bar");
+#else
 	return browser_row_index(child) != NONE || !strcmp(child->name, "join_game_button_bar") ||
 		(multiplayer.mode == _multiplayer_mode_server_browser &&
 			(!strcmp(child->name, "op_browser_mode") || !strcmp(child->name, "join_game_header")));
+#endif
 }
 
 /* the browser's focus, off what cannot have it (at the start, or a row whose
@@ -7875,19 +8033,14 @@ static void browser_list_show(struct widget_instance *screen, boolean shown)
 	visible_set(named(screen, "header_join_game", 0), shown);
 	/* (the Switch's and the PS5's hints with it, the mode's: under a panel
 	its own buttons are the ones to press; LAN's and Direct Link's join and
-	go back alone) */
-	visible_set(named(screen, "browser_hint_join", 0), shown);
-	visible_set(named(screen, "browser_hint_back", 0), shown);
-	visible_set(named(screen, "browser_hint_refresh", 0), shown && server_browser);
-	visible_set(named(screen, "browser_hint_filters", 0), shown && server_browser);
-	visible_set(named(screen, "browser_hint_mode", 0), shown && server_browser);
-	visible_set(named(screen, "browser_hint_l_switch", 0), shown && server_browser);
-	visible_set(named(screen, "browser_hint_r_switch", 0), shown && server_browser);
-	visible_set(named(screen, "browser_hint_l_ps5", 0), shown && server_browser);
-	visible_set(named(screen, "browser_hint_r_ps5", 0), shown && server_browser);
-	visible_set(named(screen, "browser_hint_sort", 0), shown && server_browser);
-	visible_set(named(screen, "browser_hint_dpad_switch", 0), shown && server_browser);
-	visible_set(named(screen, "browser_hint_dpad_ps5", 0), shown && server_browser);
+	go back alone. tools/port_settings.py's BROWSER_HINTS: FILTERS, REFRESH,
+	MODE and SORT at the left, BACK and JOIN GAME at the right) */
+	visible_set(hint_named(screen, "right_0"), shown);
+	visible_set(hint_named(screen, "right_1"), shown);
+	visible_set(hint_named(screen, "left_0"), shown && server_browser);
+	visible_set(hint_named(screen, "left_1"), shown && server_browser);
+	visible_set(hint_named(screen, "left_2"), shown && server_browser);
+	visible_set(hint_named(screen, "left_3"), shown && server_browser);
 }
 
 /* the error panel over the list, with its words (NONE: hidden, the focus
@@ -9069,6 +9222,9 @@ static void coop_friendly_fire_text(struct widget_instance *button)
 	button->parameters.text_box.string_list_index = config_boolean("network.coop_own_friendly_fire") ? 0 : 1;
 }
 
+/* (the map vote's: below) */
+static boolean map_vote_open(void);
+
 /* ---- the lobby: the game's players (up to the port's 128), its map and
 gametype, the countdown */
 
@@ -9160,14 +9316,14 @@ static boolean lobby_join_reset(void)
 /* "port lobby add player" (ADD PLAYER, and player 1's Y): its 4-way screen
 opens ("port join4 open"). That screen is player 1's, whose START ends it,
 and a screen a press opens is the presser's: another controller's press asks
-player 1's Y instead (FALSE: nothing opens for it) */
+player 1's X instead, ADD PLAYER's (FALSE: nothing opens for it) */
 static boolean lobby_add_player(short controller)
 {
 	if (lobby_local_player_count() >= MAXIMUM_LOCAL_PLAYERS)
 		return campaign_fail();
 	if (controller > 0)
 	{
-		event_manager_post_button(0, BUTTON_Y);
+		event_manager_post_button(0, BUTTON_X);
 		return FALSE;
 	}
 	lobby_join.adding = TRUE;
@@ -9198,7 +9354,8 @@ static boolean lobby_join_start(struct widget_instance *widget, short controller
 	/* (the 4-way screen opens as player 1's, with this controller joining:
 lobby_add_player) */
 	lobby_join.controller = controller;
-	event_manager_post_button(0, BUTTON_Y);
+	/* (ADD PLAYER's, the west face button: tools/port_settings.py's _lobby) */
+	event_manager_post_button(0, BUTTON_X);
 	return FALSE;
 }
 
@@ -10288,6 +10445,19 @@ static void steam_picture_draw(rectangle2d const *bounds)
 	draw_bitmap_in_rect(picture, bounds, &source, NULL, 0xFFFFFFFFUL, NULL, TRUE);
 }
 
+/* ui_widget.c's: whether a text box's words are broken into lines at its
+width as they are drawn: the consoles' IMPORT page's (one long line of
+them, cut at the screen's edge, else) */
+boolean menu_functions_text_wraps(struct widget_instance *widget)
+{
+	char const *name;
+
+	if (!widget || widget->definition_tag_index == NONE || !widget->name || strcmp(widget->name, "description"))
+		return FALSE;
+	name = tag_get_name(widget->definition_tag_index);
+	return name && strstr(name, "map_import_page") != NULL;
+}
+
 /* ui_widget.c's: a text box drawn, at the bounds its text was drawn in
 (its font and justification still set): a lobby row's player talking in
 voice chat (or muted) has a speaker just left of their name
@@ -10311,13 +10481,15 @@ void menu_functions_text_box_drawn(struct widget_instance *widget, rectangle2d c
 		link_qr_draw_at(_link_qr_replays, network_replay_page_address(), (short)(bounds->x0 + 195 * scale),
 			(short)(bounds->y0 - (392 - (258 + 388) / 2) * scale), (short)(126 * scale));
 	}
-	/* (the consoles' IMPORT's upload page, over its line, as the Theater's) */
+	/* (the consoles' IMPORT's upload page, over its line at the screen's
+	right: UI units, the line 220 wide, the code 200 across with its bottom 8
+	over it, tools/port_settings.py's MAP_IMPORT_QR_*) */
 	if (widget->name && !strcmp(widget->name, "map_import_qr_text"))
 	{
-		real scale = (real)(bounds->x1 - bounds->x0) / 390.0f;
+		real scale = (real)(bounds->x1 - bounds->x0) / 220.0f;
 
-		link_qr_draw_at(_link_qr_maps, map_import_page_address(), (short)(bounds->x0 + 195 * scale),
-			(short)(bounds->y0 - (392 - (258 + 388) / 2) * scale), (short)(126 * scale));
+		link_qr_draw_at(_link_qr_maps, map_import_page_address(), (short)(bounds->x0 + 110 * scale),
+			(short)(bounds->y0 - (8 + 100) * scale), (short)(200 * scale));
 	}
 #endif
 	/* (the news's rows: the font and width its notes are wrapped to) */
@@ -10441,6 +10613,10 @@ static void lobby_update(struct widget_instance *list)
 	lobby_join_help(list);
 	map_vote_lobby_check();
 	visible_set(named(list, "lobby_button_team", 0), game && game->variant.universal_variant.teams);
+	/* (the consoles' hints: MAP VOTE while a vote runs, SWITCH TEAM in a game
+	of teams; tools/port_settings.py's _lobby) */
+	visible_set(hint_named(screen_of(list), "left_1"), map_vote_open());
+	visible_set(hint_named(screen_of(list), "left_2"), game && game->variant.universal_variant.teams);
 	/* (the buttons' focus, off Switch Team when it is hidden) */
 	focus_off_hidden(named(list, "lobby_button_bar", 0));
 	visible_set(named(description, "lobby_right_item", 0), game != NULL && state >= _client_state_pregame);
@@ -10527,11 +10703,12 @@ static void map_vote_lobby_check(void)
 	if (network_map_vote_status_get(&status) && status.winner == NONE && status.round != map_vote_screen.opened_round)
 	{
 		map_vote_screen.opened_round = status.round;
-		ui_widget_port_post_button(0, BUTTON_X);
+		/* (MAP VOTE's, the north face button: tools/port_settings.py's _lobby) */
+		ui_widget_port_post_button(0, BUTTON_Y);
 	}
 }
 
-/* "port map vote open" (the lobby's X): only while a vote runs */
+/* "port map vote open" (the lobby's Y): only while a vote runs */
 static boolean map_vote_open(void)
 {
 	struct network_map_vote_status status;
@@ -10742,7 +10919,8 @@ static boolean preview_add(struct widget_instance *widget, short controller, boo
 		return campaign_fail();
 	}
 	lobby_join.controller = controller;
-	event_manager_post_button(0, BUTTON_Y);
+	/* (ADD PLAYER's, the west face button: tools/port_settings.py's _lobby) */
+	event_manager_post_button(0, BUTTON_X);
 	return FALSE;
 }
 
@@ -11044,10 +11222,16 @@ static void join4_update(struct widget_instance *widget)
 	struct widget_instance *screen = screen_of(widget);
 
 	join4_keyboard();
+#if defined(HALO_SWITCH) || defined(HALO_PS5)
+	/* (the consoles' buttons are their hint bar's: the line says only what
+	happened) */
+	text_set(named(screen, "join4_hint", 0), system_milliseconds() < join4.notice_until ? join4.notice : L"");
+#else
 	text_set(named(screen, "join4_hint", 0),
 		system_milliseconds() < join4.notice_until ? join4.notice :
 		halo_keyboard_shares_gamepad() && halo_gamepad_count() < MAXIMUM_LOCAL_PLAYERS ?
 			L"SPACE: join    ENTER: select    ESC: back" : L"ENTER: select    ESC: back");
+#endif
 }
 
 static long join4_tag(void)
@@ -13061,12 +13245,6 @@ static void host_map_row_text(short item, wchar_t *text)
 	host_wide(title, text, ROW_TEXT_LENGTH);
 }
 
-/* the Builder's hints of the shoulders, which change the maps' kind: shown
-while the focus is in the maps (the consoles'; tools/port_settings.py) */
-static char const *const host_kind_hints[] =
-{
-	"hint_kind", "hint_kind_l_switch", "hint_kind_r_switch", "hint_kind_l_ps5", "hint_kind_r_ps5",
-};
 
 /* the maps' row focused (a folder opened or left) */
 static void host_maps_focus(struct widget_instance *list, short chosen)
@@ -13128,13 +13306,10 @@ static void host_maps_update(struct widget_instance *list)
 	host_list_update(list, &host_menu.map_first, &host_menu.map_chosen, host_maps_shown(), HOST_MAP_ROWS,
 		host_map_row_text, NULL, NONE);
 	host_tab_mark(list, "maps_tab");
-	for (index = 0; index < NUMBEROF(host_kind_hints); index++)
-	{
-		struct widget_instance *hint = named(screen, host_kind_hints[index], 0);
-
-		if (hint)
-			hint->visible = host_list_active(list);
-	}
+	/* (the consoles' hint of the shoulders, which change the maps' kind,
+	while the focus is in the maps: the Builder's hint bar's MAP TYPE,
+	tools/port_settings.py) */
+	visible_set(hint_named(screen, "left_2"), host_list_active(list));
 }
 
 /* Select Gametype's rows: the built-in gametypes, then those saved */
@@ -13585,6 +13760,9 @@ static void host_entries_update(struct widget_instance *list)
 	while the focus is on a round) */
 	visible_set(named(screen, "hint_remove", 0), host_list_active(list) && host_menu.builder.count > 0 &&
 		host_row_number(list->focused_child) != NONE);
+	/* (and the consoles' REMOVE, their hint bar's) */
+	visible_set(hint_named(screen, "left_1"), host_list_active(list) && host_menu.builder.count > 0 &&
+		host_row_number(list->focused_child) != NONE);
 }
 
 /* "port host entry grab" (A on a round): picked up, or put down */
@@ -13917,6 +14095,97 @@ static void host_menu_data(char const *name, struct widget_instance *widget)
 		host_round_update(widget);
 	else if (!strcmp(name, "settings update"))
 		host_settings_update(widget);
+}
+
+/* ---------- the consoles' hint bars (tools/port_settings.py's hint_bar): a
+row of hints, each a button (or two: the shoulders) and what it does, some at
+the bar's left and some at its right. The generator gives each hint a text
+widget (left_N or right_N: the button's picture in its text, or its name,
+then the words) and, for a button the text has no picture of, a picture
+widget before it (left_N_pic<M>_<platform>, 14 wide); every frame they are
+placed from their drawn widths, the left ones on from the bar's left edge
+and the right ones ending at its right edge, in their order. A hint hidden
+(its text widget not visible, as a screen's update may set it) takes no
+room, its pictures hidden with it. */
+
+#define HINT_BAR_MAXIMUM_HINTS 8
+#define HINT_BAR_MAXIMUM_PICTURES 3
+/* the room between a hint's pictures and its words, and between hints (the
+bar's edges are its own: its place and width) */
+#define HINT_BAR_PICTURE_GAP 3
+#define HINT_BAR_GAP 18
+
+/* (ui_widget.c's) */
+short ui_widget_port_text_width(struct widget_instance *widget);
+short ui_widget_port_width(struct widget_instance *widget);
+
+struct hint_bar_hint
+{
+	struct widget_instance *pictures[HINT_BAR_MAXIMUM_PICTURES];
+	short picture_count;
+	struct widget_instance *text;
+	short width;
+};
+
+/* (a child's offset is from its parent's place: the menus draw each widget
+at its parent's offset and its own) */
+static void hint_bar_place(struct hint_bar_hint const *hint, short x)
+{
+	short index;
+
+	for (index = 0; index < hint->picture_count; index++)
+	{
+		hint->pictures[index]->horizontal_offset = x;
+		x = (short)(x + ui_widget_port_width(hint->pictures[index]) + HINT_BAR_PICTURE_GAP);
+	}
+	hint->text->horizontal_offset = x;
+}
+
+/* "port hint bar" */
+static void hint_bar_update(struct widget_instance *bar)
+{
+	struct hint_bar_hint hints[2][HINT_BAR_MAXIMUM_HINTS];
+	struct hint_bar_hint hint = { { NULL } };
+	short counts[2] = { 0, 0 };
+	struct widget_instance *child;
+	short side, index, x;
+
+	for (child = bar->child; child; child = child->next)
+	{
+		side = !strncmp(child->name, "left_", 5) ? 0 : !strncmp(child->name, "right_", 6) ? 1 : NONE;
+		if (side == NONE)
+			continue;
+		if (strstr(child->name, "_pic"))
+		{
+			if (hint.picture_count < HINT_BAR_MAXIMUM_PICTURES)
+				hint.pictures[hint.picture_count++] = child;
+			continue;
+		}
+		for (index = 0; index < hint.picture_count; index++)
+			hint.pictures[index]->visible = child->visible;
+		if (child->visible && counts[side] < HINT_BAR_MAXIMUM_HINTS)
+		{
+			hint.text = child;
+			hint.width = ui_widget_port_text_width(child);
+			for (index = 0; index < hint.picture_count; index++)
+				hint.width = (short)(hint.width + ui_widget_port_width(hint.pictures[index]) + HINT_BAR_PICTURE_GAP);
+			hints[side][counts[side]++] = hint;
+		}
+		hint.picture_count = 0;
+	}
+	x = 0;
+	for (index = 0; index < counts[0]; index++)
+	{
+		hint_bar_place(&hints[0][index], x);
+		x = (short)(x + hints[0][index].width + HINT_BAR_GAP);
+	}
+	x = ui_widget_port_width(bar);
+	for (index = (short)(counts[1] - 1); index >= 0; index--)
+	{
+		x = (short)(x - hints[1][index].width);
+		hint_bar_place(&hints[1][index], x);
+		x = (short)(x - HINT_BAR_GAP);
+	}
 }
 
 /* ---------- public code */
@@ -14322,11 +14591,15 @@ boolean pc_menu_event_function_invoke(
 		}
 		else if (!strcmp(name, "port map import"))
 		{
-			return map_import_start();
+			return map_import_start(widget, widget_deleted);
 		}
 		else if (!strcmp(name, "port map delete"))
 		{
 			return map_delete_from(widget);
+		}
+		else if (!strcmp(name, "port chooser previous") || !strcmp(name, "port chooser next"))
+		{
+			return list_chooser_turn(widget, !strcmp(name, "port chooser next") ? 1 : -1);
 		}
 #if defined(HALO_ANDROID) && !defined(HALO_SWITCH)
 		else if (!strcmp(name, "port vk driver import"))
@@ -14570,6 +14843,8 @@ void pc_menu_game_data_function_invoke(
 		map_list_update(widget);
 	else if (!strcmp(name, "gt select list update"))
 		gametype_list_update(widget);
+	else if (!strcmp(name, "port hint bar"))
+		hint_bar_update(widget);
 	else if (!strcmp(name, "server settings update"))
 		server_settings_update(widget);
 	else if (!strcmp(name, "port news update"))

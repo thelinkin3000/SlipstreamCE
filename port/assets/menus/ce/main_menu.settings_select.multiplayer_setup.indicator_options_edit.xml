@@ -5,8 +5,8 @@
 	</widget>
 	<widget name="main_menu/settings_select/multiplayer_setup/indicator_options_edit/indicator_button_bar" type="column_list" width="640" height="28" flags="pass_unhandled_to_focused_child left_right_tabs_items">
 		<data input="common button bar update"/>
-		<child widget="main_menu/settings_select/multiplayer_setup/indicator_options_edit/indicator_button_ok" x="380" y="1"/>
-		<child widget="common_button_cancel" x="510" y="1"/>
+		<child widget="main_menu/settings_select/multiplayer_setup/indicator_options_edit/indicator_button_ok" x="380" y="1" platform="desktop android web"/>
+		<child widget="common_button_cancel" x="510" y="1" platform="desktop android web"/>
 	</widget>
 	<widget name="main_menu/settings_select/multiplayer_setup/indicator_options_edit/indicator_button_ok" type="text" width="128" height="24" bitmap="bitmaps/text_button_background" string_list="strings/common_button_captions" string_index="1" font="ui\small_ui" color="#FFFFFFFF" align="center" text_y="2">
 		<on event="a" run="mp profile set indicator opts" back="true"/>
@@ -23,6 +23,7 @@
 	<widget name="main_menu/settings_select/multiplayer_setup/indicator_options_edit/indicator_options_menu" type="column_list" width="640" height="480" flags="pass_unhandled_to_focused_child up_down_tabs_children" description="main_menu/settings_select/multiplayer_setup/indicator_options_edit/indicator_options_help">
 		<data input="game settings lists text update"/>
 		<on event="created" run="mp profile init indicator opts"/>
+		<on event="x" run="mp profile set indicator opts" back="true" platform="switch ps5"/>
 		<child widget="main_menu/settings_select/multiplayer_setup/indicator_options_edit/op_radar display" x="54" y="73"/>
 		<child widget="main_menu/settings_select/multiplayer_setup/indicator_options_edit/op_players_on_radar" x="54" y="103"/>
 		<child widget="main_menu/settings_select/multiplayer_setup/indicator_options_edit/op_friends_on_screen" x="54" y="133"/>
@@ -41,6 +42,7 @@
 	<widget name="main_menu/settings_select/multiplayer_setup/indicator_options_edit/indicator_options_screen" width="640" height="480" flags="pass_unhandled_to_focused_child" bitmap="bitmaps/gradient">
 		<child widget="main_menu/settings_select/multiplayer_setup/indicator_options_edit/header_indicator_options"/>
 		<child widget="main_menu/settings_select/multiplayer_setup/indicator_options_edit/indicator_options_menu"/>
+		<child widget="main_menu/settings_select/multiplayer_setup/indicator_options_edit/hint_bar" x="24" y="415" platform="switch ps5"/>
 	</widget>
 	<widget name="main_menu/settings_select/multiplayer_setup/indicator_options_edit/op_friends_on_screen" width="512" height="28" flags="pass_unhandled_to_focused_child" bitmap="bitmaps/option_bkds" color="#FF2896FF">
 		<child widget="main_menu/settings_select/multiplayer_setup/indicator_options_edit/indicator_options_friends_on_screen_label"/>

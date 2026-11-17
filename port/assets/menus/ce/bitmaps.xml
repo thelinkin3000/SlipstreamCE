@@ -72,6 +72,10 @@
 		<frame png="ce/shell/bitmaps/option_bkds__0.png" width="512" height="32"/>
 		<frame png="ce/shell/bitmaps/option_bkds__1.png" width="512" height="32"/>
 	</bitmap>
+	<bitmap name="port/option_bkds_short">
+		<frame png="ce/port/bitmaps/option_bkds_short__0.png" width="512" height="24"/>
+		<frame png="ce/port/bitmaps/option_bkds_short__1.png" width="512" height="24"/>
+	</bitmap>
 	<bitmap name="bitmaps/option_bkds_sm">
 		<frame png="ce/shell/bitmaps/option_bkds_sm__0.png" width="256" height="32"/>
 		<frame png="ce/shell/bitmaps/option_bkds_sm__1.png" width="256" height="32"/>
@@ -365,40 +369,61 @@
 		<frame png="ce/port/pause/pausebox_left__0.png" width="16" height="256"/>
 		<frame png="ce/port/pause/pausebox_left__1.png" width="16" height="256"/>
 		<frame png="ce/port/pause/pausebox_left__2.png" width="16" height="256"/>
-		<frame png="ce/port/pause/pausebox_left__3.png" width="16" height="256"/>
+		<frame png="ce/port/pause/pausebox_left__3.png" width="16" height="512"/>
+		<frame png="ce/port/pause/pausebox_left__4.png" width="16" height="512"/>
+		<frame png="ce/port/pause/pausebox_left__5.png" width="16" height="256"/>
+		<frame png="ce/port/pause/pausebox_left__6.png" width="16" height="256"/>
+		<frame png="ce/port/pause/pausebox_left__7.png" width="16" height="512"/>
+		<frame png="ce/port/pause/pausebox_left__8.png" width="16" height="512"/>
 	</bitmap>
 	<bitmap name="pause/pausebox_center">
 		<frame png="ce/port/pause/pausebox_center__0.png" width="4" height="256"/>
 		<frame png="ce/port/pause/pausebox_center__1.png" width="4" height="256"/>
 		<frame png="ce/port/pause/pausebox_center__2.png" width="4" height="256"/>
-		<frame png="ce/port/pause/pausebox_center__3.png" width="4" height="256"/>
+		<frame png="ce/port/pause/pausebox_center__3.png" width="4" height="512"/>
+		<frame png="ce/port/pause/pausebox_center__4.png" width="4" height="512"/>
+		<frame png="ce/port/pause/pausebox_center__5.png" width="4" height="256"/>
+		<frame png="ce/port/pause/pausebox_center__6.png" width="4" height="256"/>
+		<frame png="ce/port/pause/pausebox_center__7.png" width="4" height="512"/>
+		<frame png="ce/port/pause/pausebox_center__8.png" width="4" height="512"/>
 	</bitmap>
 	<bitmap name="pause/pausebox_right">
 		<frame png="ce/port/pause/pausebox_right__0.png" width="16" height="256"/>
 		<frame png="ce/port/pause/pausebox_right__1.png" width="16" height="256"/>
 		<frame png="ce/port/pause/pausebox_right__2.png" width="16" height="256"/>
-		<frame png="ce/port/pause/pausebox_right__3.png" width="16" height="256"/>
+		<frame png="ce/port/pause/pausebox_right__3.png" width="16" height="512"/>
+		<frame png="ce/port/pause/pausebox_right__4.png" width="16" height="512"/>
+		<frame png="ce/port/pause/pausebox_right__5.png" width="16" height="256"/>
+		<frame png="ce/port/pause/pausebox_right__6.png" width="16" height="256"/>
+		<frame png="ce/port/pause/pausebox_right__7.png" width="16" height="512"/>
+		<frame png="ce/port/pause/pausebox_right__8.png" width="16" height="512"/>
 	</bitmap>
 	<bitmap name="pause/joinbox_left">
-		<frame png="ce/port/pause/pausebox_left__0.png" width="16" height="256"/>
+		<frame png="ce/port/pause/joinbox_left__0.png" width="16" height="256"/>
 	</bitmap>
 	<bitmap name="pause/joinbox_center">
-		<frame png="ce/port/pause/pausebox_center__0.png" width="4" height="256"/>
+		<frame png="ce/port/pause/joinbox_center__0.png" width="4" height="256"/>
 	</bitmap>
 	<bitmap name="pause/joinbox_right">
-		<frame png="ce/port/pause/pausebox_right__0.png" width="16" height="256"/>
+		<frame png="ce/port/pause/joinbox_right__0.png" width="16" height="256"/>
 	</bitmap>
 	<bitmap name="pause/objectives_left">
 		<frame png="ce/port/pause/objectives_left__0.png" width="16" height="256"/>
 		<frame png="ce/port/pause/objectives_left__1.png" width="16" height="256"/>
+		<frame png="ce/port/pause/objectives_left__2.png" width="16" height="512"/>
+		<frame png="ce/port/pause/objectives_left__3.png" width="16" height="512"/>
 	</bitmap>
 	<bitmap name="pause/objectives_center">
 		<frame png="ce/port/pause/objectives_center__0.png" width="4" height="256"/>
 		<frame png="ce/port/pause/objectives_center__1.png" width="4" height="256"/>
+		<frame png="ce/port/pause/objectives_center__2.png" width="4" height="512"/>
+		<frame png="ce/port/pause/objectives_center__3.png" width="4" height="512"/>
 	</bitmap>
 	<bitmap name="pause/objectives_right">
 		<frame png="ce/port/pause/objectives_right__0.png" width="16" height="256"/>
 		<frame png="ce/port/pause/objectives_right__1.png" width="16" height="256"/>
+		<frame png="ce/port/pause/objectives_right__2.png" width="16" height="512"/>
+		<frame png="ce/port/pause/objectives_right__3.png" width="16" height="512"/>
 	</bitmap>
 	<bitmap name="voice/speaker">
 		<frame png="ce/port/voice/speaker__0.png" width="24" height="24"/>
