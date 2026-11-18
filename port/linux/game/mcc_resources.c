@@ -30,6 +30,7 @@ struct mcc_resource_file {
     char *names;
     struct mcc_resource_item *items;
     uint32_t count,data_bytes;
+    int own; /* the map's own file, not a shared one (mcc_package_shared_resource) */
     char path[128];
 };
 struct mcc_resources { struct mcc_resource_file files[2]; };
@@ -87,6 +88,7 @@ static int mcc_resource_open(struct mcc_resource_file *file,unsigned type,char c
     }
     file->count=count;
     file->data_bytes=names;
+    file->own=!mcc_package_shared_resource(path,type);
     strcpy(file->path,path);
     return 1;
 failed:
@@ -112,8 +114,10 @@ static struct mcc_resource_file *mcc_resource_get(struct mcc_runtime *runtime,un
     return file;
 }
 
+/* whole: the map's check of a reference's full extent; a decoder's read may
+   take less of it */
 static int mcc_resource_read(struct mcc_resource_file *file,char const *name,
-    uint32_t offset,uint32_t bytes,void *out,char const *group_name)
+    uint32_t offset,uint32_t bytes,void *out,char const *group_name,int whole)
 {
     uint32_t i;
     struct mcc_resource_item const *found=NULL;
@@ -128,13 +132,26 @@ static int mcc_resource_read(struct mcc_resource_file *file,char const *name,
         offset=found->offset;
     } else {
         /* Grouped MCC resources require the original, bounded slice. */
-        if (!group_name) return 0;
-        for (i=0;i<file->count;i++) if (!strcmp(file->names+file->items[i].name,group_name)) {
+        if (group_name) for (i=0;i<file->count;i++) if (!strcmp(file->names+file->items[i].name,group_name)) {
             if (found) return 0;
             found=&file->items[i];
         }
-        if (!found || offset<found->offset || offset-found->offset>found->size ||
-            bytes>found->size-(offset-found->offset)) return 0;
+        if (found) {
+            if (offset<found->offset || offset-found->offset>found->size ||
+                bytes>found->size-(offset-found->offset)) return 0;
+        } else {
+            /* (MCC reads a resource at its offset, whatever the member's name:
+               in the map's own file, a map built with a tag renamed since keeps
+               its sounds and bitmaps. Its check takes exactly one whole member,
+               and a decoder then reads from that member's start within it. A
+               shared file is never chosen this way: the same offset and size in
+               another file says nothing of which file the map was built with) */
+            if (!file->own) return 0;
+            for (i=0;i<file->count && !found;i++)
+                if (file->items[i].offset==offset &&
+                    (whole ? file->items[i].size==bytes : file->items[i].size>=bytes)) found=&file->items[i];
+            if (!found) return 0;
+        }
     }
     return !out || (!fseek(file->stream,(long)offset,SEEK_SET) && fread(out,1,bytes,file->stream)==bytes);
 }
@@ -143,20 +160,31 @@ int mcc_resources_read(struct mcc_runtime *runtime,unsigned type,char const *nam
     uint32_t offset,uint32_t bytes,void *out,char const *group_name)
 {
     struct mcc_resource_file *file=mcc_resource_get(runtime,type);
-    return file && out && mcc_resource_read(file,name,offset,bytes,out,group_name);
+    return file && out && mcc_resource_read(file,name,offset,bytes,out,group_name,0);
 }
 
-struct mcc_resource_probe {struct mcc_resource_file *file;unsigned type;};
+struct mcc_resource_probe {struct mcc_resource_file *file;unsigned type;char problem[640];};
 static int mcc_resource_check(void *context,struct mcc_resource_reference const *ref)
 {
     struct mcc_resource_probe *probe=context;
     char name[288],group[288];
     if (ref->type!=probe->type) return 1;
-    if (strlen(ref->tag_name)>255) return 0;
+    if (strlen(ref->tag_name)>255) {
+        snprintf(probe->problem,sizeof(probe->problem),"resource tag path exceeds 255 characters: %.255s...",ref->tag_name);return 0;
+    }
     if (ref->type==1) snprintf(name,sizeof(name),"%s_%lu",ref->tag_name,(unsigned long)ref->first);
     else snprintf(name,sizeof(name),"%s__%lu__%lu",ref->tag_name,(unsigned long)ref->first,(unsigned long)ref->second);
     snprintf(group,sizeof(group),"%s%s",ref->tag_name,ref->type==1 ? "__pixels" : "__permutations");
-    return mcc_resource_read(probe->file,name,ref->offset,ref->bytes,NULL,group);
+    if (!mcc_resource_read(probe->file,name,ref->offset,ref->bytes,NULL,group,1)) {
+        if (ref->type==1) snprintf(probe->problem,sizeof(probe->problem),
+            "'%.255s.bitmap', bitmaps[%lu]: resource '%s' (offset 0x%08lx, %lu bytes) is missing, ambiguous or outside its matching resource entry",
+            ref->tag_name,(unsigned long)ref->first,name,(unsigned long)ref->offset,(unsigned long)ref->bytes);
+        else snprintf(probe->problem,sizeof(probe->problem),
+            "'%.255s.sound', pitch_ranges[%lu].permutations[%lu]: resource '%s' (offset 0x%08lx, %lu bytes) is missing, ambiguous or outside its matching resource entry",
+            ref->tag_name,(unsigned long)ref->first,(unsigned long)ref->second,name,(unsigned long)ref->offset,(unsigned long)ref->bytes);
+        return 0;
+    }
+    return 1;
 }
 
 static int mcc_resource_equal(FILE *a,FILE *b)
@@ -189,14 +217,14 @@ int mcc_resources_select_paths(struct mcc_runtime *runtime,void *raw,char const 
         struct mcc_resource_probe probe;
         int status,set;
         if (!(type==1 ? runtime->report.external_bitmap_count : runtime->report.external_sound_count)) continue;
-        probe.type=type;probe.file=selected;
+        memset(&probe,0,sizeof(probe));probe.type=type;probe.file=selected;
         /* Explicit package and legacy root files are authoritative. */
         status=mcc_resource_open(selected,type,runtime->level_name,paths ? paths[type-1] : NULL,
             runtime->failure,sizeof(runtime->failure));
         if (!status || (paths && status<0)) return 0;
         if (status==1) {
             if (!mcc_cache_visit_resources(raw,&runtime->report,mcc_resource_check,&probe)) {
-                error(_error_silent,"mcc resources: %s does not satisfy every external reference in %s",selected->path,runtime->level_name);
+                error(_error_silent,"mcc resources: %s required by %s: %s; map refused",selected->path,runtime->level_name,probe.problem);
                 snprintf(runtime->failure,sizeof(runtime->failure),
                     "%s does not match. Install the matching MCC package resource.",type==1 ? "bitmaps.map" : "sounds.map");
                 return 0;
@@ -224,6 +252,8 @@ int mcc_resources_select_paths(struct mcc_runtime *runtime,void *raw,char const 
             mcc_resource_close(&candidate);
         }
         if (!selected->stream) {
+            if (!probe.problem[0]) {probe.file=selected;mcc_cache_visit_resources(raw,&runtime->report,mcc_resource_check,&probe);}
+            if (probe.problem[0]) error(_error_silent,"mcc resources: %s; map refused",probe.problem);
             error(_error_silent,"mcc resources: no complete matching %s for %s; check the package and MCC shared folders",
                 type==1 ? "bitmaps.map" : "sounds.map",runtime->level_name);
             snprintf(runtime->failure,sizeof(runtime->failure),
@@ -515,7 +545,12 @@ static int mcc_resources_inspect(char const *name,struct mcc_cache_source const 
     runtime.source=*source;
     status=mcc_cache_load(source,raw,identity.tag_data_size,&runtime.report);
     problem=mcc_status_explanation(status);
-    if (status!=MCC_CACHE_OK) goto done;
+    if (status!=MCC_CACHE_OK) {
+        error(_error_silent,"mcc: '%s', %s: %s; map refused (tag index %lu, reader location 0x%08lx)",
+            name,runtime.report.problem_path[0] ? runtime.report.problem_path : "map header",
+            runtime.report.problem_detail,(unsigned long)runtime.report.problem_tag,(unsigned long)runtime.report.problem_location);
+        goto done;
+    }
     ok=mcc_resources_select(&runtime,raw);
     problem="The required MCC resources could not be checked. See debug.txt for the failing check.";
     if (ok && digest) ok=mcc_resources_fingerprint(&runtime,digest);

@@ -103,6 +103,7 @@ their handlers open opens.
 #include "mcc_share.h"
 #include "mcc_share_menu.h"
 #include "mcc_cache.h"
+#include "mcc_workshop.h"
 #include "game_modes.h"
 #include "network_voice.h"
 #include "network_replay.h"
@@ -121,6 +122,7 @@ their handlers open opens.
 #include "server_director.h" /* port: Host Server (server_director.c, server_status.c) */
 #include "server_gametypes.h"
 #include "halo_host_dashboard.h"
+#include "../src/workshop_authors.h"
 #include "text_filter.h"
 #if defined(HALO_ANDROID) && !defined(HALO_SWITCH)
 #include "../src/posix.h"
@@ -2210,6 +2212,32 @@ static void mcc_solo_map_text(short row, wchar_t *text)
 	mcc_menu_text_row(text);
 }
 
+static void text_append(wchar_t *text, short size, wchar_t const *word);
+
+/* the help under a folder in the MCC map lists' panel, in a text box of this length */
+#define MCC_FOLDER_HELP_LENGTH (ROW_TEXT_LENGTH * 3)
+
+/* the help under the chosen folder; a Workshop item's folder's ends with its publisher, once known
+(workshop_authors.c). A collection's has none: it holds the items of many */
+static void mcc_folder_help_text(struct mcc_map_browser const *browser, wchar_t *help, short size)
+{
+	short row = browser->chosen;
+	char author[WORKSHOP_AUTHORS_NAME_SIZE];
+	/* (one more than the name: mods_wide_text keeps 2 for a line break) */
+	wchar_t wide[WORKSHOP_AUTHORS_NAME_SIZE + 1];
+
+	help[0] = 0;
+	text_append(help, size, browser->count ? L"Open folder to\r\nchoose a map." : L"No MCC maps found\r\nin this category.");
+	if (row < 0 || row >= browser->count || !browser->folders[row] || browser->groups[row] != NONE ||
+		!workshop_authors_get(mcc_maps_item_id(browser->entries[row]), author, sizeof(author)))
+	{
+		return;
+	}
+	mods_wide_text(author, wide, NUMBEROF(wide));
+	text_append(help, size, L"\r\nPublisher\r\n");
+	text_append(help, size, wide);
+}
+
 static void mcc_browser_description(struct widget_instance *description, struct mcc_map_browser *browser)
 {
 	short index = mcc_map_browser_index(browser, browser->chosen);
@@ -2219,10 +2247,12 @@ static void mcc_browser_description(struct widget_instance *description, struct 
 	mcc_map_description_show(description, index);
 	if (index == NONE)
 	{
+		wchar_t help[MCC_FOLDER_HELP_LENGTH];
+
 		mcc_map_browser_text(browser, browser->chosen, text);
 		text_set(named(description, "mcc_folder_name", 0), text);
-		text_set(named(description, "mcc_folder_help", 0), browser->count ?
-			L"Open folder to\r\nchoose a map." : L"No MCC maps found\r\nin this category.");
+		mcc_folder_help_text(browser, help, NUMBEROF(help));
+		text_set_length(named(description, "mcc_folder_help", 0), help, NUMBEROF(help));
 		visible_set(named(description, "mcc_folder_name", 0), TRUE);
 		visible_set(named(description, "mcc_folder_help", 0), TRUE);
 	}
@@ -9523,6 +9553,16 @@ static struct
 	unsigned long updated_at;
 } lobby_icons;
 
+/* the lobby's game data box as last drawn (menu_functions_text_box_drawn): the font and width a line of it is
+measured in (lobby_line_fits); NONE before it is drawn, when a line is counted against LOBBY_LINE_CHARACTERS */
+static struct
+{
+	long font;
+	short width;
+} lobby_data_box = { NONE, 0 };
+
+#define LOBBY_LINE_CHARACTERS 18
+
 #ifdef LINK_PAGE
 /* The QR codes (link_page.c's encoder): Direct Link's of the link page's
 address, in the games' list while it has none, centred over it and drawn
@@ -10319,15 +10359,17 @@ static void steam_update(struct widget_instance *list)
 	{
 		char title[MOD_DETAILS_LENGTH];
 		char text[MOD_DETAILS_LENGTH];
+		char author[WORKSHOP_AUTHORS_NAME_SIZE];
 		char wrapped[MOD_DETAILS_LENGTH];
 		char shown[sizeof(steam_screen.shown)];
 		wchar_t wide[MOD_DETAILS_LENGTH];
 
-		steam_screen_details(count ? chosen : NONE, title, sizeof(title), text, sizeof(text));
-		/* (made again only when what they show, or its fonts, change) */
-		snprintf(shown, sizeof(shown), "%ld %d %ld %d|%s|%s", mods_screen.fonts[_mod_details_name],
+		steam_screen_details(count ? chosen : NONE, title, sizeof(title), text, sizeof(text), author, sizeof(author));
+		/* (made again only when what they show, or its fonts, change: the author before the texts, whose ends this
+		may cut) */
+		snprintf(shown, sizeof(shown), "%ld %d %ld %d|%s|%s|%s", mods_screen.fonts[_mod_details_name],
 			mods_screen.widths[_mod_details_name], mods_screen.fonts[_mod_details_text],
-			mods_screen.widths[_mod_details_text], title, text);
+			mods_screen.widths[_mod_details_text], author, title, text);
 		if (strcmp(shown, steam_screen.shown))
 		{
 			snprintf(steam_screen.shown, sizeof(steam_screen.shown), "%s", shown);
@@ -10336,7 +10378,17 @@ static void steam_update(struct widget_instance *list)
 			mods_wide_text(wrapped, wide, NUMBEROF(wide));
 			text_set_length(named(details, "steam_details_name", 0), wide, NUMBEROF(wide));
 			wrapped[0] = 0;
-			mods_wrap(text, wrapped, sizeof(wrapped), _mod_details_text, STEAM_DETAILS_LINES, 0);
+			/* (an item's author, its publisher, under its description, which is cut short to leave its two lines) */
+			if (author[0])
+			{
+				short lines = mods_wrap(text, wrapped, sizeof(wrapped), _mod_details_text, STEAM_DETAILS_LINES - 2, 0);
+				char heading[sizeof(author) + 16];
+
+				snprintf(heading, sizeof(heading), "Publisher\n%s", author);
+				mods_wrap(heading, wrapped, sizeof(wrapped), _mod_details_text, lines + 2, lines);
+			}
+			else
+				mods_wrap(text, wrapped, sizeof(wrapped), _mod_details_text, STEAM_DETAILS_LINES, 0);
 			mods_wide_text(wrapped, wide, NUMBEROF(wide));
 			text_set_length(named(details, "steam_details_text", 0), wide, NUMBEROF(wide));
 		}
@@ -10524,6 +10576,13 @@ void menu_functions_text_box_drawn(struct widget_instance *widget, rectangle2d c
 		}
 	}
 
+	/* (the lobby's game data: the font and width its author's line is measured in, lobby_line_fits) */
+	if (widget->name && !strcmp(widget->name, "lobby_game_data"))
+	{
+		lobby_data_box.font = draw_string_get_font();
+		lobby_data_box.width = (short)(bounds->x1 - bounds->x0);
+		return;
+	}
 	/* (as the lobby last updated them: the rows' widgets go with it) */
 	if (!lobby_icons.count || system_milliseconds() - lobby_icons.updated_at > 250)
 		return;
@@ -10573,6 +10632,65 @@ static short lobby_list_hidden(struct widget_instance const *list, boolean forwa
 {
 	(void)list;
 	return (short)MAX(0, forward ? lobby_player_count - multiplayer.lobby_first - LOBBY_ROWS : multiplayer.lobby_first);
+}
+
+/* whether a line fits across the lobby's game data box, measured in its font as mods_text_fits measures (counted
+before the box is first drawn) */
+static boolean lobby_line_fits(wchar_t const *line)
+{
+	static real_argb_color const white = { 1.0f, 1.0f, 1.0f, 1.0f };
+	rectangle2d bounds;
+	rectangle2d text_bounds;
+	rectangle2d cursor;
+
+	if (lobby_data_box.font == NONE)
+		return ustrlen(line) <= LOBBY_LINE_CHARACTERS;
+	bounds.x0 = 0;
+	bounds.y0 = 0;
+	bounds.x1 = 0x3FFF;
+	bounds.y1 = 480;
+	draw_string_set_draw_mode(lobby_data_box.font, NONE, 0, 0, &white);
+	draw_unicode_string_compute_bounds(&bounds, line, &text_bounds, &cursor);
+	return MAX(text_bounds.x1, cursor.x0) - bounds.x0 <= lobby_data_box.width - MOD_TEXT_MARGIN;
+}
+
+/* the lobby panel's first line for an MCC map from the Steam Workshop, under the map's name: its author's name,
+once Steam has said (workshop_authors.c), cut short with "..." to stay one line (the box holds 7 lines, which a
+dedicated server's game already fills). The item is the one the host's game names (mcc_workshop.h), which a joiner
+still downloading the map has too; or this machine's copy's. FALSE for none */
+static boolean lobby_author_line(char const map_name[128], wchar_t *line, short size)
+{
+	struct mcc_workshop_item item;
+	char const *item_id = item.id;
+	char author[WORKSHOP_AUTHORS_NAME_SIZE];
+	wchar_t wide[WORKSHOP_AUTHORS_NAME_SIZE + 1];
+	short length, kept;
+
+	if (!mcc_level_name(map_name))
+		return FALSE;
+	if (!mcc_workshop_wire_unpack(map_name, &item))
+	{
+		short index = mcc_maps_find(map_name);
+
+		if (index == NONE)
+			return FALSE;
+		item_id = mcc_maps_item_id(index);
+	}
+	if (!workshop_authors_get(item_id, author, sizeof(author)))
+		return FALSE;
+	mods_wide_text(author, wide, NUMBEROF(wide));
+	length = (short)ustrlen(wide);
+	for (kept = length; ; kept--)
+	{
+		wide[kept] = 0;
+		line[0] = 0;
+		text_append(line, size, L"Publisher: ");
+		text_append(line, size, wide);
+		if (kept < length)
+			text_append(line, size, L"...");
+		if (!kept || lobby_line_fits(line))
+			return TRUE;
+	}
 }
 
 /* "port lobby update" */
@@ -10636,6 +10754,10 @@ static void lobby_update(struct widget_instance *list)
 		players while its director holds the countdown) */
 		boolean dedicated = lobby_joined_dedicated && !global_network_game_server_get();
 		wchar_t name[NUMBEROF(game->name) + ROW_TEXT_LENGTH];
+		/* (a Workshop map's author first, under the map's name, in the place of the empty line above the
+		countdown) */
+		wchar_t author[ROW_TEXT_LENGTH * 2];
+		boolean authored = lobby_author_line(game->map.name, author, NUMBEROF(author));
 
 		name[0] = 0;
 		if (dedicated)
@@ -10651,9 +10773,10 @@ static void lobby_update(struct widget_instance *list)
 		}
 		ustrncpy(gametype, game->variant.human_readable_game_description, NUMBEROF(gametype) - 1);
 		gametype[NUMBEROF(gametype) - 1] = 0;
-		usnprintf(text, NUMBEROF(text) - 1, L"%s%s\r\n%s\r\n%d of %d players\r\n\r\n%s", name, gametype,
+		usnprintf(text, NUMBEROF(text) - 1, L"%s%s%s%s\r\n%s\r\n%d of %d players\r\n%s%s", authored ? author : L"",
+			authored ? L"\r\n" : L"", name, gametype,
 			kind ? kind : engine_names[PIN(game->variant.game_engine_index, 0, 5)], lobby_player_count,
-			game->maximum_players,
+			game->maximum_players, authored ? L"" : L"\r\n",
 			seconds > 0 ? L"Starting in:" : (game->machine_count < 2 && lobby_player_count < 2) || dedicated ?
 				L"Waiting for players" : L"");
 		text[NUMBEROF(text) - 1] = 0;
@@ -10875,10 +10998,15 @@ static void preview_update(struct widget_instance *list)
 	visible_set(named(description, "lobby_right_item", 0), valid);
 	if (valid)
 	{
+		/* (a Workshop map's author first, as in the lobby: the advertisement names no item, so this machine's
+		copy's) */
+		wchar_t author[ROW_TEXT_LENGTH * 2];
+		boolean authored = lobby_author_line(game->map_name, author, NUMBEROF(author));
+
 		lobby_map_show(description, game->map_name);
-		usnprintf(text, NUMBEROF(text) - 1, L"%s\r\n%d of %d players\r\non %d machines",
-			game_kind_name(game->engine_type, advertised_game_kind(game), FALSE), game->player_count,
-			game->maximum_player_count, game->machine_count);
+		usnprintf(text, NUMBEROF(text) - 1, L"%s%s%s\r\n%d of %d players\r\non %d machines", authored ? author : L"",
+			authored ? L"\r\n" : L"", game_kind_name(game->engine_type, advertised_game_kind(game), FALSE),
+			game->player_count, game->maximum_player_count, game->machine_count);
 		text[NUMBEROF(text) - 1] = 0;
 		text_set_length(named(description, "lobby_game_data", 0), text, LOBBY_TEXT_LENGTH);
 		ustrncpy(name, game->game_name, NUMBEROF(game->game_name));

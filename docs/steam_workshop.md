@@ -48,6 +48,32 @@ STEAM**, which points to Network Setup's):
     (976733) into `mcc_maps/_shared/singleplayer` and `mcc_maps/_shared/multiplayer`.
   - Lists the Workshop packages in `mcc_maps`, and updates or removes them.
 
+## Publishers
+
+An item's publisher is the Steam name of the account that published it, who
+may not be the original maker of what it holds. It's shown as "Publisher":
+
+- under an item's description on BROWSE WORKSHOP and INSTALLED FILES;
+- in the lobby, as "Publisher: <name>" on the line under the map's name, for a
+  joiner still downloading the map too (the host's game names the item);
+- under a Workshop map's description in the MCC map lists, and under a
+  Workshop item's folder there.
+
+Where the name comes from, first that answers:
+
+1. The signed-in session: a browsed page's items come with their makers
+   (`Player.GetPlayerLinkDetails`), and an installed item's maker is kept in
+   `mcc_maps/<id>/workshop_author.txt` (not in the sidecar, whose two lines
+   MCC checks strictly; sharing leaves the file out).
+2. Steam's public Web API, with no key or sign-in
+   (`port/linux/src/workshop_authors.c`, in the host on every platform): the
+   item's creator from `ISteamRemoteStorage/GetPublishedFileDetails`, then the
+   name on that account's profile (`steamcommunity.com/profiles/<id>/?xml=1`).
+   Each item is asked once a run, again after 10 minutes at the soonest if
+   Steam didn't answer, and nothing is written to disk. The guest asks through
+   `host_steam_author`. That API only takes a POST, which the Switch's host
+   makes with its own `host_https.c` (`update_https_request`).
+
 ## Joining an MCC game
 
 A joiner signed in with Steam installs a host's MCC package from Steam when

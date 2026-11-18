@@ -20,6 +20,15 @@ void host_logf(int priority, const char *format, ...)
 	fputc('\n', stderr);
 }
 
+/* (port/linux/src/workshop_authors.c's: no publisher's name offline) */
+int workshop_authors_get(const char *item_id, char *name, int size)
+{
+	(void)item_id;
+	if (size > 0)
+		name[0] = 0;
+	return 0;
+}
+
 int host_https_get(const char *url, char *headers, char *body, char *error, struct host_https_sizes *sizes)
 {
 	(void)url; (void)headers; (void)body;

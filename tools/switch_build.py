@@ -708,6 +708,9 @@ def generate_switch_build(n: Writer, sln: Any) -> None:
         ANDROID_PORT_DIR / "host" / "host_replay.c",
         # the map lists' IMPORT, as Android's and the PS5's, and its JSON reader
         ANDROID_PORT_DIR / "host" / "host_mcc_import.c", LINUX_DIR / "src" / "server_json.c",
+        # Workshop items' publishers, asked of Steam, as Android's and the PS5's (steam_downloads.c's
+        # host_steam_author; its POST is host_https.c's update_https_request)
+        LINUX_DIR / "src" / "workshop_authors.c",
         # an MCC map's conversion on the host's threads, as Android's and the PS5's
         ANDROID_PORT_DIR / "host" / "host_mcc_convert.c",
         # an MCC package's fingerprint on the host's threads, as Android's and the PS5's

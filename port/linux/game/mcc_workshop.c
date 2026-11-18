@@ -146,23 +146,34 @@ int mcc_workshop_local_item(char const *name, struct mcc_workshop_item *item)
     return 0;
 }
 
-int mcc_workshop_local_author(char const *name, char author[MCC_WORKSHOP_AUTHOR_SIZE])
+/* MCC_WORKSHOP_AUTHOR_FILE at path, its one line as printable ASCII. 1 when it names one. */
+static int mcc_workshop_author_read(char const *path, char *author, size_t size)
 {
-    char folder[64],path[160],text[MCC_WORKSHOP_AUTHOR_SIZE*2];
+    char text[MCC_WORKSHOP_AUTHOR_SIZE*2];
     FILE *file;
-    size_t length=0,used=0,i;
+    size_t length,used=0,i;
     author[0]=0;
-    if (!mcc_workshop_package_folder(name,folder)) return 0;
-    snprintf(path,sizeof(path),"%s%s\\%s",MCC_MAPS_DIRECTORY,folder,MCC_WORKSHOP_AUTHOR_FILE);
+    if (!size) return 0;
     file=fopen(path,"rb");
     if (!file) return 0;
     length=fread(text,1,sizeof(text)-1,file);
     fclose(file);
-    for (i=0;i<length && text[i]!='\r' && text[i]!='\n' && used<MCC_WORKSHOP_AUTHOR_SIZE-1;i++)
+    for (i=0;i<length && text[i]!='\r' && text[i]!='\n' && used<size-1;i++)
         if ((unsigned char)text[i]>=32 && (unsigned char)text[i]<127) author[used++]=text[i];
     while (used && author[used-1]==' ') used--;
     author[used]=0;
     return used>0;
+}
+
+int mcc_workshop_item_author(char const *item_id, char *author, int size)
+{
+    char path[160];
+    char const *at;
+    if (size>0) author[0]=0;
+    if (!item_id || !item_id[0] || size<=0 || strlen(item_id)>=MCC_WORKSHOP_ID_SIZE) return 0;
+    for (at=item_id;*at;at++) if (*at<'0' || *at>'9') return 0;
+    snprintf(path,sizeof(path),"%s%s\\%s",MCC_MAPS_DIRECTORY,item_id,MCC_WORKSHOP_AUTHOR_FILE);
+    return mcc_workshop_author_read(path,author,(size_t)size);
 }
 
 void mcc_workshop_title_from_level(char const *name, char title[MCC_WORKSHOP_TITLE_SIZE])

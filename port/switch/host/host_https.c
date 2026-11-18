@@ -26,6 +26,7 @@ game is told: host_main.c).
 */
 
 #include "host.h"
+#include "update.h"
 
 #include <errno.h>
 #include <netdb.h>
@@ -274,10 +275,22 @@ int host_https_clock_offset(long long *seconds)
 	return clock_known;
 }
 
-/* one GET of path on host: the status, the redirect's target if there is
-one, and on 200 the body to body(). -1 if it could not be asked. */
-static int request(const char *host, const char *path, host_https_body body, void *context, char *location,
-	size_t location_size, char *headers, size_t headers_size, char *error, size_t error_size)
+/* what a request sends other than a GET's nothing (update_https_request's) */
+struct request_send
+{
+	const char *method;
+	/* header lines, each ended by "\r\n" (may be NULL) */
+	const char *headers;
+	const void *body;
+	size_t body_size;
+};
+
+/* one request of path on host (a GET without send): the status, the
+redirect's target if there is one, and on 200 the body to body(). -1 if it
+could not be asked. */
+static int request(const char *host, const char *path, const struct request_send *send, host_https_body body,
+	void *context, char *location, size_t location_size, char *headers, size_t headers_size, char *error,
+	size_t error_size)
 {
 	SslContext ssl_context;
 	SslConnection connection;
@@ -341,7 +354,9 @@ static int request(const char *host, const char *path, host_https_body body, voi
 		goto done;
 	}
 	{
-		char *text = malloc(strlen(path) + strlen(host) + 256);
+		const char *extra = send && send->headers ? send->headers : "";
+		size_t body_size = send && send->body ? send->body_size : 0;
+		char *text = malloc(strlen(path) + strlen(host) + strlen(extra) + body_size + 320);
 		size_t sent = 0, size;
 
 		if (!text)
@@ -349,8 +364,16 @@ static int request(const char *host, const char *path, host_https_body body, voi
 			fail(error, error_size, "Out of memory for the request.");
 			goto done;
 		}
-		size = (size_t)sprintf(text, "GET %s HTTP/1.0\r\nHost: %s\r\nUser-Agent: slipstreamce-switch\r\n"
-			"Accept: */*\r\nConnection: close\r\n\r\n", path, host);
+		size = (size_t)sprintf(text, "%s %s HTTP/1.0\r\nHost: %s\r\nUser-Agent: slipstreamce-switch\r\n"
+			"Accept: */*\r\nConnection: close\r\n%s", send ? send->method : "GET", path, host, extra);
+		if (send && (send->body || strcmp(send->method, "GET")))
+			size += (size_t)sprintf(text + size, "Content-Length: %lu\r\n", (unsigned long)body_size);
+		size += (size_t)sprintf(text + size, "\r\n");
+		if (body_size)
+		{
+			memcpy(text + size, send->body, body_size);
+			size += body_size;
+		}
 		while (sent < size)
 		{
 			u32 written = 0;
@@ -501,7 +524,7 @@ static int fetch(const char *url, int follow_redirects, host_https_body body, vo
 			status = fail(error, error_size, "Not an https link: %.80s", target);
 			break;
 		}
-		status = request(host, path, body, context, next, HOST_HTTPS_MAXIMUM_URL, headers, headers_size, error,
+		status = request(host, path, NULL, body, context, next, HOST_HTTPS_MAXIMUM_URL, headers, headers_size, error,
 			error_size);
 		if (status < 0 || status < 300 || status >= 400 || !next[0])
 			break;
@@ -575,5 +598,80 @@ int host_https_get(const char *url, char *headers, char *body, char *error, stru
 		return 0;
 	sizes->status = answer;
 	sizes->body_size = collected.size;
+	return 1;
+}
+
+/* ---------- update.h's request (port/linux/src/workshop_authors.c's POST to
+Steam's public API, which the Android and PS5 hosts make with posix_update.c's):
+no redirect followed, at most maximum bytes of body kept. The body is a 200
+answer's only; any other status comes with none. */
+
+struct grown
+{
+	char *body;
+	unsigned long size;
+	unsigned long maximum;
+	int failed;
+};
+
+static int grow(void *context, const void *data, size_t size, long long total)
+{
+	struct grown *grown = context;
+	unsigned long room = grown->maximum - grown->size;
+	char *larger;
+
+	(void)total;
+	if (size > room)
+		size = room;
+	if (!size)
+		return 1;
+	larger = realloc(grown->body, grown->size + size + 1);
+	if (!larger)
+	{
+		grown->failed = 1;
+		return 0;
+	}
+	grown->body = larger;
+	memcpy(grown->body + grown->size, data, size);
+	grown->size += (unsigned long)size;
+	grown->body[grown->size] = 0;
+	return 1;
+}
+
+int update_https_request(const char *method, const char *url, const char *headers, const void *body,
+	unsigned long body_size, unsigned long maximum, struct update_response *response, char *error, int error_size)
+{
+	char host[MAXIMUM_HOST + 1];
+	const char *path;
+	struct request_send send = { method, headers, body, (size_t)body_size };
+	struct grown grown = { NULL, 0, maximum, 0 };
+	size_t error_room = error_size > 0 ? (size_t)error_size : 0;
+	int status;
+
+	memset(response, 0, sizeof(*response));
+	if (!split_url(url, host, sizeof(host), &path))
+	{
+		fail(error, error_room, "Not an https link: %.80s", url);
+		return 0;
+	}
+	status = request(host, path, &send, grow, &grown, NULL, 0, response->headers, sizeof(response->headers), error,
+		error_room);
+	if (status < 0 || grown.failed)
+	{
+		free(grown.body);
+		if (grown.failed)
+			fail(error, error_room, "Out of memory for the answer.");
+		return 0;
+	}
+	if (!grown.body)
+		grown.body = calloc(1, 1);
+	if (!grown.body)
+	{
+		fail(error, error_room, "Out of memory for the answer.");
+		return 0;
+	}
+	response->status = status;
+	response->body = grown.body;
+	response->body_size = grown.size;
 	return 1;
 }

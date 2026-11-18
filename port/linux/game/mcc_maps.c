@@ -114,7 +114,6 @@ static void mcc_map_register(char const *name)
 	struct mcc_cache_identity identity;
 	struct mcc_menu_map *map;
 	struct mcc_workshop_item item;
-	char author[MCC_WORKSHOP_AUTHOR_SIZE];
 	FILE *file;
 	long file_size;
 	size_t name_length = strlen(name), index;
@@ -167,24 +166,6 @@ static void mcc_map_register(char const *name)
 		start_word = character == ' ';
 	}
 	mcc_map_description_read(map);
-	/* (a Steam download's maker, as its details said: "By <name>" after the rest) */
-	if (mcc_workshop_local_author(map->level_name, author))
-	{
-		size_t used = 0, at;
-
-		while (map->description[used])
-			used++;
-		if (used && used + 2 < MCC_MAP_DESCRIPTION_MAXIMUM)
-		{
-			map->description[used++] = '\r';
-			map->description[used++] = '\n';
-		}
-		for (at = 0; "By "[at] && used < MCC_MAP_DESCRIPTION_MAXIMUM; at++)
-			map->description[used++] = "By "[at];
-		for (at = 0; author[at] && used < MCC_MAP_DESCRIPTION_MAXIMUM; at++)
-			map->description[used++] = (unsigned char)author[at];
-		map->description[used] = 0;
-	}
 }
 
 static int mcc_map_order(void const *left, void const *right)
@@ -542,6 +523,12 @@ wchar_t const *mcc_maps_description(short index)
 {
 	mcc_maps_scan();
 	return index >= 0 && index < mcc_menu_catalog.count ? mcc_menu_catalog.maps[index].description : L"";
+}
+
+char const *mcc_maps_item_id(short index)
+{
+	mcc_maps_scan();
+	return index >= 0 && index < mcc_menu_catalog.count ? mcc_menu_catalog.maps[index].item_id : "";
 }
 
 boolean mcc_maps_campaign(short index)

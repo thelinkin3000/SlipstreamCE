@@ -721,6 +721,8 @@ def _generate(n: Writer, sln: Any, config_path: Path) -> None:
                     *(root / LINUX_DIR / "src" / name for name in POSIX_FILES), root / TOMLC17_DIR / "tomlc17.c",
                     # (the map lists' IMPORT's JSON reader: host_mcc_import.c)
                     root / LINUX_DIR / "src" / "server_json.c",
+                    # (Workshop items' publishers, asked of Steam: steam_downloads.c's host_steam_author)
+                    root / LINUX_DIR / "src" / "workshop_authors.c",
                     # (the file connection's X25519 and ChaCha20-Poly1305: host_file_share_crypto.c)
                     root / MONOCYPHER_DIR / "monocypher.c",
                     # (and Ed25519, the map archive's list's signature: fractum_archive.c)

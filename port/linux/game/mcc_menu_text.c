@@ -8,6 +8,7 @@
 #include "rasterizer/rasterizer.h"
 #include "mcc_maps.h"
 #include "mcc_menu_text.h"
+#include "../src/workshop_authors.h"
 #include <string.h>
 
 static boolean field(long tag, short index)
@@ -51,6 +52,8 @@ struct mcc_text_layout {
     int width, height, used;
     unsigned stamp;
     wchar_t text[MCC_TEXT_CACHED], wrapped[512];
+    /* the Workshop publisher laid out under the text ("" for none) */
+    char author[WORKSHOP_AUTHORS_NAME_SIZE];
 };
 static struct mcc_text_row *mcc_text_rows;
 static struct mcc_text_layout *mcc_text_layouts;
@@ -141,15 +144,61 @@ static int text_height(wchar_t const *text)
     return MAX(ink.y1,cursor.y1);
 }
 
+enum { AUTHOR_TEXT_SIZE=WORKSHOP_AUTHORS_NAME_SIZE+16 };
+
+/* A Workshop map's publisher (the account that published the item), for under
+ * its description in the map lists' panel (workshop_authors.c), once known.
+ * 0 for none. */
+static int author_name(long tag, short index, char author[WORKSHOP_AUTHORS_NAME_SIZE])
+{
+    char const *name, *leaf;
+    author[0]=0;
+    if (tag==NONE || index<MCC_MAPS_FIRST_DISPLAY_INDEX || index>=MCC_MAPS_FIRST_DISPLAY_INDEX+MCC_MAPS_MAXIMUM) return 0;
+    name=tag_get_name(tag); leaf=strrchr(name,'\\'); leaf=leaf ? leaf+1 : name;
+    if (strcmp(leaf,"mp_map_right_data")) return 0;
+    if (!workshop_authors_get(mcc_maps_item_id((short)(index-MCC_MAPS_FIRST_DISPLAY_INDEX)),author,WORKSHOP_AUTHORS_NAME_SIZE)) {
+        author[0]=0; return 0;
+    }
+    return author[0]!=0;
+}
+
+/* "Publisher", then the name on one line, cut short with "..." to fit the
+ * width in the current font. UTF-8 to the menus' UTF-16, a character it
+ * cannot hold a ?. */
+static void author_text(char const *author, int width, wchar_t text[AUTHOR_TEXT_SIZE])
+{
+    char const *at;
+    int used, start;
+    for (used=0; "Publisher\r"[used]; used++) text[used]="Publisher\r"[used];
+    start=used;
+    for (at=author; *at && used<AUTHOR_TEXT_SIZE-4; ) {
+        unsigned char first=(unsigned char)*at++;
+        unsigned long c=first;
+        int following=first>=0xF0 ? 3 : first>=0xE0 ? 2 : first>=0xC0 ? 1 : 0;
+        if (first>=0x80) {
+            c=first&(0x3F>>following);
+            for (; following>0 && ((unsigned char)*at&0xC0)==0x80; following--) c=(c<<6)|((unsigned char)*at++&0x3F);
+            if (following || first<0xC0 || c>0xFFFF) c='?';
+        }
+        text[used++]=(wchar_t)c;
+    }
+    text[used]=0;
+    while (width_of(text+start)>width && used>start) {
+        used--; text[used]='.'; text[used+1]='.'; text[used+2]='.'; text[used+3]=0;
+    }
+}
+
 boolean mcc_menu_text_draw(long tag, short index, wchar_t const *text, long font, short justification,
     real_argb_color const *color, rectangle2d const *bounds, rectangle2d const *parent_clip)
 {
     wchar_t wrapped[512];
+    char publisher[WORKSHOP_AUTHORS_NAME_SIZE];
     rectangle2d area=*bounds, clip;
     int width=bounds->x1-bounds->x0-2, height=bounds->y1-bounds->y0, used;
     long small;
     char const *name;
     if (!field(tag,index)) return FALSE;
+    author_name(tag,index,publisher);
     name=tag_get_name(tag);
     /* Xbox cards reserve their lower row for earned badges. Keep the native
      * text origin, but never let an authored description draw over that row. */
@@ -171,7 +220,7 @@ boolean mcc_menu_text_draw(long tag, short index, wchar_t const *text, long font
             for (i=0; i<MCC_TEXT_LAYOUTS; i++) {
                 struct mcc_text_layout *entry=&mcc_text_layouts[i];
                 if (entry->stamp && entry->font==font && entry->width==width && entry->height==height &&
-                    mcc_text_same(entry->text,text,MCC_TEXT_CACHED)) {layout=entry;break;}
+                    !strcmp(entry->author,publisher) && mcc_text_same(entry->text,text,MCC_TEXT_CACHED)) {layout=entry;break;}
                 if (entry->stamp<oldest->stamp) oldest=entry;
             }
         }
@@ -182,6 +231,8 @@ boolean mcc_menu_text_draw(long tag, short index, wchar_t const *text, long font
             font=layout->fitted_font;
         } else {
             long given=font;
+            int fit_height=height;
+            wchar_t author[2+AUTHOR_TEXT_SIZE];
             draw_string_set_draw_mode(font,NONE,0,0,color);
             used=wrap(text,wrapped,width);
             small=tag_loaded('font',"ui\\small_ui");
@@ -189,23 +240,40 @@ boolean mcc_menu_text_draw(long tag, short index, wchar_t const *text, long font
                 font=small; draw_string_set_draw_mode(font,NONE,0,0,color);
                 used=wrap(text,wrapped,width);
             }
+            /* A Workshop map's publisher keeps its two lines under the description,
+             * which is cut short above them: by the height they add below a line. */
+            if (publisher[0]) {
+                author_text(publisher,width,author+2);
+                author[0]='x'; author[1]='\r';
+                fit_height-=text_height(author)-text_height(L"x");
+            }
             /* Arbitrarily long authored text cannot fit a fixed panel. Keep complete
              * visible lines and signal truncation, instead of cutting glyphs in half. */
-            if (text_height(wrapped)>height) {
-                while (used && text_height(wrapped)>height) wrapped[--used]=0;
+            if (text_height(wrapped)>fit_height) {
+                while (used && text_height(wrapped)>fit_height) wrapped[--used]=0;
                 while (used && (wrapped[used-1]==' ' || wrapped[used-1]=='\r')) wrapped[--used]=0;
                 while (used) {
                     int start=used;
                     while (start && wrapped[start-1]!='\r') start--;
                     wrapped[used]='.'; wrapped[used+1]='.'; wrapped[used+2]='.'; wrapped[used+3]=0;
-                    if (width_of(wrapped+start)<=width && text_height(wrapped)<=height) break;
+                    if (width_of(wrapped+start)<=width && text_height(wrapped)<=fit_height) break;
                     wrapped[--used]=0;
                 }
+            }
+            if (publisher[0]) {
+                int at;
+                /* (from the description's end: past its "..." when it was cut) */
+                for (used=0; wrapped[used]; used++) {}
+                while (used && (wrapped[used-1]==' ' || wrapped[used-1]=='\r')) wrapped[--used]=0;
+                if (used) wrapped[used++]='\r';
+                for (at=2; author[at] && used<(int)NUMBEROF(wrapped)-1; at++) wrapped[used++]=author[at];
+                wrapped[used]=0;
             }
             if (oldest) {
                 memset(oldest,0,sizeof(*oldest));
                 for (i=0; i<MCC_TEXT_CACHED && text[i]; i++) oldest->text[i]=text[i];
                 memcpy(oldest->wrapped,wrapped,sizeof(wrapped));
+                memcpy(oldest->author,publisher,sizeof(publisher));
                 oldest->font=given;oldest->fitted_font=font;
                 oldest->width=width;oldest->height=height;oldest->used=used;
                 oldest->stamp=++mcc_text_stamp;

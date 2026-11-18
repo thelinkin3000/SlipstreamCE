@@ -920,6 +920,9 @@ def generate_android_build(n: Writer, sln: Any) -> None:
         LINUX_DIR / "src" / "posix_mcc_share.c",
         # the map lists' IMPORT's JSON reader (host_mcc_import.c)
         LINUX_DIR / "src" / "server_json.c",
+        # Workshop items' publishers, asked of Steam's public API for the Steam Workshop screen, the lobby and the
+        # map lists (steam_downloads.c's host_steam_author), with the JSON reader above
+        LINUX_DIR / "src" / "workshop_authors.c",
         # the app reads debug.sample_seconds from config.toml (host_main.c)
         TOML_DIR / "tomlc17.c",
         # the file connection's X25519 and ChaCha20-Poly1305 (host_file_share_crypto.c)

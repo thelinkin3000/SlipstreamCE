@@ -27,7 +27,8 @@ void host_steam_set_first(int first);
 int host_steam_chosen(void);
 void host_steam_set_chosen(int chosen);
 void host_steam_row(int place, unsigned int name, int name_size, unsigned int state, int state_size);
-void host_steam_details(int place, unsigned int title, int title_size, unsigned int text, int text_size);
+void host_steam_details(int place, unsigned int title, int title_size, unsigned int text, int text_size,
+	unsigned int author, int author_size);
 void host_steam_choose(int place);
 int host_steam_back(void);
 int host_steam_picture(unsigned int key, unsigned int pixels);
@@ -96,9 +97,11 @@ void steam_screen_row(int place, char *name, int name_size, char *state, int sta
 	host_steam_row(place, HOST_ADDRESS(name), name_size, HOST_ADDRESS(state), state_size);
 }
 
-void steam_screen_details(int place, char *title, int title_size, char *text, int text_size)
+void steam_screen_details(int place, char *title, int title_size, char *text, int text_size, char *author,
+	int author_size)
 {
-	host_steam_details(place, HOST_ADDRESS(title), title_size, HOST_ADDRESS(text), text_size);
+	host_steam_details(place, HOST_ADDRESS(title), title_size, HOST_ADDRESS(text), text_size, HOST_ADDRESS(author),
+		author_size);
 }
 
 void steam_screen_choose(int place)

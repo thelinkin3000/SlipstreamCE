@@ -87,10 +87,30 @@ struct mcc_audio_failure {
     long range, permutation, codec;
 };
 
+static char const *mcc_audio_codec_name(long codec)
+{
+    switch (codec) {
+    case 0: return "16-bit PCM";
+    case 1: return "Xbox ADPCM";
+    case 2: return "IMA ADPCM (unsupported)";
+    case 3: return "Ogg Vorbis";
+    default: return "unknown";
+    }
+}
+
+/* the refusal in debug.txt (mcc_diagnostics.c): the sound's original tag path,
+ * the range and permutation, and what failed */
 static void mcc_audio_refuse(struct mcc_runtime *runtime,struct mcc_audio_failure const *failure)
 {
-    error(_error_silent,"mcc audio: sound tag #%lu '%s', range %ld, permutation %ld, codec %ld: %s; map refused",
-        (unsigned long)failure->index,failure->tag_name,failure->range,failure->permutation,failure->codec,failure->stage);
+    uint32_t handle=UINT32_MAX;
+    if (runtime->tag_index && failure->index<runtime->report.tag_count)
+        handle=((uint32_t *)(runtime->tag_index+failure->index*0x20))[3];
+    mcc_diagnostic_tag(runtime,handle);
+    if (failure->permutation!=NONE)
+        mcc_diagnostic_at(runtime,"pitch_ranges[%ld].permutations[%ld]",failure->range,failure->permutation);
+    else if (failure->range!=NONE) mcc_diagnostic_at(runtime,"pitch_ranges[%ld]",failure->range);
+    else mcc_diagnostic_at(runtime,"sound header");
+    mcc_diagnostic_fail(runtime,"%s; codec %ld (%s)",failure->stage,failure->codec,mcc_audio_codec_name(failure->codec));
     if (!runtime->failure[0]) snprintf(runtime->failure,sizeof(runtime->failure),
         "Sound conversion failed (codec %ld). See debug.txt for the sound name.",failure->codec);
 }
@@ -419,7 +439,7 @@ static int mcc_audio_prepare_threaded(struct mcc_runtime *runtime,struct mcc_aud
 {
     struct mcc_audio_queue *queue=malloc(sizeof(*queue));
     int result;
-    if (!queue) return 0;
+    if (!queue) return mcc_diagnostic_fail(runtime,"not enough memory for the sound conversion queue");
     memset(queue,0,sizeof(*queue));
     result=mcc_audio_prepare_threaded_with(runtime,audio,queue);
     free(queue);
@@ -430,12 +450,15 @@ int mcc_audio_prepare(struct mcc_runtime *runtime)
 {
     struct mcc_audio_tags *audio;
     uint32_t index;
-    if (runtime->source.size>=MCC_AUDIO_BASE || !runtime->report.tag_count || runtime->report.tag_count>65535) return 0;
+    mcc_diagnostic_tag(runtime,UINT32_MAX);
+    mcc_diagnostic_at(runtime,"sound conversion setup");
+    if (runtime->source.size>=MCC_AUDIO_BASE || !runtime->report.tag_count || runtime->report.tag_count>65535)
+        return mcc_diagnostic_fail(runtime,"map size or tag count exceeds sound converter limits");
     audio=malloc(sizeof(*audio));
-    if (!audio) return 0;
+    if (!audio) return mcc_diagnostic_fail(runtime,"not enough memory for sound conversion state");
     memset(audio,0,sizeof(*audio));runtime->audio=audio;
     audio->items=malloc(runtime->report.tag_count*sizeof(*audio->items));
-    if (!audio->items) return 0;
+    if (!audio->items) return mcc_diagnostic_fail(runtime,"not enough memory for sound storage table");
     audio->count=runtime->report.tag_count;
     memset(audio->items,0,audio->count*sizeof(*audio->items));
     for (index=0;index<audio->count;index++) audio->items[index].handle=0xFFFFFFFFu;
