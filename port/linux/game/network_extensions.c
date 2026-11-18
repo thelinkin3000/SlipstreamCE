@@ -79,8 +79,10 @@ enum
 
 /* ---------- this build's capabilities */
 
-/* map_share.c's: a game on an Xbox multiplayer map of custom_maps */
+/* map_share.c's: a game on an Xbox multiplayer map of custom_maps, and on a
+Halo PC map (HaloMD's) */
 boolean custom_xbox_multiplayer_maps_required(void);
+boolean halo_pc_maps_required(void);
 
 struct capability
 {
@@ -102,6 +104,8 @@ static struct capability const capabilities[] =
 	{ NETWORK_CAPABILITY_CUSTOM_XBOX_MULTIPLAYER_MAPS, 1,
 		"You need a client with support for custom OG Xbox multiplayer maps.", custom_xbox_multiplayer_maps_required },
 	{ NETWORK_CAPABILITY_FILE_SHARE_TCP, 1, "", NULL },
+	{ NETWORK_CAPABILITY_HALO_PC_MAPS, 1,
+		"You need a client with support for Halo PC (HaloMD) maps.", halo_pc_maps_required },
 };
 
 /* each capability's data handler (EXTENSIONS_KIND_DATA), or NULL */
@@ -109,6 +113,7 @@ static void (*const data_handlers[])(long machine_index, void const *payload, lo
 {
 	NULL,
 	mcc_share_file_share_data,
+	NULL,
 };
 typedef char data_handlers_match[sizeof(data_handlers) / sizeof(data_handlers[0]) ==
 	sizeof(capabilities) / sizeof(capabilities[0]) ? 1 : -1];

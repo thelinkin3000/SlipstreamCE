@@ -103,6 +103,11 @@ boolean custom_xbox_multiplayer_maps_required(void)
 	return custom_map_game;
 }
 
+boolean halo_pc_maps_required(void)
+{
+	return FALSE;
+}
+
 void display_error_text_when_main_menu_loaded(wchar_t const *text)
 {
 	long index;
@@ -231,7 +236,7 @@ static void test_announcement_bytes(void)
 	data = message_data(sent_to_machine);
 	size = message_data_size(sent_to_machine_size);
 	CHECK(!memcmp(data, "SLXT", 4));
-	CHECK(data[4] == 1 && data[5] == 0 && data[6] == 2);
+	CHECK(data[4] == 1 && data[5] == 0 && data[6] == 3);
 	CHECK(data[7] == strlen(NETWORK_CAPABILITY_CUSTOM_XBOX_MULTIPLAYER_MAPS));
 	CHECK(!memcmp(data + 8, NETWORK_CAPABILITY_CUSTOM_XBOX_MULTIPLAYER_MAPS, data[7]));
 	CHECK(data[8 + data[7]] == 1 && data[9 + data[7]] == 0);
@@ -249,7 +254,15 @@ static void test_announcement_bytes(void)
 		CHECK(!memcmp(data + at + 1, NETWORK_CAPABILITY_FILE_SHARE_TCP, data[at]));
 		CHECK(data[at + 1 + data[at]] == 1 && data[at + 2 + data[at]] == 0);
 		CHECK(data[at + 3 + data[at]] == 0 && data[at + 4 + data[at]] == 0);
-		CHECK(size == at + 5 + data[at] + 1);
+		at += 5 + data[at];
+		/* the third, halo_pc_maps: version 1, not required (no Halo PC map),
+		its text */
+		CHECK(data[at] == strlen(NETWORK_CAPABILITY_HALO_PC_MAPS));
+		CHECK(!memcmp(data + at + 1, NETWORK_CAPABILITY_HALO_PC_MAPS, data[at]));
+		CHECK(data[at + 1 + data[at]] == 1 && data[at + 2 + data[at]] == 0);
+		CHECK(data[at + 3 + data[at]] == 0);
+		CHECK(data[at + 4 + data[at]] == strlen(capabilities[2].missing_notice));
+		CHECK(size == at + 5 + data[at] + data[at + 4 + data[at]] + 1);
 	}
 	required_setting = "";
 }

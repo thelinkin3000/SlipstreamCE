@@ -93,6 +93,15 @@ custom_xbox_multiplayer_maps capability of each machine
 boolean custom_xbox_map_level(
 	char const *level_name);
 
+/* Whether a level name is custom_maps\<name> of a Halo PC map (a version 7
+cache: retail Halo PC's, and HaloMD's), which a build loads only once it
+reads that version (cache_file_formats.c's "Halo PC maps"); a network game
+on one needs the halo_pc_maps capability of each machine
+(network_extensions.h). A Custom Edition map whose data only this build
+corrects is not one: a machine that cannot load it is on its own. */
+boolean custom_halo_pc_map_level(
+	char const *level_name);
+
 /* TRUE when Custom Edition maps may run (game.custom_edition) and the level
 `level_name` is a Custom Edition map's whose file is a Custom Edition cache:
 it is then read in place, never copied to the cache partition. */

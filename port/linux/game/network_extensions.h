@@ -27,6 +27,9 @@ build without it logs and drops.
 /* files over a connection of their own (port/android/host/host_file_share.c,
 docs/file_share_tcp_plan.md) */
 #define NETWORK_CAPABILITY_FILE_SHARE_TCP "file_share_tcp"
+/* Halo PC maps (cache version 7: HaloMD's) of custom_maps
+(custom_edition_cache.h's custom_halo_pc_map_level) */
+#define NETWORK_CAPABILITY_HALO_PC_MAPS "halo_pc_maps"
 
 /* ---------- prototypes/NETWORK_EXTENSIONS.C */
 

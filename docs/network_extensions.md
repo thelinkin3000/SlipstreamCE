@@ -123,6 +123,14 @@ Edition's, and deletes such a download). The host requires it while its
 game's map is one (`custom_xbox_multiplayer_maps_required`, map_share.c),
 and map sharing offers such a map only to machines that have it.
 
+Its second: Halo PC maps (cache version 7: HaloMD's) in `custom_maps`
+(`halo_pc_maps`, docs/custom_edition_caches.md, "Halo PC maps"), which a
+build loads only once it reads that version. Required while the host's
+game's map is one (`halo_pc_maps_required`, map_share.c), offered by map
+sharing only to machines that have it. A Custom Edition map whose broken
+data only this build corrects is not gated: a machine that cannot load it is
+on its own.
+
 ## To offer upstream
 
 The packet type and the format, so that OpenCE reserves 255 and can adopt

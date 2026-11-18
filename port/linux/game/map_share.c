@@ -4019,6 +4019,21 @@ boolean custom_xbox_multiplayer_maps_required(
 	return game && custom_xbox_map_level(game->map.name);
 }
 
+/* Whether this machine hosts a game on a Halo PC map of custom_maps
+(custom_halo_pc_map_level), which only machines with the halo_pc_maps
+capability can play (network_extensions.c's table) */
+boolean halo_pc_maps_required(
+	void)
+{
+	struct network_game *game;
+
+	if (!global_network_game_server_get())
+		return FALSE;
+	game = network_game_get_game();
+
+	return game && custom_halo_pc_map_level(game->map.name);
+}
+
 static boolean host_in_game(
 	void)
 {
@@ -4178,6 +4193,13 @@ static void host_request(
 	is told and removed from the game) */
 	if (custom_xbox_map_level(request->level_name) &&
 		!network_extension_agreed(machine_index, NETWORK_CAPABILITY_CUSTOM_XBOX_MULTIPLAYER_MAPS, 1))
+	{
+		host_offer(machine_index, _offer_unavailable);
+		return;
+	}
+	/* (a Halo PC map, HaloMD's, likewise: halo_pc_maps) */
+	if (custom_halo_pc_map_level(request->level_name) &&
+		!network_extension_agreed(machine_index, NETWORK_CAPABILITY_HALO_PC_MAPS, 1))
 	{
 		host_offer(machine_index, _offer_unavailable);
 		return;

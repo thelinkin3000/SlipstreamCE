@@ -782,6 +782,54 @@ boolean custom_xbox_map_level(
 	return last.found;
 }
 
+/* a Halo PC map's file (cache version 7: retail Halo PC's, HaloMD's) */
+static boolean halo_pc_cache_file(
+	char const *path)
+{
+	struct custom_edition_file file;
+	struct cache_file_identity identity;
+	boolean found = FALSE;
+
+	if (!custom_edition_file_open(&file, path))
+		return FALSE;
+	if (cache_file_identify(&file.source, &identity) == _cache_file_status_ok &&
+		identity.version == CACHE_FILE_VERSION_HALO_PC)
+	{
+		found = TRUE;
+	}
+	custom_edition_file_close(&file);
+
+	return found;
+}
+
+boolean custom_halo_pc_map_level(
+	char const *level_name)
+{
+	/* (the last answer, for a second, as custom_xbox_map_level's) */
+	static struct
+	{
+		char name[MAP_PATH_SIZE];
+		boolean found;
+		unsigned long looked_at;
+	} last;
+	char path[MAP_PATH_SIZE];
+	unsigned long now = GetTickCount() | 1;
+
+	if (!level_name ||
+		_strnicmp(level_name, CUSTOM_EDITION_LEVEL_NAME_PREFIX, csstrlen(CUSTOM_EDITION_LEVEL_NAME_PREFIX)) ||
+		strlen(level_name) >= sizeof(last.name))
+	{
+		return FALSE;
+	}
+	if (last.looked_at && now - last.looked_at < 1000 && !csstrcasecmp(last.name, level_name))
+		return last.found;
+	strcpy(last.name, level_name);
+	last.found = custom_edition_map_path(level_name, path) && halo_pc_cache_file(path);
+	last.looked_at = now;
+
+	return last.found;
+}
+
 static void custom_edition_cache_report_log(
 	struct custom_edition_load_report const *report)
 {
